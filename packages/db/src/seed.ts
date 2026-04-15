@@ -462,13 +462,15 @@ async function main() {
 
     // ─── SLA Configs ────────────────────────────────────────────────────
     const slaData = [
-        { metric: 'FIRST_RESPONSE' as const, priority: 'CRITICAL' as const, targetMinutes: 15 },
-        { metric: 'FIRST_RESPONSE' as const, priority: 'HIGH' as const, targetMinutes: 60 },
-        { metric: 'FIRST_RESPONSE' as const, priority: 'MEDIUM' as const, targetMinutes: 240 },
-        { metric: 'FIRST_RESPONSE' as const, priority: 'LOW' as const, targetMinutes: 1440 },
+        // First response targets: CRITICAL 5m, HIGH 5m, MEDIUM 15m, LOW 60m
+        { metric: 'FIRST_RESPONSE' as const, priority: 'CRITICAL' as const, targetMinutes: 5 },
+        { metric: 'FIRST_RESPONSE' as const, priority: 'HIGH' as const, targetMinutes: 5 },
+        { metric: 'FIRST_RESPONSE' as const, priority: 'MEDIUM' as const, targetMinutes: 15 },
+        { metric: 'FIRST_RESPONSE' as const, priority: 'LOW' as const, targetMinutes: 60 },
+        // Resolution targets: CRITICAL 4h, HIGH 4h, MEDIUM 24h, LOW 168h (1 week)
         { metric: 'RESOLUTION' as const, priority: 'CRITICAL' as const, targetMinutes: 240 },
-        { metric: 'RESOLUTION' as const, priority: 'HIGH' as const, targetMinutes: 480 },
-        { metric: 'RESOLUTION' as const, priority: 'MEDIUM' as const, targetMinutes: 2880 },
+        { metric: 'RESOLUTION' as const, priority: 'HIGH' as const, targetMinutes: 240 },
+        { metric: 'RESOLUTION' as const, priority: 'MEDIUM' as const, targetMinutes: 1440 },
         { metric: 'RESOLUTION' as const, priority: 'LOW' as const, targetMinutes: 10080 },
     ];
 
