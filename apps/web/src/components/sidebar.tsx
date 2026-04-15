@@ -9,6 +9,7 @@ import {
     FileText,
     Bot,
     Megaphone,
+    MessageSquare,
     Settings,
     HelpCircle,
     Mountain,
@@ -24,6 +25,7 @@ interface NavItem {
     name: string;
     href: string;
     icon: LucideIcon;
+    badge?: string;
 }
 
 const navItems: NavItem[] = [
@@ -33,6 +35,7 @@ const navItems: NavItem[] = [
     { name: 'Docs', href: '/docs', icon: FileText },
     { name: 'Agents', href: '/agents', icon: Bot },
     { name: 'Broadcasts', href: '/broadcasts', icon: Megaphone },
+    { name: 'Ask AI', href: '/qa', icon: MessageSquare, badge: 'Beta' },
 ];
 
 const bottomItems: NavItem[] = [
@@ -81,7 +84,16 @@ export function Sidebar() {
                             )}
                         >
                             <Icon className="h-5 w-5 shrink-0" />
-                            {!collapsed && <span>{item.name}</span>}
+                            {!collapsed && (
+                                <span className="flex items-center gap-2">
+                                    {item.name}
+                                    {item.badge && (
+                                        <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                                            {item.badge}
+                                        </span>
+                                    )}
+                                </span>
+                            )}
                         </Link>
                     );
                 })}
