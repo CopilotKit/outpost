@@ -1,0 +1,113 @@
+import {
+    type PendingMessage,
+    MessageSource,
+    MessageStatus,
+} from '@outpost/shared';
+
+/**
+ * Mock pending messages across Slack Connect and MS Teams channels.
+ * Timestamps are relative to "now" so urgency badges always show realistic values.
+ */
+function hoursAgo(hours: number): string {
+    return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+}
+
+export const MOCK_PENDING_MESSAGES: PendingMessage[] = [
+    {
+        id: 'msg-001',
+        customerName: 'Sarah Chen',
+        accountId: 'acc-vercel',
+        accountName: 'Vercel',
+        accountAcv: 240000,
+        source: MessageSource.SLACK,
+        channelName: '#cpk-vercel-support',
+        messagePreview: 'Hey team, we are seeing intermittent 502 errors on the CopilotKit runtime endpoint since this morning. Can someone take a look?',
+        receivedAt: hoursAgo(6.5),
+        status: MessageStatus.UNANSWERED,
+    },
+    {
+        id: 'msg-002',
+        customerName: 'Marcus Johnson',
+        accountId: 'acc-stripe',
+        accountName: 'Stripe',
+        accountAcv: 180000,
+        source: MessageSource.TEAMS,
+        channelName: 'CopilotKit Support',
+        messagePreview: 'Quick question about the new useCopilotAction hook — is there a way to stream partial results back to the UI?',
+        receivedAt: hoursAgo(3.2),
+        status: MessageStatus.UNANSWERED,
+    },
+    {
+        id: 'msg-003',
+        customerName: 'Aisha Patel',
+        accountId: 'acc-notion',
+        accountName: 'Notion',
+        accountAcv: 320000,
+        source: MessageSource.SLACK,
+        channelName: '#cpk-notion',
+        messagePreview: 'We are planning to upgrade to v1.8 next sprint. Any known breaking changes we should prepare for?',
+        receivedAt: hoursAgo(1.5),
+        status: MessageStatus.UNANSWERED,
+    },
+    {
+        id: 'msg-004',
+        customerName: 'Tom Wright',
+        accountId: 'acc-linear',
+        accountName: 'Linear',
+        accountAcv: 95000,
+        source: MessageSource.TEAMS,
+        channelName: 'CopilotKit x Linear',
+        messagePreview: 'Thanks for the fix last week! Everything is running smoothly now.',
+        receivedAt: hoursAgo(2.0),
+        status: MessageStatus.ANSWERED,
+        answeredAt: hoursAgo(1.8),
+    },
+    {
+        id: 'msg-005',
+        customerName: 'Elena Rodriguez',
+        accountId: 'acc-shopify',
+        accountName: 'Shopify',
+        accountAcv: 410000,
+        source: MessageSource.SLACK,
+        channelName: '#cpk-shopify-eng',
+        messagePreview: 'Our agent is hitting rate limits on the Anthropic provider. Is there a built-in retry/backoff mechanism?',
+        receivedAt: hoursAgo(5.1),
+        status: MessageStatus.UNANSWERED,
+    },
+    {
+        id: 'msg-006',
+        customerName: 'James Kim',
+        accountId: 'acc-figma',
+        accountName: 'Figma',
+        accountAcv: 150000,
+        source: MessageSource.SLACK,
+        channelName: '#cpk-figma',
+        messagePreview: 'Can we schedule a call this week to discuss the CoAgent architecture for our new plugin system?',
+        receivedAt: hoursAgo(0.4),
+        status: MessageStatus.UNANSWERED,
+    },
+    {
+        id: 'msg-007',
+        customerName: 'Priya Sharma',
+        accountId: 'acc-datadog',
+        accountName: 'Datadog',
+        accountAcv: 200000,
+        source: MessageSource.TEAMS,
+        channelName: 'CopilotKit Partnership',
+        messagePreview: 'Following up on the enterprise SSO integration — our security team has additional requirements around token rotation.',
+        receivedAt: hoursAgo(8.0),
+        status: MessageStatus.UNANSWERED,
+    },
+    {
+        id: 'msg-008',
+        customerName: 'Alex Turner',
+        accountId: 'acc-vercel',
+        accountName: 'Vercel',
+        accountAcv: 240000,
+        source: MessageSource.SLACK,
+        channelName: '#cpk-vercel-support',
+        messagePreview: 'Also wanted to flag — the TextArea component is not rendering correctly on mobile Safari. Screenshots attached.',
+        receivedAt: hoursAgo(4.8),
+        status: MessageStatus.UNANSWERED,
+    },
+];
