@@ -29,6 +29,7 @@ export enum TicketType {
 
 export enum TicketSource {
     DISCORD = 'DISCORD',
+    SLACK = 'SLACK',
     GITHUB_ISSUE = 'GITHUB_ISSUE',
     GITHUB_DISCUSSION = 'GITHUB_DISCUSSION',
     WEB = 'WEB',
