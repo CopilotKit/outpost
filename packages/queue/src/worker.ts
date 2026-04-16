@@ -183,7 +183,7 @@ export class Worker {
         `;
 
         // Process jobs concurrently (each tracked in activeJobs)
-        const promises = jobs.map((job) => this.processJob(job));
+        const promises = jobs.map((job: { id: string; type: string; payload: unknown; attempts: number; maxAttempts: number }) => this.processJob(job));
         await Promise.allSettled(promises);
 
         return jobs.length;
