@@ -29,8 +29,6 @@ import {
 const CREDS: RedditCredentials = {
     clientId: "id",
     clientSecret: "secret",
-    username: "bot",
-    password: "pw",
     userAgent: "test-agent/0.1",
 };
 
@@ -64,20 +62,18 @@ function listing(children: Array<Record<string, unknown>>) {
 
 // ─── credential guard ────────────────────────────────────────────────────────
 describe("requireCredentials", () => {
-    it("returns credentials when all present", () => {
+    it("returns credentials when client id + secret present", () => {
         const c = requireCredentials({
             REDDIT_CLIENT_ID: "a",
             REDDIT_CLIENT_SECRET: "b",
-            REDDIT_USERNAME: "c",
-            REDDIT_PASSWORD: "d",
         } as NodeJS.ProcessEnv);
         expect(c.clientId).toBe("a");
         expect(c.userAgent).toContain("outpost-community-signal");
     });
 
     it("lists every missing var", () => {
-        expect(() => requireCredentials({ REDDIT_CLIENT_ID: "a" } as NodeJS.ProcessEnv)).toThrow(
-            /REDDIT_CLIENT_SECRET, REDDIT_USERNAME, REDDIT_PASSWORD/,
+        expect(() => requireCredentials({} as NodeJS.ProcessEnv)).toThrow(
+            /REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET/,
         );
     });
 
@@ -85,8 +81,6 @@ describe("requireCredentials", () => {
         const c = requireCredentials({
             REDDIT_CLIENT_ID: "a",
             REDDIT_CLIENT_SECRET: "b",
-            REDDIT_USERNAME: "c",
-            REDDIT_PASSWORD: "d",
             REDDIT_USER_AGENT: "custom/9",
         } as NodeJS.ProcessEnv);
         expect(c.userAgent).toBe("custom/9");

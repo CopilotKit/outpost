@@ -15,21 +15,20 @@ Read-only Reddit MCP server for the **Reddit Pulse** section of the Weekly Commu
 
 ## Setup
 
-1. Create a Reddit app at <https://www.reddit.com/prefs/apps> → **type: script** → note the client id + secret.
-2. Copy creds into `apps/reddit-mcp/.env` (or the repo-root `.env`):
+1. Go to <https://www.reddit.com/prefs/apps> (logged in as any Reddit account) → **create another app…** → name it (e.g. `outpost-community-signal`), pick **type: script**, set redirect URI to `http://localhost:8080` (unused but required), **create app**.
+2. Copy the two values: the **client id** (the string under the app name, just below "personal use script") and the **secret**. Put them in `apps/reddit-mcp/.env` (or the repo-root `.env`):
    ```
    REDDIT_CLIENT_ID=...
    REDDIT_CLIENT_SECRET=...
-   REDDIT_USERNAME=...
-   REDDIT_PASSWORD=...
    ```
+   No Reddit username/password needed — reads use application-only (userless) OAuth.
 3. Build + register:
    ```
    pnpm --filter @copilotkit/outpost-reddit-mcp build
    claude mcp add reddit --scope user -- node /abs/path/to/outpost/apps/reddit-mcp/dist/index.js
    ```
 
-Reddit **requires** a descriptive `User-Agent`; the server sets one (override via `REDDIT_USER_AGENT`). Auth is OAuth2 password grant for a script app (read-only), token cached and refreshed on 401.
+Reddit **requires** a descriptive `User-Agent`; the server sets one (override via `REDDIT_USER_AGENT`). Auth is OAuth2 application-only (`client_credentials`) for a read-only confidential client; token cached and refreshed on 401.
 
 ## Test
 

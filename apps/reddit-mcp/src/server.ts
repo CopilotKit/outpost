@@ -22,26 +22,22 @@ import {
 export interface RedditCredentials {
     clientId: string;
     clientSecret: string;
-    username: string;
-    password: string;
     userAgent: string;
 }
 
 /**
- * Resolve Reddit script-app credentials, throwing a clear error if any are
- * missing. Reddit REQUIRES a descriptive User-Agent or it serves an anti-bot
- * page instead of JSON — default to a sensible one if unset.
+ * Resolve Reddit app credentials, throwing a clear error if any are missing.
+ * Read-only public access uses the application-only (userless) OAuth flow, so
+ * only the client id + secret are needed — no Reddit username/password.
+ * Reddit REQUIRES a descriptive User-Agent or it serves an anti-bot page
+ * instead of JSON — default to a sensible one if unset.
  */
 export function requireCredentials(env: NodeJS.ProcessEnv = process.env): RedditCredentials {
     const clientId = env.REDDIT_CLIENT_ID;
     const clientSecret = env.REDDIT_CLIENT_SECRET;
-    const username = env.REDDIT_USERNAME;
-    const password = env.REDDIT_PASSWORD;
     const missing = [
         ["REDDIT_CLIENT_ID", clientId],
         ["REDDIT_CLIENT_SECRET", clientSecret],
-        ["REDDIT_USERNAME", username],
-        ["REDDIT_PASSWORD", password],
     ]
         .filter(([, v]) => !v)
         .map(([k]) => k);
@@ -51,8 +47,6 @@ export function requireCredentials(env: NodeJS.ProcessEnv = process.env): Reddit
     return {
         clientId: clientId!,
         clientSecret: clientSecret!,
-        username: username!,
-        password: password!,
         userAgent: env.REDDIT_USER_AGENT || "outpost-community-signal/0.1 (by /u/copilotkit)",
     };
 }
@@ -75,7 +69,7 @@ export class RedditClient {
         private readonly now: () => number = () => Date.now(),
     ) {}
 
-    /** OAuth2 password grant for a "script" app → cached bearer token. */
+    /** OAuth2 application-only (client_credentials) grant → cached bearer token. */
     async getToken(): Promise<string> {
         if (this.token && this.now() < this.tokenExpiresAt - 60_000) {
             return this.token;
@@ -83,11 +77,7 @@ export class RedditClient {
         const basic = Buffer.from(`${this.creds.clientId}:${this.creds.clientSecret}`).toString(
             "base64",
         );
-        const body = new URLSearchParams({
-            grant_type: "password",
-            username: this.creds.username,
-            password: this.creds.password,
-        });
+        const body = new URLSearchParams({ grant_type: "client_credentials" });
         const res = await this.fetchImpl("https://www.reddit.com/api/v1/access_token", {
             method: "POST",
             headers: {
