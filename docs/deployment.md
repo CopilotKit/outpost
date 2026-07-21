@@ -110,7 +110,14 @@ The GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every PR and pu
 5. Type check
 6. Run tests
 
-On merge to main, Railway auto-deploys via its GitHub integration — no deploy hooks needed.
+On merge to main — and only after the `Lint, Typecheck & Test` job passes — the `deploy` job in the same workflow runs `railway up` for each GitHub-connected service (`outpost-web`, `outpost-worker`, `outpost-github-app`, `outpost-discord-bot`), shipping the merged commit. This replaces Railway's native GitHub auto-deploy, which staged every deploy behind a manual "Needs approval" click.
+
+**Setup for CLI deploys:**
+
+1. Create a Railway **project token** for the production environment and add it as the `RAILWAY_TOKEN` repository secret (repo Settings → Secrets and variables → Actions). Project tokens are environment-scoped, so no `--environment` flag is needed.
+2. In the Railway dashboard, disable each service's native **Auto Deploy** (Service → Settings → Deploy) so a merge doesn't also stage a GitHub-integration deployment alongside the CLI deploy.
+
+`outpost-slack-bot`, `outpost-teams-bot`, and `outpost-linear-sync` are currently offline and excluded from the deploy matrix — add a matrix entry in `ci.yml` when they're brought online.
 
 ## Monitoring
 

@@ -63,30 +63,54 @@ jobs:
             - name: Test
               run: pnpm test
 
-    # Railway auto-deploys on push to main via GitHub integration.
-    # No explicit deploy step needed — Railway watches the repo directly.
+    # Deploy each service to Railway once CI is green on main.
     #
-    # IMPORTANT: Configure branch protection on `main` to require the
-    # "Lint, Typecheck & Test" check to pass before merging. This ensures
-    # Railway only auto-deploys code that has passed CI.
+    # This replaces Railway's native GitHub auto-deploy (which was staging every
+    # deploy behind a manual "Needs approval" click). Because deploy `needs:` the
+    # test job and only runs on push to main, a merge to main auto-deploys — but
+    # only after "Lint, Typecheck & Test" passes.
     #
-    # To switch to CLI-driven deploys instead, uncomment the job below
-    # and set the RAILWAY_TOKEN repository secret.
+    # `railway up` uploads the checked-out repo and builds on Railway using each
+    # service's configured Dockerfile / config-as-code path, so the freshly
+    # merged commit is what ships — no approval gate.
     #
-    # deploy:
-    #     name: Deploy to Railway
-    #     runs-on: ubuntu-latest
-    #     needs: lint-typecheck-test
-    #     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # REQUIRED SETUP:
+    #   1. Create a Railway **project token** for the production environment and
+    #      add it as the `RAILWAY_TOKEN` repository secret (Settings → Secrets →
+    #      Actions). A project token is environment-scoped, so no --environment
+    #      flag is needed.
+    #   2. Disable each service's native "Auto Deploy" in the Railway dashboard
+    #      (Service → Settings → Deploy) so a merge doesn't ALSO stage a
+    #      GitHub-integration deployment alongside this CLI deploy.
     #
-    #     steps:
-    #         - name: Checkout
-    #           uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-    #
-    #         - name: Install Railway CLI
-    #           run: npm i -g @railway/cli
-    #
-    #         - name: Deploy to Railway
-    #           env:
-    #               RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-    #           run: railway up --detach
+    # Only the four GitHub-connected, currently-online services are deployed.
+    # outpost-slack-bot / outpost-teams-bot / outpost-linear-sync are offline
+    # (not connected) and are intentionally excluded — add a matrix entry when
+    # they're brought online.
+    deploy:
+        name: Deploy ${{ matrix.service }}
+        runs-on: ubuntu-latest
+        needs: lint-typecheck-test
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        strategy:
+            fail-fast: false
+            matrix:
+                service:
+                    - outpost-web
+                    - outpost-worker
+                    - outpost-github-app
+                    - outpost-discord-bot
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+              with:
+                  persist-credentials: false
+
+            - name: Install Railway CLI
+              run: npm i -g @railway/cli@4
+
+            - name: Deploy ${{ matrix.service }} to Railway
+              env:
+                  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+              run: railway up --service "${{ matrix.service }}" --ci
