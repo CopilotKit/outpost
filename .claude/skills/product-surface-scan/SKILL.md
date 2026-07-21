@@ -11,6 +11,17 @@ A feature can be **free-but-limited AND commercial** at the same time — **thre
 
 This skill produces, every week, the **current** authoritative list of those surfaces (they change — features get added, tiers get re-drawn) so the report never runs off a stale hand-maintained list.
 
+## HARD RULE — every claim is quote-verified against a live page this run (NO shortcuts)
+
+This report is read by the **product + engineering teams**. A false surface / tier / pricing claim makes us look bad and erodes trust — it has already happened (a scan reported Angular as "Team tier", Inspector as "Premium/Team", an "Early Access" Analytics label, and a $500 Team price; the live pages said none of that). So:
+
+- **Never emit a tier, price, free-vs-paid boundary, Premium/Enterprise gating, or "coming soon" status from memory, from the baseline lists in THIS file, or from last week's snapshot.** Those are reference/diff scaffolding ONLY, and they go stale.
+- **Every such claim in your return MUST be backed by text you fetched from the live page THIS run, and you must include the exact quoted source text** (the page URL + the words on it). If you can't fetch the page, or can't find the words on it, you do **not** make the claim — record `could not verify on <page>` and omit it. A missing claim is fine; a false one is not.
+- **Report a contradiction ONLY when you hold both conflicting quotes**, each tied to its page. Never infer a conflict from a half-remembered tier. If one side can't be quoted from a live fetch this run, there is no contradiction to report.
+- **The baseline lists below are stale by design** — they were true at a past snapshot. Treat them as "what to diff against," never as "what to publish." Your return replaces them.
+
+Non-negotiable. When in doubt, fetch again or drop the claim. The orchestrator's link-review pass re-checks these against the live pages before publish.
+
 ## What it does
 
 1. **Fetch the canonical pages** (below) with `WebFetch`. If a page 404s or is unreachable, record that (don't guess) — a page going live/dead is itself a signal (e.g. `copilotkit.ai/enterprise` is currently a 404; if it goes live, flag it).
@@ -41,8 +52,8 @@ Snapshot as of 2026-07-10 (source-linked in the pages above). The scan **replace
 - **Self-Hosted Enterprise Intelligence** — same platform in your own K8s/VPC/air-gapped boundary via the `copilot-intelligence` Helm chart; unlocked by a **license key** (offline validation).
 - **Threads & Persistence** — persistent server-side thread containers (full event history, resumable). Free-but-limited (200 threads / 3-day / 1 GB), paid above.
 - **CopilotKit Inspector** — real-time + historical interaction monitoring, replay, decision tracing, perf/error tracking.
-- **Premium UI components** — platform-gated UI (e.g. **Fully Headless Chat UI**); the **Angular SDK is marked Enterprise** (React SDK is free).
-- **Analytics & Self-Learning** — perf dashboard, SQL-queryable lakehouse for compliance/audit, OTLP observability, in-context RL / per-user prompt mutation (Enterprise, early access).
+- **Premium UI components** — platform-gated UI (e.g. **Fully Headless Chat UI**). **The Angular SDK is open source (MIT), same as React** — verified on /product + npm 2026-07-21; optional premium UI extras exist but the SDK itself is not paid. (A products PDF still mislabels the Angular client "Premium" — that PDF is stale.)
+- **Analytics & Self-Learning** — perf dashboard, SQL-queryable lakehouse for compliance/audit, OTLP observability, in-context RL / per-user prompt mutation. **Status: "Coming Soon"** on both /product and the Intelligence page (verified 2026-07-21) — there is no "Early Access" label; don't invent one.
 - **Enterprise security bundle** — SOC 2 Type II, SSO + RBAC, offline licensing.
 - **Support / SLA** — Dedicated Slack Support (Team+), SLA + priority bug fixes + dedicated engineering hrs + roadmap input (Enterprise).
 - **Slack & Teams integrations** — deploy agentic UI into Slack/Teams/messaging surfaces (paid product ecosystem).
@@ -55,8 +66,10 @@ Snapshot as of 2026-07-10 (source-linked in the pages above). The scan **replace
 |---|---|---|
 | **Developer** | Free forever | 1 seat · VPC/on-prem runtime only · 3-day retention · 200 threads · 1 GB multimodal · Inspector · Discord support |
 | **Pro** | $39/dev/mo (≤5 seats) | 5-day retention · 5,000 threads · 10 GB · frontend SDKs + backend connections |
-| **Team** | $500/mo (5 seats incl.) | self-hosting **with database** · 14-day retention · 25,000 threads · 100 GB · dedicated Slack support · all frameworks/integrations |
-| **Enterprise** | Custom | VPC/on-prem · unlimited threads · custom retention/storage · Analytics + Self-Learning (early access) · dedicated eng (≤5 hrs/wk) · SLA · priority bug fixes · roadmap input |
+| **Team** | **$100/dev/mo** (5 seats incl.) — verified /pricing 2026-07-21 | self-hosting **with database** · 14-day retention · 25,000 threads · 100 GB · dedicated Slack support · all frameworks/integrations |
+| **Enterprise** | Custom | VPC/on-prem · unlimited threads · custom retention/storage · Analytics + Self-Learning (**Coming Soon**) · dedicated eng (≤5 hrs/wk) · SLA · priority bug fixes · roadmap input |
+
+*(Baseline corrected 2026-07-21 after a scan published false gating. Inspector is shown across **all** tiers incl. free Developer — it is not Premium/Team-gated. Re-verify every value live each run per the HARD RULE above; do not trust this table blind.)*
 
 ## The classifier — "does this issue hit a commercial surface?"
 

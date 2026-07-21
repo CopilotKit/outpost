@@ -19,6 +19,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import {
     requireToken,
+    loadNamedIds,
+    resolveId,
     formatReaction,
     formatMessage,
     TOOLS,
@@ -105,6 +107,69 @@ describe("requireToken", () => {
 
     it("throws a clear error when missing", () => {
         expect(() => requireToken({} as NodeJS.ProcessEnv)).toThrow(/DISCORD_MCP_TOKEN missing/);
+    });
+});
+
+// ─── named id aliases ──────────────────────────────────────────────────────
+describe("loadNamedIds", () => {
+    it("maps DISCORD_GUILD_/DISCORD_CHANNEL_ vars to upper-cased aliases", () => {
+        const map = loadNamedIds({
+            DISCORD_GUILD_COPILOTKIT: "1122926057641742418",
+            DISCORD_CHANNEL_CK_SUPPORT: "1313616713647919218",
+            DISCORD_MCP_TOKEN: "secret",
+            PATH: "/usr/bin",
+        } as unknown as NodeJS.ProcessEnv);
+        expect(map.get("COPILOTKIT")).toBe("1122926057641742418");
+        expect(map.get("CK_SUPPORT")).toBe("1313616713647919218");
+        expect(map.has("MCP_TOKEN")).toBe(false); // DISCORD_MCP_TOKEN is not a guild/channel var
+        expect(map.size).toBe(2);
+    });
+
+    it("trims values and ignores empty ones", () => {
+        const map = loadNamedIds({
+            DISCORD_GUILD_AGUI: "  1379082175625953370  ",
+            DISCORD_CHANNEL_EMPTY: "   ",
+        } as unknown as NodeJS.ProcessEnv);
+        expect(map.get("AGUI")).toBe("1379082175625953370");
+        expect(map.has("EMPTY")).toBe(false);
+    });
+
+    it("allows an alias defined twice with the same value", () => {
+        const map = loadNamedIds({
+            DISCORD_GUILD_DUP: "123",
+            DISCORD_CHANNEL_DUP: "123",
+        } as unknown as NodeJS.ProcessEnv);
+        expect(map.get("DUP")).toBe("123");
+    });
+
+    it("throws when an alias is defined twice with different values", () => {
+        expect(() =>
+            loadNamedIds({
+                DISCORD_GUILD_DUP: "123",
+                DISCORD_CHANNEL_DUP: "456",
+            } as unknown as NodeJS.ProcessEnv),
+        ).toThrow(/defined twice/);
+    });
+});
+
+describe("resolveId", () => {
+    const aliases = new Map([["CK_SUPPORT", "1313616713647919218"]]);
+
+    it("passes a raw numeric id through untouched", () => {
+        expect(resolveId("1313616713647919218", aliases)).toBe("1313616713647919218");
+    });
+
+    it("resolves a known alias case-insensitively", () => {
+        expect(resolveId("ck_support", aliases)).toBe("1313616713647919218");
+        expect(resolveId("CK_SUPPORT", aliases)).toBe("1313616713647919218");
+    });
+
+    it("falls back to the input when the alias is unknown", () => {
+        expect(resolveId("NOPE", aliases)).toBe("NOPE");
+    });
+
+    it("passes an empty string through", () => {
+        expect(resolveId("", aliases)).toBe("");
     });
 });
 
@@ -326,8 +391,8 @@ describe("handleReadThreadMessages", () => {
 
 // ─── MCP protocol e2e (in-memory transport, no network) ──────────────────────
 describe("MCP protocol (in-memory)", () => {
-    async function connect(discord: Client) {
-        const server = createDiscordServer(discord);
+    async function connect(discord: Client, aliases?: Map<string, string>) {
+        const server = createDiscordServer(discord, aliases ? { aliases } : {});
         const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
         await server.connect(serverTransport);
         const client = new McpClient(
@@ -362,6 +427,30 @@ describe("MCP protocol (in-memory)", () => {
         };
         expect(res.content[0].type).toBe("text");
         expect(res.content[0].text).toContain("CopilotKit (ID: 1, Members: 5381)");
+    });
+
+    it("resolves a guild alias in get_channels args to the real id", async () => {
+        const discord = fakeDiscord({
+            guilds: [
+                fakeGuild({
+                    id: "1122926057641742418",
+                    name: "CopilotKit",
+                    members: 5381,
+                    iso: "2023-01-01T00:00:00Z",
+                    channels: [{ id: "100", name: "general", type: ChannelType.GuildText }],
+                }),
+            ],
+        });
+        const { client } = await connect(
+            discord,
+            new Map([["COPILOTKIT", "1122926057641742418"]]),
+        );
+        const res = (await client.callTool({
+            name: "get_channels",
+            arguments: { server_id: "COPILOTKIT" },
+        })) as { content: { type: string; text: string }[] };
+        expect(res.content[0].text).toContain("Channels in CopilotKit:");
+        expect(res.content[0].text).toContain("#general (ID: 100)");
     });
 
     it("surfaces handler errors as text instead of throwing", async () => {

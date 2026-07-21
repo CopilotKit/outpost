@@ -38,6 +38,47 @@ export function requireToken(env: NodeJS.ProcessEnv = process.env): string {
     return token;
 }
 
+// ─── named id aliases (from env) ───────────────────────────────────────────────
+/**
+ * Build a map of alias → snowflake id from the environment. Any var named
+ * `DISCORD_GUILD_<NAME>` or `DISCORD_CHANNEL_<NAME>` registers `<NAME>` (upper-cased)
+ * as an alias for its value, so the weekly-report pull can reference guilds/channels
+ * by a stable name (e.g. `CK_SUPPORT`) instead of hardcoding numeric ids.
+ *
+ * Guild and channel aliases share one namespace — a name collision across the two
+ * prefixes is a config error, so we throw rather than silently pick a winner.
+ */
+export function loadNamedIds(env: NodeJS.ProcessEnv = process.env): Map<string, string> {
+    const map = new Map<string, string>();
+    for (const [key, value] of Object.entries(env)) {
+        const m = /^DISCORD_(?:GUILD|CHANNEL)_(.+)$/.exec(key);
+        if (!m) continue;
+        const trimmed = value?.trim();
+        if (!trimmed) continue;
+        const alias = m[1].toUpperCase();
+        const existing = map.get(alias);
+        if (existing && existing !== trimmed) {
+            throw new Error(
+                `Discord id alias "${alias}" is defined twice with different values ` +
+                    `(${existing} vs ${trimmed}) — check DISCORD_GUILD_/DISCORD_CHANNEL_ env vars.`,
+            );
+        }
+        map.set(alias, trimmed);
+    }
+    return map;
+}
+
+/**
+ * Resolve a tool argument to a snowflake id. A raw numeric id passes through
+ * untouched (back-compat — callers can always send ids directly); a non-numeric
+ * value is looked up as an alias, falling back to itself when unknown so the
+ * downstream "not found" / "not a forum channel" errors still fire naturally.
+ */
+export function resolveId(idOrAlias: string, aliases: Map<string, string>): string {
+    if (!idOrAlias || /^\d+$/.test(idOrAlias)) return idOrAlias;
+    return aliases.get(idOrAlias.toUpperCase()) ?? idOrAlias;
+}
+
 // ─── formatters ──────────────────────────────────────────────────────────────
 export function formatReaction(name: string, count: number): string {
     return `${name}(${count})`;
@@ -70,7 +111,11 @@ export const TOOLS: Tool[] = [
         inputSchema: {
             type: "object",
             properties: {
-                server_id: { type: "string", description: "Discord server (guild) ID" },
+                server_id: {
+                    type: "string",
+                    description:
+                        "Discord server (guild) ID, or a configured alias from DISCORD_GUILD_* (e.g. COPILOTKIT)",
+                },
             },
             required: ["server_id"],
         },
@@ -82,7 +127,11 @@ export const TOOLS: Tool[] = [
         inputSchema: {
             type: "object",
             properties: {
-                channel_id: { type: "string", description: "Forum channel ID" },
+                channel_id: {
+                    type: "string",
+                    description:
+                        "Forum channel ID, or a configured alias from DISCORD_CHANNEL_* (e.g. CK_SUPPORT)",
+                },
                 include_archived: {
                     type: "boolean",
                     description: "Include archived threads (default: true)",
@@ -103,7 +152,11 @@ export const TOOLS: Tool[] = [
         inputSchema: {
             type: "object",
             properties: {
-                channel_id: { type: "string", description: "Discord channel ID" },
+                channel_id: {
+                    type: "string",
+                    description:
+                        "Discord channel ID, or a configured alias from DISCORD_CHANNEL_* (e.g. CK_GENERAL)",
+                },
                 limit: {
                     type: "number",
                     description: "Number of messages to fetch (max 100)",
@@ -294,9 +347,10 @@ export async function handleReadThreadMessages(
  */
 export function createDiscordServer(
     discord: Client,
-    opts: { ready?: Promise<void> } = {},
+    opts: { ready?: Promise<void>; aliases?: Map<string, string> } = {},
 ): Server {
     const ready = opts.ready ?? Promise.resolve();
+    const aliases = opts.aliases ?? loadNamedIds();
     const server = new Server(
         { name: "discord", version: "0.1.0" },
         { capabilities: { tools: {} } },
@@ -313,31 +367,42 @@ export function createDiscordServer(
                 case "list_servers":
                     text = await handleListServers(discord);
                     break;
-                case "get_channels":
-                    text = await handleGetChannels(discord, args as { server_id: string });
+                case "get_channels": {
+                    const a = args as { server_id: string };
+                    text = await handleGetChannels(discord, {
+                        ...a,
+                        server_id: resolveId(a.server_id, aliases),
+                    });
                     break;
-                case "list_forum_threads":
-                    text = await handleListForumThreads(
-                        discord,
-                        args as {
-                            channel_id: string;
-                            include_archived?: boolean;
-                            archived_limit?: number;
-                        },
-                    );
+                }
+                case "list_forum_threads": {
+                    const a = args as {
+                        channel_id: string;
+                        include_archived?: boolean;
+                        archived_limit?: number;
+                    };
+                    text = await handleListForumThreads(discord, {
+                        ...a,
+                        channel_id: resolveId(a.channel_id, aliases),
+                    });
                     break;
-                case "read_messages":
-                    text = await handleReadMessages(
-                        discord,
-                        args as { channel_id: string; limit?: number },
-                    );
+                }
+                case "read_messages": {
+                    const a = args as { channel_id: string; limit?: number };
+                    text = await handleReadMessages(discord, {
+                        ...a,
+                        channel_id: resolveId(a.channel_id, aliases),
+                    });
                     break;
-                case "read_thread_messages":
-                    text = await handleReadThreadMessages(
-                        discord,
-                        args as { thread_id: string; limit?: number },
-                    );
+                }
+                case "read_thread_messages": {
+                    const a = args as { thread_id: string; limit?: number };
+                    text = await handleReadThreadMessages(discord, {
+                        ...a,
+                        thread_id: resolveId(a.thread_id, aliases),
+                    });
                     break;
+                }
                 default:
                     throw new Error(`Unknown tool: ${name}`);
             }
