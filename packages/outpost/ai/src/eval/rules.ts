@@ -137,9 +137,22 @@ const DEAD_PACKAGE = /@copilotkitnext\b/i;
  */
 const LIVE_PACKAGE = /@copilotkit\/[a-z-]+/i;
 
-/** A link that constitutes a citation: a docs page or a file in the repo. */
-const CITATION_LINK =
-    /https?:\/\/(?:[a-z0-9-]+\.)*(?:copilotkit\.ai|github\.com\/CopilotKit|github\.com\/ag-ui-protocol)\/\S+/i;
+/**
+ * True when the reply links a source it was actually given.
+ *
+ * Checked against the retrieved `sources` rather than against a pattern for
+ * "looks like one of our URLs". Under a pattern test the URL was both the
+ * citation and the laundering: a reply could write its invented hook name
+ * *inside* a `docs.copilotkit.ai` link — `/hooks/useCopilotFabricated` — and
+ * satisfy the rule with a page that does not exist. The identifier rule cannot
+ * catch that either, because `assessGroundedness` blanks URLs before it looks.
+ *
+ * Substring rather than equality, so a cited URL may carry an anchor or a query
+ * the retrieved one did not (`…/CopilotChat#slots`).
+ */
+function citesARetrievedSource(reply: string, sources: SearchResult[]): boolean {
+    return sources.some((s) => s.sourceUrl && reply.includes(s.sourceUrl));
+}
 
 export const RULES = [
     'says-something',
@@ -155,7 +168,20 @@ export type RuleId = (typeof RULES)[number];
 export interface RuleResult {
     rule: RuleId;
     passed: boolean;
-    /** Why it failed, naming the offending text. Empty when it passed. */
+    /**
+     * False when the rule could not be evaluated at all, as opposed to evaluated
+     * and passed. A not-applicable rule is never a failure and is never counted
+     * in a pass rate.
+     *
+     * The case that forced the distinction: Pathfinder's plain-text fallback
+     * (`textSearch`) sets `sourceUrl: undefined` on every result, so a CORRECT
+     * answer built from it has nothing it could possibly cite. Under a flat
+     * requirement that answer fails the citation rule forever and — once these
+     * rules gate publishing — collapses into a handoff every time the fallback is
+     * in play. "Did not cite" and "had nothing citable" are different facts.
+     */
+    applicable: boolean;
+    /** Why it failed, or why it was not applicable. Empty when it passed. */
     detail: string;
 }
 
@@ -174,7 +200,9 @@ function countWords(text: string): number {
  */
 export function checkReply(reply: string, sources: SearchResult[]): RuleResult[] {
     const words = countWords(reply);
-    const cites = CITATION_LINK.test(reply);
+    const cites = citesARetrievedSource(reply, sources);
+    // Whether citing was possible at all. See RuleResult.applicable.
+    const anySourceHasUrl = sources.some((s) => !!s.sourceUrl);
 
     // A reply that cites nothing is only acceptable as a short handoff, so the
     // two rules below are the two halves of that single sentence in the doc.
@@ -187,6 +215,7 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
     return [
         {
             rule: 'says-something',
+            applicable: true,
             passed: words >= MIN_REPLY_WORDS,
             detail:
                 words >= MIN_REPLY_WORDS
@@ -195,6 +224,7 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
         },
         {
             rule: 'grounded-identifiers',
+            applicable: true,
             passed: groundedness.unsourcedIdentifiers.length === 0,
             detail: groundedness.unsourcedIdentifiers.length
                 ? `names not present in any source: ${groundedness.unsourcedIdentifiers.join(', ')}`
@@ -206,24 +236,32 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
             // which presented five independent signals as six and double-counted
             // every failure in both the per-rule table and the report.
             rule: 'cites-or-is-a-short-handoff',
+            // A short handoff needs no citation, so the length escape keeps the
+            // rule applicable even with nothing citable. It only goes
+            // not-applicable when the reply is long AND there was no URL to cite.
+            applicable: anySourceHasUrl || isShortEnoughForHandoff,
             passed: cites || isShortEnoughForHandoff,
-            detail:
-                cites || isShortEnoughForHandoff
-                    ? ''
-                    : `${words} words with no docs or repo link, over the ${HANDOFF_WORD_CAP}-word handoff cap; a reply this long has to cite what it came from`,
+            detail: !anySourceHasUrl && !isShortEnoughForHandoff
+                ? 'not evaluated: no retrieved source carries a URL, so nothing could be cited'
+                : cites || isShortEnoughForHandoff
+                  ? ''
+                  : `${words} words and no link to a retrieved source, over the ${HANDOFF_WORD_CAP}-word handoff cap; a reply this long has to cite what it came from`,
         },
         {
             rule: 'no-banned-phrases',
+            applicable: true,
             passed: banned.length === 0,
             detail: banned.map(({ why }) => why).join('; '),
         },
         {
             rule: 'no-hedged-names',
+            applicable: true,
             passed: hedged.length === 0,
             detail: hedged.length ? 'hedges an API name, which means it is guessing' : '',
         },
         {
             rule: 'no-dead-package',
+            applicable: true,
             passed: !DEAD_PACKAGE.test(reply) || LIVE_PACKAGE.test(reply),
             detail:
                 DEAD_PACKAGE.test(reply) && !LIVE_PACKAGE.test(reply)

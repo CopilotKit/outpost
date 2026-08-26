@@ -14,7 +14,8 @@ const DOCS = [source('Use the `CopilotChat` component with the `instructions` pr
 /** Convenience: the ids of every rule the reply violated. */
 const broken = (reply: string, sources: SearchResult[] = DOCS): string[] =>
     checkReply(reply, sources)
-        .filter((r) => !r.passed)
+        // A not-applicable rule is not a failure. See RuleResult.applicable.
+        .filter((r) => r.applicable && !r.passed)
         .map((r) => r.rule);
 
 describe('checkReply', () => {
@@ -67,18 +68,30 @@ describe('cites-or-is-a-short-handoff', () => {
         expect(broken(wordy)).toContain('cites-or-is-a-short-handoff');
     });
 
-    it('passes a long answer that links the docs', () => {
+    // Both of these cite the URL the fixture actually retrieved. An arbitrary
+    // docs-shaped URL no longer counts — see "the citation rule consults the
+    // retrieved sources" below for why.
+    it('passes a long answer that links the docs page it was given', () => {
         const wordy =
             'You can configure this in several ways. '.repeat(12) +
-            ' https://docs.copilotkit.ai/guides/configuration';
+            ' https://docs.copilotkit.ai/reference/components/chat/CopilotChat';
         expect(broken(wordy)).not.toContain('cites-or-is-a-short-handoff');
     });
 
-    it('passes a long answer that links a repo file, since code is a real answer', () => {
+    it('passes a long answer that links a retrieved repo file, since code is a real answer', () => {
+        const CODE = [
+            {
+                title: 'packages/runtime/src/agent.ts',
+                content: 'export function streamSubgraphEvents() {}',
+                score: 0.9,
+                sourceUrl:
+                    'https://github.com/CopilotKit/CopilotKit/blob/main/packages/runtime/src/agent.ts',
+            },
+        ];
         const wordy =
             'This is handled by the adapter. '.repeat(12) +
             ' https://github.com/CopilotKit/CopilotKit/blob/main/packages/runtime/src/agent.ts';
-        expect(broken(wordy)).not.toContain('cites-or-is-a-short-handoff');
+        expect(broken(wordy, CODE)).not.toContain('cites-or-is-a-short-handoff');
     });
 
     it('passes a short handoff with no link at all', () => {
@@ -90,6 +103,69 @@ describe('cites-or-is-a-short-handoff', () => {
 
 // "Nothing found -> two sentences, done." A no-answer that runs to 400 words is
 // the single thing the doc says changes the feel of the product most.
+// Both of these block promoting the rules to a linter, where a false positive
+// costs a reporter a correct answer.
+describe('the citation rule consults the retrieved sources', () => {
+    const wordy = (tail: string) => 'You can configure this in several ways. '.repeat(12) + tail;
+
+    // The URL was both the citation and the laundering: a reply could write its
+    // invented hook name INSIDE a docs.copilotkit.ai link and satisfy the rule,
+    // because the rule only checked that the link looked like ours.
+    it('rejects a link that matches no retrieved source', () => {
+        expect(
+            broken(wordy('See https://docs.copilotkit.ai/hooks/useCopilotFabricated'), DOCS),
+        ).toContain('cites-or-is-a-short-handoff');
+    });
+
+    it('accepts a link that matches a retrieved source', () => {
+        expect(
+            broken(
+                wordy('See https://docs.copilotkit.ai/reference/components/chat/CopilotChat'),
+                DOCS,
+            ),
+        ).not.toContain('cites-or-is-a-short-handoff');
+    });
+
+    it('accepts a retrieved source URL carrying an anchor or query', () => {
+        expect(
+            broken(
+                wordy(
+                    'See https://docs.copilotkit.ai/reference/components/chat/CopilotChat#slots',
+                ),
+                DOCS,
+            ),
+        ).not.toContain('cites-or-is-a-short-handoff');
+    });
+});
+
+// Pathfinder's plain-text fallback (`textSearch`) sets sourceUrl: undefined on
+// every result, so under a flat requirement a CORRECT answer built from it could
+// never cite and would always collapse into a handoff. The rule has to know the
+// difference between "did not cite" and "had nothing citable".
+describe('when no retrieved source carries a URL', () => {
+    const URL_LESS = [{ title: 'CopilotChat', content: 'Use the `CopilotChat` component.', score: 0.9 }];
+
+    it('marks the citation rule not applicable rather than failing it', () => {
+        const result = checkReply(
+            'You can configure this in several ways. '.repeat(12),
+            URL_LESS,
+        ).find((r) => r.rule === 'cites-or-is-a-short-handoff');
+
+        expect(result?.applicable).toBe(false);
+        expect(result?.detail).toMatch(/no retrieved source carries a url/i);
+    });
+
+    it('does not count a not-applicable rule as a failure', () => {
+        expect(broken('You can configure this in several ways. '.repeat(12), URL_LESS)).toEqual([]);
+    });
+
+    it('still applies every other rule', () => {
+        expect(broken('Great question! Call `useCopilotFabricated()`.', URL_LESS)).toEqual(
+            expect.arrayContaining(['no-banned-phrases', 'grounded-identifiers']),
+        );
+    });
+});
+
 describe('the handoff cap', () => {
     it('fails a handoff that pads past the cap', () => {
         const padded =
