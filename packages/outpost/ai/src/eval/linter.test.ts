@@ -103,3 +103,39 @@ describe('describeVerdict', () => {
         );
     });
 });
+
+// The harness scores the doc's metric — zero invented API names — while the
+// pipeline's groundedness gate suppresses only at two. A linter that collapsed at
+// one would withhold answers production publishes.
+describe('the metric and the publish gate are not the same', () => {
+    const SRC: SearchResult[] = [
+        {
+            title: 'CopilotChat',
+            content: 'Use the `CopilotChat` component.',
+            score: 0.9,
+            sourceUrl: 'https://docs.copilotkit.ai/reference',
+        },
+    ];
+    const cite = ' https://docs.copilotkit.ai/reference';
+
+    it('fails the metric on one invented name but still publishes', () => {
+        const reply =
+            'Call `useCopilotFabricated()` with CopilotChat as documented in the reference guide.' +
+            cite;
+        const verdict = lintDraft(reply, SRC, 'enforce');
+
+        expect(verdict.results.find((r) => r.rule === 'grounded-identifiers')?.passed).toBe(false);
+        expect(verdict.publish).toBe(true);
+        expect(verdict.failed).not.toContain('grounded-identifiers');
+    });
+
+    it('withholds at the production threshold of two', () => {
+        const reply =
+            'Call `useCopilotFabricated()` and `<CopilotInvented />` as documented in the guide.' +
+            cite;
+        const verdict = lintDraft(reply, SRC, 'enforce');
+
+        expect(verdict.publish).toBe(false);
+        expect(verdict.failed).toContain('grounded-identifiers');
+    });
+});

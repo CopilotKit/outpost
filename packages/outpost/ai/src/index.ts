@@ -47,12 +47,17 @@ export type {
     TopIssueInput,
     ScoredTopIssue,
 } from './front-door.js';
-// The rule set and the scorer are API — Phase 3's linter consumes them.
-// HISTORICAL_FAILURES and TARGET_SHAPE deliberately are NOT: they are test data,
-// and exporting them put reconstructed bad replies containing
-// `useCopilotFabricatedRender` and `@copilotkitnext/react` into dist and the
-// worker image, where they would surface in a bundle grep for the dead package.
-// Import them from './eval/harness.js' directly in tests and offline runners.
+// The rule set, the scorer and the linter are API. HISTORICAL_FAILURES and
+// TARGET_SHAPE are not re-exported here because they are test data, not a public
+// surface — import them from './eval/harness.js' directly in tests and offline
+// runners.
+//
+// Note what this does NOT do: `tsc` emits per file and `index.ts` imports
+// `./eval/harness.js` for `scoreCases`, so `dist/eval/harness.js` still ships
+// `HISTORICAL_FAILURES` with its reconstructed replies — a bundle grep for
+// `@copilotkitnext` will still hit them. Keeping them out of the build needs the
+// fixtures moved outside the compiled graph, which is a separate change; the
+// earlier version of this comment claimed a guarantee it did not deliver.
 export { checkReply, RULES, HANDOFF_WORD_CAP, MIN_REPLY_WORDS } from './eval/rules.js';
 export type { RuleId, RuleResult } from './eval/rules.js';
 export { scoreCases, formatReport } from './eval/harness.js';

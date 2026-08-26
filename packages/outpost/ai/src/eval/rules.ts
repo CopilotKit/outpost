@@ -138,6 +138,19 @@ const DEAD_PACKAGE = /@copilotkitnext\b/i;
 const LIVE_PACKAGE = /@copilotkit\/[a-z-]+/i;
 
 /**
+ * The migration framing that makes naming the dead package legitimate.
+ *
+ * Requiring only that a live `@copilotkit/` package appear somewhere was too
+ * loose: it excused the dead one with no requirement that the two be related,
+ * which waved through the exact failure Case B documents. "Install
+ * `@copilotkit/react-core` and also add `@copilotkitnext/react` for the newer
+ * surface" passed — and naming both packages as if both were current IS
+ * version-mixing, so the rule became a no-op on its own worst case.
+ */
+const MIGRATION_FRAMING =
+    /\b(?:merged into|replaced by|moved to|superseded by|switch (?:the )?(?:import|to)|instead of|use .{0,20}instead|no longer (?:exists|published|maintained)|is (?:dead|retired|deprecated))\b/i;
+
+/**
  * True when the reply links a source it was actually given.
  *
  * Checked against the retrieved `sources` rather than against a pattern for
@@ -151,7 +164,38 @@ const LIVE_PACKAGE = /@copilotkit\/[a-z-]+/i;
  * the retrieved one did not (`…/CopilotChat#slots`).
  */
 function citesARetrievedSource(reply: string, sources: SearchResult[]): boolean {
-    return sources.some((s) => s.sourceUrl && reply.includes(s.sourceUrl));
+    // Scheme and host lowercased on both sides: they are case-insensitive in
+    // practice, and models and reporters both echo mixed-case hostnames. A
+    // case-sensitive compare withheld a correctly-cited answer.
+    const normalise = (text: string) =>
+        text.replace(/[a-z]+:\/\/[^/\s]+/gi, (m) => m.toLowerCase());
+    const haystack = normalise(reply);
+
+    return sources.some((s) => {
+        if (!s.sourceUrl) return false;
+        const needle = normalise(s.sourceUrl).replace(/[/#?]+$/, '');
+        let from = 0;
+        for (;;) {
+            const at = haystack.indexOf(needle, from);
+            if (at === -1) return false;
+            // A bare `includes` accepted anything APPENDED to a retrieved URL, so
+            // the laundering simply moved one level deeper: retrieval routinely
+            // returns a section or index URL, and
+            // `…/reference/hooks/useCopilotFabricated` counted as citing
+            // `…/reference`. The character after the match has to end the URL
+            // rather than continue its path.
+            const next = haystack[at + needle.length];
+            if (
+                next === undefined ||
+                /[\s)\]}.,;"'<>]/.test(next) ||
+                next === '#' ||
+                next === '?'
+            ) {
+                return true;
+            }
+            from = at + 1;
+        }
+    });
 }
 
 export const RULES = [
@@ -181,6 +225,23 @@ export interface RuleResult {
      * in play. "Did not cite" and "had nothing citable" are different facts.
      */
     applicable: boolean;
+    /**
+     * Whether this failure should stop the draft publishing, as opposed to being
+     * worth reporting.
+     *
+     * The two are not the same, and collapsing them made the linter stricter than
+     * the pipeline it sits beside. `grounded-identifiers` is the case that forced
+     * the split: the doc's success criterion is *zero* invented API names, so one
+     * occurrence has to show up in a score — but `groundedness.ts` suppresses only
+     * at SUPPRESS_AT_UNSOURCED_IDENTIFIERS = 2, reasoning that "one could be a
+     * formatting artifact; two is a pattern of fabrication". Gating a publish at
+     * one withholds answers production would publish, which is the
+     * false-withholding direction both modules warn about.
+     *
+     * So the harness scores against `passed` and the linter gates on
+     * `blocksPublish`. For every other rule the two agree.
+     */
+    blocksPublish: boolean;
     /** Why it failed, or why it was not applicable. Empty when it passed. */
     detail: string;
 }
@@ -215,6 +276,8 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
     return [
         {
             rule: 'says-something',
+            // Metric and gate agree for this rule.
+            blocksPublish: !(words >= MIN_REPLY_WORDS),
             applicable: true,
             passed: words >= MIN_REPLY_WORDS,
             detail:
@@ -225,9 +288,14 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
         {
             rule: 'grounded-identifiers',
             applicable: true,
+            // The doc's criterion is ZERO invented API names, so one fails the
+            // metric. The publish gate is the pipeline's own threshold, so one does
+            // not withhold the answer. See RuleResult.blocksPublish.
             passed: groundedness.unsourcedIdentifiers.length === 0,
+            blocksPublish: groundedness.suppress,
             detail: groundedness.unsourcedIdentifiers.length
-                ? `names not present in any source: ${groundedness.unsourcedIdentifiers.join(', ')}`
+                ? `names not present in any source: ${groundedness.unsourcedIdentifiers.join(', ')}` +
+                  (groundedness.suppress ? '' : ' (below the suppression threshold)')
                 : '',
         },
         {
@@ -236,25 +304,37 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
             // which presented five independent signals as six and double-counted
             // every failure in both the per-rule table and the report.
             rule: 'cites-or-is-a-short-handoff',
-            // A short handoff needs no citation, so the length escape keeps the
-            // rule applicable even with nothing citable. It only goes
-            // not-applicable when the reply is long AND there was no URL to cite.
-            applicable: anySourceHasUrl || isShortEnoughForHandoff,
+            // Metric and gate agree for this rule.
+            blocksPublish: !(cites || isShortEnoughForHandoff),
+            // Not-applicable ONLY when retrieval returned results that happen to
+            // carry no URL — Pathfinder's plain-text fallback, where a correct
+            // answer has nothing it could cite.
+            //
+            // `sources: []` is a different fact and must still fail: a long,
+            // uncited reply built on zero retrieval is the doc's Case A, the
+            // exact input where the citation requirement matters most. Treating
+            // the two the same let that reply publish under enforcement.
+            applicable: isShortEnoughForHandoff || sources.length === 0 || anySourceHasUrl,
             passed: cites || isShortEnoughForHandoff,
-            detail: !anySourceHasUrl && !isShortEnoughForHandoff
-                ? 'not evaluated: no retrieved source carries a URL, so nothing could be cited'
-                : cites || isShortEnoughForHandoff
-                  ? ''
-                  : `${words} words and no link to a retrieved source, over the ${HANDOFF_WORD_CAP}-word handoff cap; a reply this long has to cite what it came from`,
+            detail:
+                sources.length > 0 && !anySourceHasUrl && !isShortEnoughForHandoff
+                    ? 'not evaluated: retrieval returned results but none carries a URL, so nothing could be cited'
+                    : cites || isShortEnoughForHandoff
+                      ? ''
+                      : `${words} words and no link to a retrieved source, over the ${HANDOFF_WORD_CAP}-word handoff cap; a reply this long has to cite what it came from`,
         },
         {
             rule: 'no-banned-phrases',
+            // Metric and gate agree for this rule.
+            blocksPublish: !(banned.length === 0),
             applicable: true,
             passed: banned.length === 0,
             detail: banned.map(({ why }) => why).join('; '),
         },
         {
             rule: 'no-hedged-names',
+            // Metric and gate agree for this rule.
+            blocksPublish: !(hedged.length === 0),
             applicable: true,
             passed: hedged.length === 0,
             detail: hedged.length ? 'hedges an API name, which means it is guessing' : '',
@@ -262,11 +342,18 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
         {
             rule: 'no-dead-package',
             applicable: true,
-            passed: !DEAD_PACKAGE.test(reply) || LIVE_PACKAGE.test(reply),
-            detail:
-                DEAD_PACKAGE.test(reply) && !LIVE_PACKAGE.test(reply)
-                    ? 'mentions @copilotkitnext without naming the @copilotkit/ package that replaced it'
-                    : '',
+            passed:
+                !DEAD_PACKAGE.test(reply) ||
+                (LIVE_PACKAGE.test(reply) && MIGRATION_FRAMING.test(reply)),
+            blocksPublish: !(
+                !DEAD_PACKAGE.test(reply) ||
+                (LIVE_PACKAGE.test(reply) && MIGRATION_FRAMING.test(reply))
+            ),
+            detail: !DEAD_PACKAGE.test(reply)
+                ? ''
+                : LIVE_PACKAGE.test(reply)
+                  ? 'names @copilotkitnext alongside a live package but not as a migration — reads as if both are current, which is the version-mixing failure'
+                  : 'mentions @copilotkitnext without naming the @copilotkit/ package that replaced it',
         },
     ];
 }

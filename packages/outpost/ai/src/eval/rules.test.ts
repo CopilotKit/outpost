@@ -129,9 +129,7 @@ describe('the citation rule consults the retrieved sources', () => {
     it('accepts a retrieved source URL carrying an anchor or query', () => {
         expect(
             broken(
-                wordy(
-                    'See https://docs.copilotkit.ai/reference/components/chat/CopilotChat#slots',
-                ),
+                wordy('See https://docs.copilotkit.ai/reference/components/chat/CopilotChat#slots'),
                 DOCS,
             ),
         ).not.toContain('cites-or-is-a-short-handoff');
@@ -142,8 +140,89 @@ describe('the citation rule consults the retrieved sources', () => {
 // every result, so under a flat requirement a CORRECT answer built from it could
 // never cite and would always collapse into a handoff. The rule has to know the
 // difference between "did not cite" and "had nothing citable".
+// Zero retrieval and retrieval-without-URLs are different facts. Treating them
+// the same let the doc's Case A — a long, uncited reply built on nothing — publish
+// under enforcement, which is the single input where citing matters most.
+describe('when retrieval returned nothing at all', () => {
+    it('still requires a citation, so a long uncited non-answer fails', () => {
+        const failed = broken(
+            'Deep Agents probably supports subagents in some form. '.repeat(8),
+            [],
+        );
+        expect(failed).toContain('cites-or-is-a-short-handoff');
+    });
+
+    it('still lets a short handoff through', () => {
+        expect(
+            broken('Nothing in the docs or source covers this. Routing it to the team.', []),
+        ).toEqual([]);
+    });
+});
+
+// A bare `includes` accepted anything appended to a retrieved URL, so the
+// laundering just moved a level deeper — retrieval routinely returns section and
+// index URLs.
+describe('citation boundaries', () => {
+    const SECTION = [
+        {
+            title: 'Reference',
+            content: 'Use the `CopilotChat` component.',
+            score: 0.9,
+            sourceUrl: 'https://docs.copilotkit.ai/reference',
+        },
+    ];
+    const wordy = (tail: string) => 'You can configure this in several ways. '.repeat(12) + tail;
+
+    it('rejects an invented path appended to a retrieved URL', () => {
+        expect(
+            broken(
+                wordy('See https://docs.copilotkit.ai/reference/hooks/useCopilotFabricated'),
+                SECTION,
+            ),
+        ).toContain('cites-or-is-a-short-handoff');
+    });
+
+    it('accepts the retrieved URL itself, with an anchor', () => {
+        expect(
+            broken(wordy('See https://docs.copilotkit.ai/reference#slots'), SECTION),
+        ).not.toContain('cites-or-is-a-short-handoff');
+    });
+
+    // Scheme and host are case-insensitive in practice, and both models and
+    // reporters echo mixed-case hostnames. A case-sensitive compare withheld a
+    // correctly-cited answer.
+    it('accepts a mixed-case scheme and host', () => {
+        expect(broken(wordy('See HTTPS://DOCS.COPILOTKIT.AI/reference'), SECTION)).not.toContain(
+            'cites-or-is-a-short-handoff',
+        );
+    });
+});
+
+// Naming a live package alone excused the dead one with no requirement that the
+// two be related — which waved through Case B's own failure mode, since naming
+// both as if both were current IS version-mixing.
+describe('the dead-package carve-out needs migration framing', () => {
+    it('rejects naming both packages as if both were current', () => {
+        expect(
+            broken(
+                'Install `@copilotkit/react-core` and also add `@copilotkitnext/react` for the newer surface here.',
+            ),
+        ).toContain('no-dead-package');
+    });
+
+    it('accepts a genuine migration instruction', () => {
+        expect(
+            broken(
+                "You're importing `@copilotkitnext/react`, which merged into `@copilotkit/react-core` v2 — switch the import.",
+            ),
+        ).not.toContain('no-dead-package');
+    });
+});
+
 describe('when no retrieved source carries a URL', () => {
-    const URL_LESS = [{ title: 'CopilotChat', content: 'Use the `CopilotChat` component.', score: 0.9 }];
+    const URL_LESS = [
+        { title: 'CopilotChat', content: 'Use the `CopilotChat` component.', score: 0.9 },
+    ];
 
     it('marks the citation rule not applicable rather than failing it', () => {
         const result = checkReply(
@@ -152,7 +231,7 @@ describe('when no retrieved source carries a URL', () => {
         ).find((r) => r.rule === 'cites-or-is-a-short-handoff');
 
         expect(result?.applicable).toBe(false);
-        expect(result?.detail).toMatch(/no retrieved source carries a url/i);
+        expect(result?.detail).toMatch(/none carries a url/i);
     });
 
     it('does not count a not-applicable rule as a failure', () => {

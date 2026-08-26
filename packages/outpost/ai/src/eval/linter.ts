@@ -70,7 +70,11 @@ export function lintDraft(
     mode: LintMode = 'report',
 ): LintVerdict {
     const results = checkReply(reply, sources);
-    const broken = results.filter((r) => r.applicable && !r.passed);
+    // Gates on `blocksPublish`, not on `passed`. The harness scores the doc's
+    // metric — zero invented API names — while the pipeline's groundedness gate
+    // suppresses only at two, and a linter that collapsed at one would withhold
+    // answers production publishes. See RuleResult.blocksPublish.
+    const broken = results.filter((r) => r.applicable && r.blocksPublish);
 
     return {
         publish: mode === 'report' ? true : broken.length === 0,

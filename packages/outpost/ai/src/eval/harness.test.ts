@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { scoreCases, formatReport, HISTORICAL_FAILURES, TARGET_SHAPE } from './harness.js';
 import { RULES } from './rules.js';
+import type { SearchResult } from '../types.js';
 
 describe('scoreCases', () => {
     it('reports every rule for every case', () => {
@@ -70,6 +71,37 @@ describe('the target shape passes', () => {
 describe('an empty case list', () => {
     it('is refused rather than scored as clean', () => {
         expect(() => scoreCases([])).toThrow(/no cases/i);
+    });
+});
+
+// A not-applicable rule carries `passed: false`, so an unfiltered failing-cases
+// block printed `n/a` for a rule and then listed it as a failure two lines later —
+// re-creating the double-counting in the human-readable output.
+describe('the report does not list an unevaluated rule as a failure', () => {
+    const urlLess: SearchResult[] = [
+        { title: 'CopilotChat', content: 'Use the `CopilotChat` component.', score: 0.9 },
+    ];
+    const report = () =>
+        formatReport(
+            scoreCases([
+                {
+                    id: 'c1',
+                    question: 'q',
+                    reply: 'Great question! ' + 'padding word '.repeat(30),
+                    sources: urlLess,
+                    provenance: 'test',
+                },
+            ]),
+        );
+
+    it('marks the citation rule n/a in the per-rule table', () => {
+        expect(report()).toContain('n/a  cites-or-is-a-short-handoff: 0/0');
+    });
+
+    it('does not repeat it under the failing cases', () => {
+        const failingBlock = report().split('Failing cases:')[1] ?? '';
+        expect(failingBlock).toContain('no-banned-phrases');
+        expect(failingBlock).not.toContain('cites-or-is-a-short-handoff');
     });
 });
 

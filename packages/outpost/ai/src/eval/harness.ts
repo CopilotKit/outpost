@@ -122,7 +122,12 @@ export function formatReport(report: EvalReport): string {
         lines.push('', 'Failing cases:');
         for (const c of dirty) {
             lines.push(`  ${c.id}`);
-            for (const r of c.results.filter((r) => !r.passed)) {
+            // Filtered on `applicable` as well: a not-applicable rule carries
+            // `passed: false`, so without this the report printed `n/a` for a rule
+            // two lines above and then listed it as a failure — re-creating in the
+            // human-readable output exactly the double-counting removed from
+            // `perRule`.
+            for (const r of c.results.filter((r) => r.applicable && !r.passed)) {
                 lines.push(`    - ${r.rule}: ${r.detail}`);
             }
         }
