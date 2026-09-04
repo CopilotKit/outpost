@@ -35,6 +35,7 @@ vi.mock('discord.js', async (importOriginal) => {
 import { handleMessageCreate } from '../events/message-create.js';
 import { prisma } from '@copilotkit/outpost/db';
 import { createJob } from '@copilotkit/outpost/queue';
+import { isShadowMode, handleShadowMessage } from '../lib/shadow-mode.js';
 
 const TICKET = {
     id: 'ticket-1',
@@ -68,6 +69,7 @@ function makeMessage(overrides: Record<string, unknown> = {}) {
 
 describe('handleMessageCreate', () => {
     beforeEach(() => {
+        vi.mocked(isShadowMode).mockReturnValue(false);
         // findTicketByThreadId returns the existing ticket
         vi.mocked(prisma.ticket.findFirst).mockResolvedValue(TICKET as ReturnType<typeof prisma.ticket.findFirst> extends Promise<infer T> ? T : never);
         vi.mocked(prisma.message.create).mockResolvedValue({
@@ -147,6 +149,53 @@ describe('handleMessageCreate', () => {
             where: { id: 'ticket-1' },
             data: { status: 'OPEN' },
         });
+    });
+
+    // Regression: Discord dispatches BOTH ThreadCreate and MessageCreate for a
+    // new forum post. handleThreadCreate already ingests the starter message,
+    // so handling it again here enqueued a SECOND AI_RESPONSE job for the same
+    // ticket — the same question retrieved and answered twice, ~0.2s apart.
+    // A thread's starter message shares the thread's own ID.
+    it('ignores the thread starter message already ingested by ThreadCreate', async () => {
+        const starter = makeMessage({ id: 'thread-123' });
+
+        await handleMessageCreate(starter);
+
+        expect(prisma.ticket.findFirst).not.toHaveBeenCalled();
+        expect(prisma.message.create).not.toHaveBeenCalled();
+        expect(createJob).not.toHaveBeenCalled();
+    });
+
+    it('ignores the thread starter message in shadow mode too', async () => {
+        vi.mocked(isShadowMode).mockReturnValue(true);
+        const starter = makeMessage({ id: 'thread-123' });
+
+        await handleMessageCreate(starter);
+
+        expect(handleShadowMessage).not.toHaveBeenCalled();
+        expect(createJob).not.toHaveBeenCalled();
+    });
+
+    // The gate above must not swallow real replies. Asserted on the message
+    // record rather than on an enqueue: since #172/#191, `InboundHandler` never
+    // enqueues AI_RESPONSE for a reply on ANY platform — Outpost answers once per
+    // ticket, on the opening message, and a human owns the thread after that. This
+    // test predates that rule and asserted the enqueue, which is why it survived
+    // the textual merge and then failed. What it is actually here to prove is that
+    // `message.id === threadId` distinguishes the starter message from a reply,
+    // and the message record is what shows that.
+    it('still processes genuine replies in the same thread', async () => {
+        const reply = makeMessage({ id: 'msg-777' });
+
+        await handleMessageCreate(reply);
+
+        expect(prisma.message.create).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({ ticketId: 'ticket-1', type: 'USER' }),
+            }),
+        );
+        // And the one-answer rule still holds: a reply enqueues nothing.
+        expect(createJob).not.toHaveBeenCalled();
     });
 
     it('uses DiscordAdapter.parseInboundEvent to normalize message events', async () => {

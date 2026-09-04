@@ -35,6 +35,15 @@ export const config = {
     /** Maximum tokens for classification */
     maxClassifierTokens: 512,
 
+    /** Model used to distill a raw message body into a docs-search query (cheap, fast) */
+    queryDistillerModel: process.env.AI_QUERY_DISTILLER_MODEL ?? 'claude-haiku-4-5-20251001',
+
+    /** Maximum tokens for query distillation — the output is one short query */
+    maxQueryDistillerTokens: 128,
+
+    /** Temperature for query distillation (lower = more deterministic) */
+    queryDistillerTemperature: 0,
+
     /** Model used for sentiment analysis (cheap, fast) */
     sentimentModel: process.env.AI_SENTIMENT_MODEL ?? 'claude-haiku-4-5-20251001',
 

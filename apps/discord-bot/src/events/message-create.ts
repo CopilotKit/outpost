@@ -37,6 +37,14 @@ export async function handleMessageCreate(message: Message): Promise<void> {
 
     const threadId = message.channel.id;
 
+    // Discord dispatches BOTH ThreadCreate and MessageCreate for a new forum
+    // post, and handleThreadCreate has already ingested this exact message as
+    // the ticket's first message. Processing it again enqueues a second
+    // AI_RESPONSE job for the same ticket, so the same question is retrieved
+    // and answered twice. A thread's starter message shares the thread's ID —
+    // that identity is what makes this detectable.
+    if (message.id === threadId) return;
+
     try {
         // Look up the ticket associated with this thread (for shadow mode check)
         const ticket = await findTicketByThreadId(threadId);

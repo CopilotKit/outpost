@@ -19,6 +19,7 @@ import {
     AI_DISCLAIMER_REVIEWED,
     ResponseFormatter,
 } from './formatter.js';
+import { SearchQueryBuilder } from './query.js';
 import { validateConfig } from './config.js';
 
 /**
@@ -68,6 +69,7 @@ export class AIPipeline {
     private confidenceScorer: ConfidenceScorer;
     private classifier: TicketClassifier;
     private formatter: ResponseFormatter;
+    private queryBuilder: SearchQueryBuilder;
 
     constructor(options?: {
         pathfinder?: PathfinderClient;
@@ -75,6 +77,7 @@ export class AIPipeline {
         confidenceScorer?: ConfidenceScorer;
         classifier?: TicketClassifier;
         formatter?: ResponseFormatter;
+        queryBuilder?: SearchQueryBuilder;
     }) {
         validateConfig();
         this.pathfinder = options?.pathfinder ?? new PathfinderClient();
@@ -82,6 +85,7 @@ export class AIPipeline {
         this.confidenceScorer = options?.confidenceScorer ?? new ConfidenceScorer();
         this.classifier = options?.classifier ?? new TicketClassifier();
         this.formatter = options?.formatter ?? new ResponseFormatter();
+        this.queryBuilder = options?.queryBuilder ?? new SearchQueryBuilder();
     }
 
     /**
@@ -97,11 +101,18 @@ export class AIPipeline {
         const startTime = Date.now();
         const totalTokenUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
+        // Step 0: Strip platform markup and distill a focused search query.
+        // The raw body carries mentions, custom emoji, pasted channel sidebars,
+        // and issue-template boilerplate — none of which belongs in an embedding.
+        const searchQuery = await this.queryBuilder.build(question);
+        totalTokenUsage.inputTokens += searchQuery.tokenUsage.inputTokens;
+        totalTokenUsage.outputTokens += searchQuery.tokenUsage.outputTokens;
+
         // Step 1: Query Pathfinder for relevant content
         let searchResults: SearchResult[];
         try {
             searchResults = await this.pathfinder.searchDocs({
-                query: question,
+                query: searchQuery.query,
             });
         } catch (error) {
             console.error(
@@ -110,9 +121,12 @@ export class AIPipeline {
             searchResults = [];
         }
 
-        // Step 2: Generate response
+        // Step 2: Generate response.
+        // Generation gets the SANITIZED body, not the distilled query — the
+        // distillation is lossy on purpose and only good enough for retrieval,
+        // while the answer needs the reporter's full context and code.
         const pipelineContext: PipelineContext = {
-            question,
+            question: searchQuery.sanitized,
             source: options.source,
         };
 
@@ -126,7 +140,7 @@ export class AIPipeline {
         // (sequential, not parallel — the scorer needs the real text to
         // produce a meaningful signal, not a retrieval-quality proxy).
         const confidenceAssessment = await this.confidenceScorer
-            .score(question, generatedResponse.text, searchResults)
+            .score(searchQuery.sanitized, generatedResponse.text, searchResults)
             .catch((error) => {
                 console.error(
                     `[Pipeline] Confidence scoring failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -325,11 +339,14 @@ export class AIPipeline {
         question: string,
         options: PipelineOptions,
     ): AsyncIterable<string> {
+        // Sanitize + distill first, same as the non-streaming path.
+        const searchQuery = await this.queryBuilder.build(question);
+
         // Fetch search results first
         let searchResults: SearchResult[];
         try {
             searchResults = await this.pathfinder.searchDocs({
-                query: question,
+                query: searchQuery.query,
             });
         } catch (error) {
             console.error(
@@ -340,7 +357,7 @@ export class AIPipeline {
         }
 
         const pipelineContext: PipelineContext = {
-            question,
+            question: searchQuery.sanitized,
             source: options.source,
         };
 

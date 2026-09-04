@@ -11,14 +11,17 @@ vi.mock('../lib/shadow-mode.js', () => ({
     handleShadowThreadCreate: vi.fn().mockResolvedValue('shadow-ticket-id'),
 }));
 
-vi.mock('../config.js', () => ({
-    config: {
+// Mutable so the fail-closed case can empty MONITORED_CHANNEL_IDS.
+const { testConfig } = vi.hoisted(() => ({
+    testConfig: {
         discordToken: 'test-token',
         clientId: 'test-client-id',
         guildId: 'test-guild-id',
-        monitoredChannelIds: ['forum-channel-1'],
+        monitoredChannelIds: ['forum-channel-1'] as string[],
     },
 }));
+
+vi.mock('../config.js', () => ({ config: testConfig }));
 
 // Mock discord.js REST to prevent real HTTP calls
 vi.mock('discord.js', async (importOriginal) => {
@@ -36,6 +39,7 @@ vi.mock('discord.js', async (importOriginal) => {
 import { handleThreadCreate } from '../events/thread-create.js';
 import { prisma } from '@copilotkit/outpost/db';
 import { createJob } from '@copilotkit/outpost/queue';
+import { isShadowMode, handleShadowThreadCreate } from '../lib/shadow-mode.js';
 import { PlatformDiscordAdapter } from '@copilotkit/outpost/shared/platforms';
 
 function makeThread(overrides: Record<string, unknown> = {}) {
@@ -57,6 +61,9 @@ function makeThread(overrides: Record<string, unknown> = {}) {
 
 describe('handleThreadCreate', () => {
     beforeEach(() => {
+        testConfig.monitoredChannelIds = ['forum-channel-1'];
+        vi.mocked(isShadowMode).mockReturnValue(false);
+
         vi.mocked(prisma.ticket.create).mockResolvedValue({
             id: 'ticket-internal-id',
             displayId: 'TKT-AB12CD34',
@@ -202,6 +209,78 @@ describe('handleThreadCreate', () => {
         );
 
         consoleSpy.mockRestore();
+    });
+
+    // An unset MONITORED_CHANNEL_IDS used to mean "monitor every channel", so a
+    // missing env var silently opted the whole guild into a retrieval +
+    // generation cycle per thread. It now fails closed.
+    it('ignores every thread when MONITORED_CHANNEL_IDS is empty', async () => {
+        testConfig.monitoredChannelIds = [];
+
+        await handleThreadCreate(makeThread(), true);
+
+        expect(prisma.ticket.create).not.toHaveBeenCalled();
+        expect(createJob).not.toHaveBeenCalled();
+    });
+
+    // Announcements and release notes are threads too — they should not spend a
+    // full retrieval + generation cycle.
+    it('ignores a thread that does not read as a support request', async () => {
+        const thread = makeThread({
+            name: 'v1.10.0 released',
+            fetchStarterMessage: vi.fn().mockResolvedValue({
+                content: 'v1.10.0 is out. Release notes are in the changelog.',
+                author: { tag: 'Maintainer#0001', id: 'user-1', username: 'Maintainer' },
+            }),
+        });
+
+        await handleThreadCreate(thread, true);
+
+        expect(prisma.ticket.create).not.toHaveBeenCalled();
+        expect(createJob).not.toHaveBeenCalled();
+    });
+
+    it('answers an announcement-shaped thread that @-mentions the bot', async () => {
+        const thread = makeThread({
+            name: 'v1.10.0 released',
+            fetchStarterMessage: vi.fn().mockResolvedValue({
+                content: '<@test-client-id> v1.10.0 is out. Notes in the changelog.',
+                author: { tag: 'Maintainer#0001', id: 'user-1', username: 'Maintainer' },
+            }),
+        });
+
+        await handleThreadCreate(thread, true);
+
+        expect(prisma.ticket.create).toHaveBeenCalled();
+    });
+
+    it('answers a thread whose question is only in the title', async () => {
+        const thread = makeThread({
+            name: 'How do I render generative UI?',
+            fetchStarterMessage: vi.fn().mockResolvedValue({
+                content: 'Details below.',
+                author: { tag: 'TestUser#1234', id: 'user-456', username: 'TestUser' },
+            }),
+        });
+
+        await handleThreadCreate(thread, true);
+
+        expect(prisma.ticket.create).toHaveBeenCalled();
+    });
+
+    it('applies the support-request gate in shadow mode too', async () => {
+        vi.mocked(isShadowMode).mockReturnValue(true);
+        const thread = makeThread({
+            name: 'v1.10.0 released',
+            fetchStarterMessage: vi.fn().mockResolvedValue({
+                content: 'v1.10.0 is out. Release notes are in the changelog.',
+                author: { tag: 'Maintainer#0001', id: 'user-1', username: 'Maintainer' },
+            }),
+        });
+
+        await handleThreadCreate(thread, true);
+
+        expect(handleShadowThreadCreate).not.toHaveBeenCalled();
     });
 
     it('uses DiscordAdapter.parseInboundEvent to normalize the thread event', async () => {

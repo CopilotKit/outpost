@@ -16,6 +16,8 @@ export {
     AI_DISCLAIMER_REVIEWED,
     ResponseFormatter,
 } from './formatter.js';
+export { SearchQueryBuilder, heuristicSearchQuery } from './query.js';
+export type { SearchQuery } from './query.js';
 export { AIPipeline, SUPPRESSED_RESPONSE_TEXT } from './pipeline.js';
 export { analyzeSentiment } from './sentiment.js';
 export { scoreEngagement } from './engagement.js';

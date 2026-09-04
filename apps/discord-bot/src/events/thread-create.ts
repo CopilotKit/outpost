@@ -2,7 +2,7 @@ import { ChannelType, type ThreadChannel } from 'discord.js';
 import { prisma } from '@copilotkit/outpost/db';
 import { createJob } from '@copilotkit/outpost/queue';
 import { PlatformDiscordAdapter, InboundHandler } from '@copilotkit/outpost/shared/platforms';
-import { generateTicketId } from '@copilotkit/outpost/shared';
+import { generateTicketId, isSupportRequest } from '@copilotkit/outpost/shared';
 import type { CreateJobFn } from '@copilotkit/outpost/shared';
 import { config } from '../config.js';
 import { isShadowMode, handleShadowThreadCreate } from '../lib/shadow-mode.js';
@@ -25,6 +25,26 @@ const createJobFn: CreateJobFn = async (
     );
 };
 
+/** Log the unconfigured-channel warning once, not once per thread. */
+let warnedUnconfiguredChannels = false;
+function warnUnconfiguredChannels(): void {
+    if (warnedUnconfiguredChannels) return;
+    warnedUnconfiguredChannels = true;
+    console.warn(
+        '[Discord Bot] MONITORED_CHANNEL_IDS is empty — ignoring all threads. ' +
+            'Set it to the forum channel IDs Outpost should answer in.',
+    );
+}
+
+/**
+ * A forum post's title often carries the question while the body carries the
+ * repro, so both are considered. The bot's own application ID doubles as its
+ * user ID, so an @-mention of the bot always qualifies.
+ */
+function shouldAnswer(threadName: string, content: string): boolean {
+    return isSupportRequest(`${threadName}\n${content}`, { botUserId: config.clientId });
+}
+
 export async function handleThreadCreate(thread: ThreadChannel, newlyCreated: boolean): Promise<void> {
     if (!newlyCreated) return;
 
@@ -32,13 +52,15 @@ export async function handleThreadCreate(thread: ThreadChannel, newlyCreated: bo
     const parentId = thread.parentId;
     if (!parentId) return;
 
-    // If monitoredChannelIds is configured, only track those channels.
-    // If empty, monitor all channels (useful for development).
-    const isMonitored =
-        config.monitoredChannelIds.length === 0 ||
-        config.monitoredChannelIds.includes(parentId);
+    // Fail CLOSED on an unset MONITORED_CHANNEL_IDS. Treating "empty" as
+    // "every channel" meant a missing env var silently opted the whole guild
+    // into a retrieval + generation cycle per thread.
+    if (config.monitoredChannelIds.length === 0) {
+        warnUnconfiguredChannels();
+        return;
+    }
 
-    if (!isMonitored) return;
+    if (!config.monitoredChannelIds.includes(parentId)) return;
 
     // Only handle public/private threads (includes forum posts)
     if (
@@ -52,6 +74,12 @@ export async function handleThreadCreate(thread: ThreadChannel, newlyCreated: bo
     if (isShadowMode()) {
         const starterMessage = await thread.fetchStarterMessage();
         const content = starterMessage?.content ?? '';
+        if (!shouldAnswer(thread.name, content)) {
+            console.log(
+                `[Discord Bot] Thread ${thread.id} does not read as a support request, skipping`,
+            );
+            return;
+        }
         const authorTag = starterMessage?.author.tag ?? 'Unknown';
         const authorId = starterMessage?.author.id ?? '';
         const displayId = generateTicketId();
@@ -70,6 +98,15 @@ export async function handleThreadCreate(thread: ThreadChannel, newlyCreated: bo
     try {
         // Fetch the starter message (first message in the thread)
         const starterMessage = await thread.fetchStarterMessage();
+
+        // Announcements and release notes are threads too — only spend a full
+        // retrieval + generation cycle on something that reads like a question.
+        if (!shouldAnswer(thread.name, starterMessage?.content ?? '')) {
+            console.log(
+                `[Discord Bot] Thread ${thread.id} does not read as a support request, skipping`,
+            );
+            return;
+        }
 
         // Parse the raw event through the platform adapter
         const inboundMessage = adapter.parseInboundEvent({

@@ -32,9 +32,13 @@ const mockHeuristicScore = vi.fn();
 const mockClassify = vi.fn();
 const mockHeuristicClassify = vi.fn();
 const mockFormat = vi.fn();
+const mockBuildQuery = vi.fn();
 
 function createPipeline() {
     return new AIPipeline({
+        queryBuilder: {
+            build: mockBuildQuery,
+        } as never,
         pathfinder: {
             searchDocs: mockSearchDocs,
             exploreDocs: vi.fn(),
@@ -94,7 +98,14 @@ describe('AIPipeline', () => {
         vi.resetAllMocks();
         pipeline = createPipeline();
 
-        // Set up defaults
+        // Set up defaults. The query builder passes the question through
+        // untouched unless a test overrides it.
+        mockBuildQuery.mockImplementation(async (question: string) => ({
+            query: question,
+            sanitized: question,
+            degraded: false,
+            tokenUsage: { inputTokens: 0, outputTokens: 0 },
+        }));
         mockSearchDocs.mockResolvedValue(sampleSearchResults);
         mockGenerate.mockResolvedValue(sampleGeneratedResponse);
         mockScore.mockResolvedValue(sampleConfidence);
@@ -117,6 +128,64 @@ describe('AIPipeline', () => {
             expect(result.tokenUsage.inputTokens).toBe(700); // 500 + 200
             expect(result.tokenUsage.outputTokens).toBe(130); // 100 + 30
             expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+        });
+
+        // Regression: the raw inbound body used to be forwarded verbatim as the
+        // docs-search query, so Discord mentions, custom emoji, pasted channel
+        // sidebars, and issue-template boilerplate all reached the embedder.
+        it('searches with the distilled query, not the raw body', async () => {
+            const rawBody = '<@!123> hey <#456> — how do I render generative UI?';
+            mockBuildQuery.mockResolvedValue({
+                query: 'render generative UI',
+                sanitized: 'hey — how do I render generative UI?',
+                degraded: false,
+                tokenUsage: { inputTokens: 40, outputTokens: 8 },
+            });
+
+            await pipeline.generateSupportResponse(rawBody, { source: 'discord' });
+
+            expect(mockBuildQuery).toHaveBeenCalledWith(rawBody);
+            expect(mockSearchDocs).toHaveBeenCalledWith({ query: 'render generative UI' });
+        });
+
+        it('generates from the sanitized body, not the distilled query', async () => {
+            mockBuildQuery.mockResolvedValue({
+                query: 'render generative UI',
+                sanitized: 'hey — how do I render generative UI?',
+                degraded: false,
+                tokenUsage: { inputTokens: 40, outputTokens: 8 },
+            });
+
+            await pipeline.generateSupportResponse('<@!123> hey — how do I render generative UI?', {
+                source: 'discord',
+            });
+
+            expect(mockGenerate).toHaveBeenCalledWith(
+                expect.objectContaining({ question: 'hey — how do I render generative UI?' }),
+                expect.any(Array),
+                undefined,
+            );
+            expect(mockScore).toHaveBeenCalledWith(
+                'hey — how do I render generative UI?',
+                expect.any(String),
+                expect.any(Array),
+            );
+        });
+
+        it('counts the distiller tokens in the aggregate usage', async () => {
+            mockBuildQuery.mockResolvedValue({
+                query: 'render generative UI',
+                sanitized: 'how do I render generative UI?',
+                degraded: false,
+                tokenUsage: { inputTokens: 40, outputTokens: 8 },
+            });
+
+            const result = await pipeline.generateSupportResponse('question', {
+                source: 'discord',
+            });
+
+            expect(result.tokenUsage.inputTokens).toBe(740); // 40 + 500 + 200
+            expect(result.tokenUsage.outputTokens).toBe(138); // 8 + 100 + 30
         });
 
         it('should pass the source channel into the generator context', async () => {
@@ -845,6 +914,12 @@ describe('AIPipeline confidence calibration', () => {
     beforeEach(() => {
         vi.resetAllMocks();
         pipeline = createPipeline();
+        mockBuildQuery.mockImplementation(async (question: string) => ({
+            query: question,
+            sanitized: question,
+            degraded: false,
+            tokenUsage: { inputTokens: 0, outputTokens: 0 },
+        }));
         mockSearchDocs.mockResolvedValue(sampleSearchResults);
         mockGenerate.mockResolvedValue(sampleGeneratedResponse); // generator score 0.85
         mockScore.mockResolvedValue({
