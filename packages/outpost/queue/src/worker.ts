@@ -45,7 +45,9 @@ export class Worker {
         this.pollIntervalMs = options?.pollIntervalMs ?? 1000;
         this.batchSize = options?.batchSize ?? 10;
         this.maxConcurrency = options?.maxConcurrency ?? 5;
-        this.concurrencyByType = (options?.concurrencyByType ?? {}) as Partial<Record<string, number>>;
+        this.concurrencyByType = (options?.concurrencyByType ?? {}) as Partial<
+            Record<string, number>
+        >;
         this.jobTimeouts = options?.jobTimeouts ?? {};
         this.defaultTimeoutMs = options?.defaultTimeoutMs ?? 30_000;
     }
@@ -89,7 +91,9 @@ export class Worker {
 
         // Wait for active jobs to finish
         if (this.activeJobs.size > 0) {
-            console.log(`[Queue Worker] Waiting for ${this.activeJobs.size} active jobs to complete...`);
+            console.log(
+                `[Queue Worker] Waiting for ${this.activeJobs.size} active jobs to complete...`,
+            );
             await new Promise<void>((resolve) => {
                 this.shutdownResolve = resolve;
                 // Check immediately in case jobs finished between the check and setting the resolver
@@ -287,7 +291,15 @@ export class Worker {
         `;
 
         // Process jobs concurrently (each tracked in activeJobs)
-        const promises = jobs.map((job: { id: string; type: string; payload: unknown; attempts: number; maxAttempts: number }) => this.processJob(job));
+        const promises = jobs.map(
+            (job: {
+                id: string;
+                type: string;
+                payload: unknown;
+                attempts: number;
+                maxAttempts: number;
+            }) => this.processJob(job),
+        );
         await Promise.allSettled(promises);
 
         return jobs.length;
@@ -301,10 +313,7 @@ export class Worker {
         maxAttempts: number;
     }): Promise<void> {
         this.activeJobs.add(job.id);
-        this.activeJobsByType.set(
-            job.type,
-            (this.activeJobsByType.get(job.type) ?? 0) + 1,
-        );
+        this.activeJobsByType.set(job.type, (this.activeJobsByType.get(job.type) ?? 0) + 1);
 
         try {
             const handler = this.handlers.get(job.type);
@@ -349,7 +358,19 @@ export class Worker {
                         },
                     });
                 } else {
-                    await this.handleFailure(job.id, attempt, job.maxAttempts, result.error ?? 'Unknown error');
+                    // A handler that reports `retryable: false` has told us the
+                    // failure cannot succeed on a retry (malformed payload,
+                    // missing referenced row, permanent API rejection). Retrying
+                    // it burns every attempt and leaves a dead-letter trail that
+                    // reads like a transient fault. Dead-letter it immediately by
+                    // presenting the attempt as the final one.
+                    await this.handleFailure(
+                        job.id,
+                        attempt,
+                        job.maxAttempts,
+                        result.error ?? 'Unknown error',
+                        result.retryable === false,
+                    );
                 }
             } catch (error) {
                 const errorMessage = error instanceof Error ? error.message : String(error);
@@ -374,7 +395,10 @@ export class Worker {
     private async runWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
         let timer: ReturnType<typeof setTimeout>;
         const timeout = new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => reject(new Error(`Job timed out after ${timeoutMs}ms`)), timeoutMs);
+            timer = setTimeout(
+                () => reject(new Error(`Job timed out after ${timeoutMs}ms`)),
+                timeoutMs,
+            );
         });
 
         try {
@@ -389,8 +413,15 @@ export class Worker {
         attempt: number,
         maxAttempts: number,
         error: string,
+        /**
+         * The handler declared this failure permanent. Dead-letter it now, but
+         * record the TRUE attempt count — writing `maxAttempts` here would
+         * fabricate an exhausted-retry trail for a job that ran once, and an
+         * operator requeueing it could not tell the two cases apart.
+         */
+        permanent = false,
     ): Promise<void> {
-        if (attempt >= maxAttempts) {
+        if (permanent || attempt >= maxAttempts) {
             // Dead letter: job has exhausted all retries
             await prisma.job.update({
                 where: { id: jobId },
@@ -403,7 +434,8 @@ export class Worker {
                 },
             });
             console.error(
-                `[Queue Worker] Job ${jobId} moved to dead letter queue after ${attempt} attempts: ${error}`,
+                `[Queue Worker] Job ${jobId} moved to dead letter queue after ${attempt} attempt(s)` +
+                    `${permanent ? ' (handler reported the failure as permanent)' : ''}: ${error}`,
             );
         } else {
             // Schedule retry with exponential backoff

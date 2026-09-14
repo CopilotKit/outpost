@@ -23,6 +23,11 @@ import type { InboundMessage, InboundResult, TicketRef } from './types.js';
 import { generateTicketId, truncate } from '../utils.js';
 import { reopensOnCustomerReply } from '../constants.js';
 import { TicketSource } from '../types.js';
+import {
+    readSlackMirrorConfig,
+    isSlackMirrorEnabled,
+    isMirrorableSource,
+} from './slack-mirror-config.js';
 import { buildTicketSourceId } from './source-id.js';
 
 /**
@@ -31,10 +36,28 @@ import { buildTicketSourceId } from './source-id.js';
  */
 export interface PrismaLike {
     ticket: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        create: (args: any) => Promise<{ id: string; displayId: string; status: string; sourceId: string | null; channel: string | null; source: string }>;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        findFirst: (args: any) => Promise<{ id: string; displayId: string; status: string; sourceId: string | null; channel: string | null; source: string } | null>;
+        create: (
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            args: any,
+        ) => Promise<{
+            id: string;
+            displayId: string;
+            status: string;
+            sourceId: string | null;
+            channel: string | null;
+            source: string;
+        }>;
+        findFirst: (
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            args: any,
+        ) => Promise<{
+            id: string;
+            displayId: string;
+            status: string;
+            sourceId: string | null;
+            channel: string | null;
+            source: string;
+        } | null>;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         update: (args: any) => Promise<{ id: string; displayId: string; status: string }>;
     };
@@ -63,7 +86,10 @@ export interface PrismaLike {
  */
 export type CreateJobFn = (
     type: string,
-    payload: { ticketId: string; threadId?: string; source: string },
+    // Every bot's wrapper declares `source` as required, so it stays required
+    // here — narrowing it would break assignability for all of them. The index
+    // signature is what lets a job type add its own fields.
+    payload: { ticketId: string; threadId?: string; source: string; [key: string]: unknown },
 ) => Promise<string>;
 
 /**
@@ -85,13 +111,20 @@ function isUniqueConstraintError(err: unknown): boolean {
  */
 function toPlatformTarget(source: TicketSource): string {
     switch (source) {
-        case TicketSource.DISCORD: return 'discord';
-        case TicketSource.GITHUB_ISSUE: return 'github';
-        case TicketSource.GITHUB_DISCUSSION: return 'github';
-        case TicketSource.SLACK: return 'slack';
-        case TicketSource.TEAMS: return 'teams';
-        case TicketSource.EMAIL: return 'web';
-        default: return 'web';
+        case TicketSource.DISCORD:
+            return 'discord';
+        case TicketSource.GITHUB_ISSUE:
+            return 'github';
+        case TicketSource.GITHUB_DISCUSSION:
+            return 'github';
+        case TicketSource.SLACK:
+            return 'slack';
+        case TicketSource.TEAMS:
+            return 'teams';
+        case TicketSource.EMAIL:
+            return 'web';
+        default:
+            return 'web';
     }
 }
 
@@ -105,6 +138,16 @@ export interface InboundHandlerConfig {
     createJob: CreateJobFn;
     /** Job type string for AI_RESPONSE (default: 'AI_RESPONSE') */
     aiResponseJobType?: string;
+    /** Job type string for the Slack ticket mirror (default: 'SLACK_MIRROR') */
+    slackMirrorJobType?: string;
+    /**
+     * Whether to enqueue Slack mirror jobs.
+     *
+     * Defaults to the environment's mirror configuration, so a deployment with
+     * `SLACK_MIRROR_MODE=off` (or no channel configured) never queues work that
+     * the handler would only discard. Tests pass this explicitly.
+     */
+    mirrorToSlack?: boolean;
 }
 
 /**
@@ -142,11 +185,55 @@ export class InboundHandler {
     private readonly prisma: PrismaLike;
     private readonly createJob: CreateJobFn;
     private readonly aiResponseJobType: string;
+    private readonly slackMirrorJobType: string;
+    private readonly mirrorToSlack: boolean;
 
     constructor(config: InboundHandlerConfig) {
         this.prisma = config.prisma;
         this.createJob = config.createJob;
         this.aiResponseJobType = config.aiResponseJobType ?? 'AI_RESPONSE';
+        this.slackMirrorJobType = config.slackMirrorJobType ?? 'SLACK_MIRROR';
+        this.mirrorToSlack = config.mirrorToSlack ?? isSlackMirrorEnabled(readSlackMirrorConfig());
+    }
+
+    /**
+     * Enqueue a Slack mirror job, swallowing any failure.
+     *
+     * The mirror is an internal convenience view. A queue hiccup while
+     * mirroring must never take down ticket creation for a real reporter, so
+     * this logs and moves on rather than propagating.
+     */
+    private async enqueueSlackMirror(
+        ticketId: string,
+        source: TicketSource,
+        payload: { kind: 'ticket' | 'reply'; messageId?: string },
+    ): Promise<void> {
+        if (!this.mirrorToSlack) return;
+
+        // The mirror covers GitHub and Discord. `isMirrorableSource` is the ONE
+        // place that rule lives; the AI-reply producer routes through the same
+        // predicate, which is what stops the two producers from disagreeing
+        // about whether a ticket is mirrorable. Slack-sourced tickets are
+        // excluded because they already live in Slack.
+        if (!isMirrorableSource(source)) return;
+
+        try {
+            await this.createJob(this.slackMirrorJobType, {
+                ticketId,
+                source: toPlatformTarget(source),
+                ...payload,
+            });
+        } catch (err) {
+            // The mirror is an internal convenience view; a queue failure here
+            // must never take down ticket creation for a real reporter. Log the
+            // error class and stack so schema drift is not mistaken for a
+            // transient queue hiccup.
+            console.error(
+                `[InboundHandler] Failed to enqueue Slack mirror (${payload.kind}) for ticket ${ticketId}:`,
+                err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+                err instanceof Error ? err.stack : undefined,
+            );
+        }
     }
 
     /**
@@ -157,10 +244,7 @@ export class InboundHandler {
      * only for a genuine thread start from a non-team-member — never for a
      * reply, and never for the orphaned-reply fallback below.
      */
-    async handle(
-        message: InboundMessage,
-        options: HandleOptions = {},
-    ): Promise<InboundResult> {
+    async handle(message: InboundMessage, options: HandleOptions = {}): Promise<InboundResult> {
         if (message.isThreadStart) {
             return this.handleNewTicket(message, {
                 answer: true,
@@ -212,11 +296,7 @@ export class InboundHandler {
         // means "this thread is not addressable" (no threadId, or Slack with no
         // channelId) — the ticket is still created so the report is not dropped,
         // but it will never be matched by a later reply.
-        const sourceId = buildTicketSourceId(
-            message.source,
-            message.threadId,
-            message.channelId,
-        );
+        const sourceId = buildTicketSourceId(message.source, message.threadId, message.channelId);
 
         // Find-or-create the User row for the message sender so the ticket
         // can be linked to them (needed for reporter-identity lookups like
@@ -260,7 +340,9 @@ export class InboundHandler {
                     author: authorLabel,
                     content: truncate(message.content, 8000),
                     type: 'USER',
-                    attachments: message.attachments ? JSON.parse(JSON.stringify(message.attachments)) : undefined,
+                    attachments: message.attachments
+                        ? JSON.parse(JSON.stringify(message.attachments))
+                        : undefined,
                 },
             });
             messageId = msg.id;
@@ -277,6 +359,11 @@ export class InboundHandler {
             });
             aiJobEnqueued = true;
         }
+
+        // Mirror the new ticket into the internal Slack channel. The mirror's
+        // thread-opening post carries the ticket body, so the first Message
+        // does not also need a reply job.
+        await this.enqueueSlackMirror(ticket.id, message.source, { kind: 'ticket' });
 
         return {
             ticketId: ticket.id,
@@ -295,15 +382,10 @@ export class InboundHandler {
         // Derive the lookup key with the same helper handleNewTicket stores
         // with. A null key means no ticket could ever carry it, so skip the
         // query entirely rather than searching for a synthesized placeholder.
-        const sourceId = buildTicketSourceId(
-            message.source,
-            message.threadId,
-            message.channelId,
-        );
+        const sourceId = buildTicketSourceId(message.source, message.threadId, message.channelId);
 
-        const ticket = sourceId === null
-            ? null
-            : await this.findTicketBySourceId(message.source, sourceId);
+        const ticket =
+            sourceId === null ? null : await this.findTicketBySourceId(message.source, sourceId);
 
         if (!ticket) {
             // Orphaned reply: a mid-thread message whose thread we have no ticket
@@ -367,7 +449,9 @@ export class InboundHandler {
                 author: authorLabel,
                 content: truncate(message.content, 8000),
                 type: 'USER',
-                attachments: message.attachments ? JSON.parse(JSON.stringify(message.attachments)) : undefined,
+                attachments: message.attachments
+                    ? JSON.parse(JSON.stringify(message.attachments))
+                    : undefined,
             },
         });
 
@@ -402,6 +486,14 @@ export class InboundHandler {
                 data: { status: 'OPEN' },
             });
         }
+
+        // Mirror the follow-up under the ticket's existing Slack thread. Team
+        // replies mirror too — the thread is meant to be the whole life of the
+        // ticket, and a team answer is the most useful part of it.
+        await this.enqueueSlackMirror(ticket.id, message.source, {
+            kind: 'reply',
+            messageId: msg.id,
+        });
 
         return {
             ticketId: ticket.id,
@@ -507,10 +599,7 @@ export class InboundHandler {
      *
      * This is a unified version of the per-bot isTeamMember functions.
      */
-    private async isTeamMember(
-        platformUserId: string,
-        source: TicketSource,
-    ): Promise<boolean> {
+    private async isTeamMember(platformUserId: string, source: TicketSource): Promise<boolean> {
         // Map TicketSource to the source values used in the User table.
         // GitHub issues and discussions both store users with their respective sources.
         const userSource = source as string;

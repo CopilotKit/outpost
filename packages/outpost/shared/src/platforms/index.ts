@@ -25,12 +25,7 @@ export type {
 } from './types.js';
 
 // Registry
-export {
-    getAdapter,
-    hasAdapter,
-    clearAdapterCache,
-    SUPPORTED_PLATFORMS,
-} from './registry.js';
+export { getAdapter, hasAdapter, clearAdapterCache, SUPPORTED_PLATFORMS } from './registry.js';
 
 // Ticket sourceId key builder — the single definition shared by ticket
 // creation, reply lookup, and the bots' own "is this thread tracked?" checks.
@@ -49,13 +44,35 @@ export type { DiscordAdapterConfig as PlatformDiscordAdapterConfig } from './dis
 // GitHub adapter — use PlatformGitHubAdapter / GitHubPlatformAdapter to avoid
 // collision with the sync module's GitHubAdapter.
 export { GitHubAdapter as PlatformGitHubAdapter, GitHubPlatformAdapter } from './github.js';
-export type { GitHubAdapterConfig as PlatformGitHubAdapterConfig, GitHubOctokitLike } from './github.js';
+export type {
+    GitHubAdapterConfig as PlatformGitHubAdapterConfig,
+    GitHubOctokitLike,
+} from './github.js';
 
 export { SlackAdapter as PlatformSlackAdapter, SlackAdapter, buildPermalink } from './slack.js';
-export type { SlackAdapterConfig as PlatformSlackAdapterConfig, SlackAdapterConfig, SlackMessageEvent } from './slack.js';
+
+// Slack ticket mirror — flag semantics shared by the producers (inbound
+// handler, AI response handler) and the consumer (SLACK_MIRROR job handler).
+export {
+    readSlackMirrorConfig,
+    isSlackMirrorEnabled,
+    canSlackMirrorPost,
+    isMirrorableSource,
+} from './slack-mirror-config.js';
+export type { SlackMirrorConfig, SlackMirrorMode } from './slack-mirror-config.js';
+export type {
+    SlackAdapterConfig as PlatformSlackAdapterConfig,
+    SlackAdapterConfig,
+    SlackMessageEvent,
+} from './slack.js';
 
 export { TeamsAdapter as PlatformTeamsAdapter, TeamsAdapter } from './teams.js';
-export type { TeamsAdapterConfig as PlatformTeamsAdapterConfig, TeamsAdapterConfig, TeamsActivity, TeamsConversationReference } from './teams.js';
+export type {
+    TeamsAdapterConfig as PlatformTeamsAdapterConfig,
+    TeamsAdapterConfig,
+    TeamsActivity,
+    TeamsConversationReference,
+} from './teams.js';
 
 export { EmailPostmarkAdapter as PlatformEmailPostmarkAdapter } from './email-postmark.js';
 export type { EmailPostmarkAdapterConfig as PlatformEmailPostmarkAdapterConfig } from './email-postmark.js';

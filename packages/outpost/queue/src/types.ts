@@ -30,6 +30,8 @@ export enum JobType {
     JOB_CLEANUP = 'JOB_CLEANUP',
     /** Poll GitHub reactions on AI-authored comments for feedback signal */
     GITHUB_REACTION_POLL = 'GITHUB_REACTION_POLL',
+    /** Mirror a ticket (or a reply on it) into the internal Slack channel */
+    SLACK_MIRROR = 'SLACK_MIRROR',
     /** Periodic sweep of primary AI responses stranded in PENDING with no live owning job */
     PENDING_RESPONSE_SWEEP = 'PENDING_RESPONSE_SWEEP',
 }
@@ -93,6 +95,65 @@ export type JobCleanupPayload = Record<string, never>;
 /** No payload needed — runs against all pending-feedback AI messages. */
 export type GithubReactionPollPayload = Record<string, never>;
 
+/**
+ * What kind of Slack mirror post this job should make.
+ *
+ * `ticket` opens the thread; `reply` posts underneath the thread the `ticket`
+ * job created. A `reply` that finds no thread opens one first, so an enable
+ * mid-conversation does not silently drop every later message.
+ */
+export type SlackMirrorKind = 'ticket' | 'reply';
+
+/**
+ * What actually happened to an AI reply, from the producer that knows.
+ *
+ * A boolean was not enough. `delivered: false` covered five distinct causes —
+ * shadow mode, a suppressed draft, no adapter, adapter misconfigured, and the
+ * post throwing — and the mirror rendered one guess ("withheld or shadow mode")
+ * for all of them, asserting a cause nobody established. That is the same class
+ * of misreporting the mirror's delivery label exists to prevent, so the reason
+ * travels with the payload instead of being inferred.
+ */
+export type SlackMirrorDelivery =
+    /** Posted to the source platform; the reporter can see it. */
+    | 'delivered'
+    /** SHADOW_MODE was on: logged to the DB, never posted. */
+    | 'shadow'
+    /** The groundedness gate withheld the draft; safe replacement copy went out instead. */
+    | 'withheld'
+    /** postResponse threw — a delivery failure, not a deliberate hold. */
+    | 'post-failed'
+    /** No adapter for this source, or adapter construction failed. */
+    | 'no-adapter';
+
+export interface SlackMirrorPayload {
+    /** The Outpost ticket ID being mirrored */
+    ticketId: string;
+    /** Whether this opens the thread or replies inside it */
+    kind: SlackMirrorKind;
+    /** The Message row this post reflects; omit for the thread-opening post */
+    messageId?: string;
+    /**
+     * Platform the ticket came from, as a PlatformTarget string.
+     *
+     * Declared rather than left to ride the CreateJobFn index signature: both
+     * producers send a RESOLVED value (never the AI job's optional `source`
+     * hint), and an undeclared field that only type-checks by accident is how
+     * the two of them drifted into different payload shapes.
+     * The handler does not read it — it re-reads the ticket — but it makes a
+     * queued job legible on its own.
+     */
+    source?: string;
+    /**
+     * For AI replies: what became of the answer.
+     *
+     * Omitted on community/team replies (the platform delivered those by
+     * definition). Absent on an AI reply means UNKNOWN, which the mirror renders
+     * as unconfirmed — never as delivered.
+     */
+    delivery?: SlackMirrorDelivery;
+}
+
 /** No payload needed — runs against every stranded PENDING primary AI response. */
 export type PendingResponseSweepPayload = Record<string, never>;
 
@@ -108,6 +169,7 @@ export interface JobPayload {
     [JobType.TRACKER_SYNC]: TrackerSyncPayload;
     [JobType.JOB_CLEANUP]: JobCleanupPayload;
     [JobType.GITHUB_REACTION_POLL]: GithubReactionPollPayload;
+    [JobType.SLACK_MIRROR]: SlackMirrorPayload;
     [JobType.PENDING_RESPONSE_SWEEP]: PendingResponseSweepPayload;
 }
 
@@ -117,6 +179,18 @@ export interface JobResult {
     success: boolean;
     data?: Record<string, unknown>;
     error?: string;
+    /**
+     * Whether a failure is worth retrying. Omit for the historical behavior
+     * (retry until `maxAttempts`, then dead-letter).
+     *
+     * Set `false` only for failures that CANNOT succeed on a retry — a malformed
+     * payload, a missing row it references, a permanent API rejection like
+     * Slack's `not_in_channel`. Those previously consumed every attempt and
+     * landed in the dead-letter queue with a misleading trail suggesting a
+     * transient fault. Additive by design: every existing handler omits it and
+     * behaves exactly as before.
+     */
+    retryable?: boolean;
 }
 
 // ─── Options ────────────────────────────────────────────────────────────────

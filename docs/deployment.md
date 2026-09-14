@@ -79,6 +79,7 @@ Copy `.env.example` and fill in all values. Key groups:
 - **Discord**: `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `GUILD_ID`, `MONITORED_CHANNEL_IDS`
 - **GitHub App**: `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_TEAM_LOGINS` (optional)
 - **Slack**: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`, `MONITORED_CHANNEL_IDS`, `TEAM_MEMBER_IDS` (optional)
+- **Slack ticket mirror**: `SLACK_MIRROR_MODE` (`off` | `shadow` | `live`, default `off`), `SLACK_MIRROR_CHANNEL_ID` (channel ID, not name). **Set both on `outpost-worker` AND on every service that creates tickets** (`outpost-discord-bot`, `outpost-github-app`): the handler runs in the worker, but the producers gate on the same config via `readSlackMirrorConfig()` inside `InboundHandler`, so vars present only on the worker mean no job is ever enqueued and the mirror is silently dead. `live` also needs `SLACK_BOT_TOKEN` with `chat:write` **on the worker**. Without it the mirror does NOT simply log once and carry on: each mirror job dead-letters, one per ticket and one per reply, and that content is gone rather than retried once the token appears. Set the token before setting `live`, or leave the mode `off`. `shadow` needs no token. Any mode is inert while `SLACK_MIRROR_CHANNEL_ID` is unset. Invite the bot to the channel or posts fail `not_in_channel`, which the handler treats as permanent and does not retry. Which tickets get mirrored is decided by `isMirrorableSource()` in `packages/outpost/shared/src/platforms/slack-mirror-config.ts` (today: Discord + GitHub issues and discussions; Slack-sourced tickets are excluded because they already live in Slack). **Scope in v1: ticket-opens from Discord and GitHub, AI replies on both, and community follow-ups from Discord only.** A follow-up comment on a GitHub issue or discussion does NOT reach the mirror: `apps/github-app/src/webhooks/issue-comment.ts` appends its `Message` row directly rather than through `InboundHandler`, so it never enqueues a mirror job, and GitHub Discussions have no comment webhook at all. Nothing logs the omission, so a Slack thread that stops after the AI reply means "no Discord follow-ups", not "the reporter went quiet" — check the GitHub thread itself before concluding anything from the mirror. `SLACK_MIRROR_MODE` is intentionally independent of `SHADOW_MODE`: that flag protects community surfaces, while the mirror targets an internal channel — see the shadow-mode section for the documented exception. Keep `SLACK_MIRROR_CHANNEL_ID` out of the Slack bot's `MONITORED_CHANNEL_IDS`: the bot drops `bot_id` events today, so its own mirror posts do not become tickets, but monitoring the mirror channel would duplicate ticket context into the inbound path and leave the loop one filter change away.
 - **Teams**: `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`, `TEAMS_TENANT_ID` (optional, blank for multi-tenant), `MONITORED_CHANNEL_IDS`
 - **Linear sync**: `LINEAR_API_KEY`, `LINEAR_WEBHOOK_SECRET`, `LINEAR_TEAM_ID`
 - **Monitoring**: `SENTRY_DSN` (optional), `LOG_LEVEL`
@@ -211,6 +212,19 @@ have it set on `outpost-worker`, not only on a bot.
 
 When adding any new outbound post path, check `SHADOW_MODE` before posting — otherwise
 staging will deliver to real users regardless of the flag.
+
+**Documented exception — the Slack ticket mirror.** `SLACK_MIRROR_MODE` gates the mirror
+instead of `SHADOW_MODE`, and the two are deliberately independent. The rule above exists to
+protect community surfaces where real reporters are watching; the mirror posts to an internal
+team channel, so a staging environment mirroring into it is intended rather than a leak. Any
+future outbound path that is NOT a community surface may take the same exemption, but it needs
+its own flag and a line in this section — the default remains `SHADOW_MODE`.
+
+| Path                                     | Gated by                               |
+| ---------------------------------------- | -------------------------------------- |
+| Discord / GitHub replies (`AI_RESPONSE`) | `SHADOW_MODE`                          |
+| Onboarding digest (`ONBOARDING_DIGEST`)  | `SHADOW_MODE`                          |
+| Slack ticket mirror (`SLACK_MIRROR`)     | `SLACK_MIRROR_MODE` (internal channel) |
 
 ### Promotion workflow
 

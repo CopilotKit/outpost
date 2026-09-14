@@ -39,10 +39,22 @@ import { prisma } from '@copilotkit/outpost/db';
 import { AIPipeline } from '@copilotkit/outpost/ai';
 import { AI_CONFIDENCE, MAX_JOB_ATTEMPTS } from '@copilotkit/outpost/shared';
 import type { PlatformTarget, TicketSource } from '@copilotkit/outpost/shared';
-import { hasAdapter, getAdapter } from '@copilotkit/outpost/shared/platforms';
+import {
+    hasAdapter,
+    getAdapter,
+    readSlackMirrorConfig,
+    isSlackMirrorEnabled,
+    isMirrorableSource,
+} from '@copilotkit/outpost/shared/platforms';
+import { createJob } from '../create-job.js';
 import { getFeedbackCalibration } from '../feedback-calibration.js';
 import { JobType } from '../types.js';
-import type { AiResponsePayload, JobResult, JobHandlerContext } from '../types.js';
+import type {
+    AiResponsePayload,
+    JobResult,
+    JobHandlerContext,
+    SlackMirrorDelivery,
+} from '../types.js';
 
 export const PRIMARY_AI_RESPONSE_KEY = 'PRIMARY_AI_RESPONSE';
 /**
@@ -812,6 +824,12 @@ export async function handleAiResponse(
         // suggestedResponse holds the publishable text bots pick up), and step 6
         // below escalates on suppression regardless of score.
         const ticketSource = ticket.source as TicketSource;
+        // What became of `aiMessage.content`, recorded at the branch that knows.
+        // The Slack mirror renders this verbatim, so an internal reader is never
+        // told the community saw a draft that was withheld, only logged, or lost
+        // to a failed post. Starts as the no-adapter case: if no branch below
+        // claims it, nothing was ever attempted.
+        let delivery: SlackMirrorDelivery = 'no-adapter';
         if (pipelineResult.suppressed) {
             console.warn(
                 `[AI Response] Ungrounded draft withheld for ticket ${ticketId} — ` +
@@ -822,6 +840,9 @@ export async function handleAiResponse(
 
         let responseDelivered = false;
         if (process.env.SHADOW_MODE === 'true') {
+            // Shadow mode is a fact about this run, independent of whether the
+            // shadow Message row below persists — claim it before the try.
+            delivery = 'shadow';
             try {
                 await prisma.message.create({
                     data: {
@@ -880,6 +901,11 @@ export async function handleAiResponse(
                         `[AI Response] Posted response to ${ticket.source} for ticket ${ticketId}`,
                     );
                     responseDelivered = true;
+                    // A suppressed run posts safe replacement copy, not the draft
+                    // stored on aiMessage — so the draft itself still never reached
+                    // anyone, even though the post succeeded. The mirror has to say
+                    // which of those happened rather than guess.
+                    delivery = pipelineResult.suppressed ? 'withheld' : 'delivered';
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
                     console.error(
@@ -887,6 +913,7 @@ export async function handleAiResponse(
                         message,
                     );
                     deliveryFailure = message;
+                    delivery = 'post-failed';
                 }
 
                 // Recording the external comment ID is bookkeeping for an
@@ -989,6 +1016,30 @@ export async function handleAiResponse(
         }
 
         await context.reportProgress(85);
+
+        // 5c. Mirror the AI reply into the internal Slack thread for this
+        // ticket. Enqueued regardless of whether the draft was delivered — an
+        // answer the community never saw is precisely what the team needs to
+        // notice — but labelled with which of those happened.
+        if (isMirrorableSource(ticket.source) && isSlackMirrorEnabled(readSlackMirrorConfig())) {
+            try {
+                await createJob(JobType.SLACK_MIRROR, {
+                    ticketId: ticket.id,
+                    // The ticket's own source, not the job payload's optional
+                    // hint — the inbound producer sends a resolved value and the
+                    // two must agree.
+                    source: toPlatformTarget(ticketSource),
+                    kind: 'reply',
+                    messageId: aiMessage.id,
+                    delivery,
+                });
+            } catch (error) {
+                console.error(
+                    `[AI Response] Failed to enqueue Slack mirror for ticket ${ticketId}:`,
+                    error instanceof Error ? error.message : String(error),
+                );
+            }
+        }
 
         // 6. Enqueue ESCALATION when platform delivery failed, when the response
         // was withheld, or when confidence is below threshold — in the first two
