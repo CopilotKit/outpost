@@ -1,6 +1,7 @@
 export * from './types.js';
 export * from './constants.js';
 export * from './utils.js';
+export * from './shadow-mode.js';
 export * from './dispatch/index.js';
 export * from './sla/index.js';
 export * from './onboarding/index.js';
@@ -33,13 +34,8 @@ export type {
     HandleOptions,
     InboundPrismaLike,
 } from './platforms/index.js';
-export type {
-    PlatformDiscordAdapterConfig,
-} from './platforms/index.js';
-export type {
-    PlatformGitHubAdapterConfig,
-    GitHubOctokitLike,
-} from './platforms/index.js';
+export type { PlatformDiscordAdapterConfig } from './platforms/index.js';
+export type { PlatformGitHubAdapterConfig, GitHubOctokitLike } from './platforms/index.js';
 export type {
     PlatformSlackAdapterConfig,
     SlackAdapterConfig,
@@ -51,6 +47,4 @@ export type {
     TeamsActivity,
     TeamsConversationReference,
 } from './platforms/index.js';
-export type {
-    PlatformEmailPostmarkAdapterConfig,
-} from './platforms/index.js';
+export type { PlatformEmailPostmarkAdapterConfig } from './platforms/index.js';

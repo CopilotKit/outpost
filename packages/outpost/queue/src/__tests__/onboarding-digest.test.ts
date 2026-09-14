@@ -11,7 +11,14 @@ vi.mock('@copilotkit/outpost/db', () => ({
     },
 }));
 
-vi.mock('@copilotkit/outpost/shared', () => ({
+// Partial mock: everything real except the one function this file needs to
+// pin. The previous version listed its exports explicitly, which meant
+// re-implementing `isShadowMode` — so a diff whose whole point was deleting
+// three copies of the comparison added a fourth, and it had already drifted
+// (no EXPLICITLY_ON, no warn). Spreading the real module means the SHADOW_MODE
+// tests below exercise the shipped function instead of a lookalike.
+vi.mock('@copilotkit/outpost/shared', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@copilotkit/outpost/shared')>()),
     computeFunnelMetrics: vi.fn().mockReturnValue({
         stageCounts: { JOINED: 3, CONTACTED: 2, RESPONDED: 1, MEETING_BOOKED: 0 },
         conversionRates: {
@@ -84,7 +91,7 @@ describe('handleOnboardingDigest', () => {
 
     it('queries members for the given date range', async () => {
         mockOnboardingMember.findMany
-            .mockResolvedValueOnce([makeMemberRow()])  // date-filtered query
+            .mockResolvedValueOnce([makeMemberRow()]) // date-filtered query
             .mockResolvedValueOnce([makeMemberRow()]); // all-members query for metrics
 
         const ctx = makeContext();
@@ -102,8 +109,8 @@ describe('handleOnboardingDigest', () => {
 
     it('handles zero new members gracefully', async () => {
         mockOnboardingMember.findMany
-            .mockResolvedValueOnce([])   // no members for the day
-            .mockResolvedValueOnce([]);  // no members overall
+            .mockResolvedValueOnce([]) // no members for the day
+            .mockResolvedValueOnce([]); // no members overall
 
         const ctx = makeContext();
         const result = await handleOnboardingDigest({ date: '2026-04-15' }, ctx);
@@ -118,9 +125,7 @@ describe('handleOnboardingDigest', () => {
         const ctx = makeContext();
         await handleOnboardingDigest({ date: '2026-04-15' }, ctx);
 
-        const progressCalls = ctx.reportProgress.mock.calls.map(
-            (c: number[]) => c[0],
-        );
+        const progressCalls = ctx.reportProgress.mock.calls.map((c: number[]) => c[0]);
         expect(progressCalls).toEqual([10, 50, 70, 90, 100]);
     });
 
@@ -142,9 +147,7 @@ describe('handleOnboardingDigest', () => {
             makeMemberRow({ id: 'om-3', username: 'charlie#9012' }),
         ];
 
-        mockOnboardingMember.findMany
-            .mockResolvedValueOnce(members)
-            .mockResolvedValueOnce(members);
+        mockOnboardingMember.findMany.mockResolvedValueOnce(members).mockResolvedValueOnce(members);
 
         const ctx = makeContext();
         const result = await handleOnboardingDigest({ date: '2026-04-15' }, ctx);
@@ -221,13 +224,45 @@ describe('handleOnboardingDigest', () => {
 
         expect(result.success).toBe(true);
         expect(mockFetch).not.toHaveBeenCalled();
-        expect(consoleSpy).toHaveBeenCalledWith(
-            expect.stringContaining('Shadow mode'),
-        );
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Shadow mode'));
 
         consoleSpy.mockRestore();
         vi.unstubAllGlobals();
     });
+
+    // The fence. Every other shadow test here uses `'true'`, which is the one
+    // spelling that behaves identically before and after the fail-closed change
+    // — so reverting `isShadowMode` to `=== 'true'` left this whole file green.
+    // These are the spellings that used to post for real.
+    it.each(['1', 'TRUE', 'yes', 'on', ' true ', 'YES'])(
+        'does not post to Discord when SHADOW_MODE=%j',
+        async (value) => {
+            process.env.DISCORD_TOKEN = 'test-bot-token';
+            process.env.DISCORD_DIGEST_CHANNEL_ID = '1234567890';
+            process.env.SHADOW_MODE = value;
+
+            mockOnboardingMember.findMany
+                .mockResolvedValueOnce([makeMemberRow()])
+                .mockResolvedValueOnce([makeMemberRow()]);
+
+            const mockFetch = vi.fn().mockResolvedValue({
+                ok: true,
+                json: async () => ({ id: 'msg-1' }),
+            });
+            vi.stubGlobal('fetch', mockFetch);
+            const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+            const ctx = makeContext();
+            const result = await handleOnboardingDigest({ date: '2026-04-15' }, ctx);
+
+            expect(result.success).toBe(true);
+            expect(mockFetch).not.toHaveBeenCalled();
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Shadow mode'));
+
+            consoleSpy.mockRestore();
+            vi.unstubAllGlobals();
+        },
+    );
 
     it('posts to Discord when SHADOW_MODE is explicitly false', async () => {
         process.env.DISCORD_TOKEN = 'test-bot-token';
@@ -257,9 +292,7 @@ describe('handleOnboardingDigest', () => {
         process.env.DISCORD_TOKEN = 'test-bot-token';
         process.env.DISCORD_DIGEST_CHANNEL_ID = '1234567890';
 
-        mockOnboardingMember.findMany
-            .mockResolvedValueOnce([])
-            .mockResolvedValueOnce([]);
+        mockOnboardingMember.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
         const mockFetch = vi.fn().mockResolvedValue({
             ok: false,
@@ -269,8 +302,9 @@ describe('handleOnboardingDigest', () => {
         vi.stubGlobal('fetch', mockFetch);
 
         const ctx = makeContext();
-        await expect(handleOnboardingDigest({ date: '2026-04-15' }, ctx))
-            .rejects.toThrow('Discord API error 403');
+        await expect(handleOnboardingDigest({ date: '2026-04-15' }, ctx)).rejects.toThrow(
+            'Discord API error 403',
+        );
 
         vi.unstubAllGlobals();
     });

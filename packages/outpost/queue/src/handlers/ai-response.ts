@@ -37,7 +37,7 @@
 
 import { prisma } from '@copilotkit/outpost/db';
 import { AIPipeline } from '@copilotkit/outpost/ai';
-import { AI_CONFIDENCE, MAX_JOB_ATTEMPTS } from '@copilotkit/outpost/shared';
+import { AI_CONFIDENCE, MAX_JOB_ATTEMPTS, isShadowMode } from '@copilotkit/outpost/shared';
 import type { PlatformTarget, TicketSource } from '@copilotkit/outpost/shared';
 import { hasAdapter, getAdapter } from '@copilotkit/outpost/shared/platforms';
 import { getFeedbackCalibration } from '../feedback-calibration.js';
@@ -821,7 +821,7 @@ export async function handleAiResponse(
         }
 
         let responseDelivered = false;
-        if (process.env.SHADOW_MODE === 'true') {
+        if (isShadowMode()) {
             try {
                 await prisma.message.create({
                     data: {

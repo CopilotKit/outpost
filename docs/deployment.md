@@ -209,8 +209,11 @@ worker's gate is the one that covers **every** platform (GitHub, Slack, Teams) p
 digest job, because that is where the adapter call lives — so a staging environment must
 have it set on `outpost-worker`, not only on a bot.
 
-When adding any new outbound post path, check `SHADOW_MODE` before posting — otherwise
-staging will deliver to real users regardless of the flag.
+When adding any new outbound post path, gate it on `isShadowMode()` from
+`@copilotkit/outpost/shared` — not on `process.env.SHADOW_MODE` directly. Reading the
+variable is what produced three separate copies of `=== 'true'`, all three of which
+treated `SHADOW_MODE=TRUE` as "not shadow mode" and posted for real. The helper is the
+only version of this that stays fixed.
 
 ### Promotion workflow
 

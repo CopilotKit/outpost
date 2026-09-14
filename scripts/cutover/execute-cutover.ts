@@ -7,6 +7,7 @@
 //   npx tsx scripts/cutover/execute-cutover.ts --confirm     # execute for real
 
 import { PrismaClient } from '@prisma/client';
+import { isShadowMode } from '@copilotkit/outpost/shared';
 import { validateQuality } from './validate-quality.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -40,7 +41,7 @@ function parseArgs(argv: string[]): CliArgs {
         skipQualityCheck: false,
         announcement:
             "We've upgraded our support bot to provide faster, more accurate responses. " +
-            "If you notice any issues, please let us know!",
+            'If you notice any issues, please let us know!',
     };
 
     for (let i = 2; i < argv.length; i++) {
@@ -63,9 +64,7 @@ function parseArgs(argv: string[]): CliArgs {
 // ─── Step Execution ─────────────────────────────────────────────────────────
 
 function logStep(result: StepResult): void {
-    const icon = result.status === 'PASS' ? '[OK]'
-        : result.status === 'FAIL' ? '[FAIL]'
-        : '[SKIP]';
+    const icon = result.status === 'PASS' ? '[OK]' : result.status === 'FAIL' ? '[FAIL]' : '[SKIP]';
     console.log(`  ${icon} ${result.step}: ${result.message}`);
 }
 
@@ -76,13 +75,8 @@ export async function runHealthChecks(prisma: PrismaClient): Promise<StepResult>
         await prisma.$queryRaw`SELECT 1`;
 
         // Verify required env vars are set
-        const required = [
-            'DATABASE_URL',
-            'DISCORD_TOKEN',
-            'DISCORD_CLIENT_ID',
-            'GUILD_ID',
-        ];
-        const missing = required.filter(k => !process.env[k]);
+        const required = ['DATABASE_URL', 'DISCORD_TOKEN', 'DISCORD_CLIENT_ID', 'GUILD_ID'];
+        const missing = required.filter((k) => !process.env[k]);
         if (missing.length > 0) {
             return {
                 step,
@@ -168,8 +162,14 @@ export async function disableShadowMode(confirm: boolean): Promise<StepResult> {
 
     // In a real deployment, this would call the Railway API to update env vars.
     // For now, we verify the current state and log the instruction.
+    //
+    // Reads through the shared helper, not `!== 'true'`. This was the fourth
+    // copy of that comparison and the sweep missed it, which meant
+    // `SHADOW_MODE=TRUE` had the worker correctly withholding posts while this
+    // step reported shadow mode already disabled and passed — the same
+    // fail-open, moved onto the cutover path.
     const currentValue = process.env.SHADOW_MODE;
-    if (currentValue !== 'true') {
+    if (!isShadowMode()) {
         return {
             step,
             status: 'PASS',
@@ -228,10 +228,7 @@ export async function verifyTicketData(prisma: PrismaClient): Promise<StepResult
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
-export async function executeCutover(
-    prisma: PrismaClient,
-    args: CliArgs,
-): Promise<CutoverLog> {
+export async function executeCutover(prisma: PrismaClient, args: CliArgs): Promise<CutoverLog> {
     const log: CutoverLog = {
         startedAt: new Date(),
         completedAt: null,

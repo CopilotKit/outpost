@@ -72,17 +72,17 @@ const mockGetAdapter = vi.fn().mockReturnValue({
     fetchUserInfo: vi.fn(),
 });
 
-vi.mock('@copilotkit/outpost/shared', () => ({
-    AI_CONFIDENCE: {
-        AUTO_RESPOND: 0.9,
-        HIGH_THRESHOLD: 0.8,
-        SUGGEST: 0.7,
-        MEDIUM_THRESHOLD: 0.5,
-        ESCALATE: 0.4,
-    },
-    MAX_JOB_ATTEMPTS: 5,
-    BACKOFF_BASE_MS: 1000,
-    BACKOFF_MAX_MS: 300_000,
+// Partial mock, so `isShadowMode` below is the shipped function rather than a
+// re-implementation of it. The four constants that used to be stubbed here were
+// checked against `shared/src/constants.ts` and are identical, so the spread
+// supplies them.
+//
+// `calculateBackoff` stays overridden on purpose: the real one
+// (`shared/src/utils.ts:40`) adds `Math.random() * BACKOFF_BASE_MS` of jitter,
+// so taking it from the spread would make any assertion on a retry delay
+// nondeterministic. This override is the deterministic half of it.
+vi.mock('@copilotkit/outpost/shared', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@copilotkit/outpost/shared')>()),
     calculateBackoff: (attempt: number) => 1000 * Math.pow(2, attempt),
 }));
 
@@ -737,6 +737,33 @@ describe('handleAiResponse', () => {
             restoreShadowMode(originalShadow);
         }
     });
+
+    // The fence, and the one that matters most: this is the handler that reaches
+    // real Discord and GitHub surfaces. Every other shadow test in this file
+    // uses `'true'`, the one spelling that read the same before and after the
+    // fail-closed change — so reverting `isShadowMode` to `=== 'true'` left all
+    // 145 tests in the two queue suites green. Each of these used to post.
+    it.each(['1', 'TRUE', 'yes', 'on', ' true ', 'YES'])(
+        'skips post-back when SHADOW_MODE=%j',
+        async (value) => {
+            const originalShadow = process.env.SHADOW_MODE;
+            try {
+                process.env.SHADOW_MODE = value;
+                mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
+                mockHasAdapter.mockReturnValue(true);
+
+                const result = await handleAiResponse(
+                    { ticketId: 'tkt-1', source: 'discord' },
+                    makeContext(),
+                );
+
+                expect(result.success).toBe(true);
+                expect(mockPostResponse).not.toHaveBeenCalled();
+            } finally {
+                restoreShadowMode(originalShadow);
+            }
+        },
+    );
 
     it('succeeds even if post-back fails (non-fatal)', async () => {
         mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
