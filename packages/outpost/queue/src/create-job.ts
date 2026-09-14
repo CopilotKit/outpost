@@ -25,13 +25,43 @@ export async function createJob<T extends JobType>(
 }
 
 /**
- * Update the progress of a running job.
+ * Update the progress of the running job claim that owns this execution.
  * Progress is a percentage from 0 to 100.
  */
-export async function updateJobProgress(jobId: string, percent: number): Promise<void> {
+export async function updateJobProgress(
+    jobId: string,
+    percent: number,
+    claimToken: string,
+): Promise<void> {
     const clamped = Math.max(0, Math.min(100, Math.round(percent)));
-    await prisma.job.update({
-        where: { id: jobId },
-        data: { progress: clamped },
-    });
+
+    // Handlers `await` this, so a rejection here propagates into the handler and
+    // the worker records it as a job failure — retrying work that was running
+    // perfectly well and repeating every side effect it had already produced.
+    // Progress is telemetry; it must never be able to fail the job it describes.
+    let result: { count: number };
+    try {
+        result = await prisma.job.updateMany({
+            where: { id: jobId, status: 'PROCESSING', claimToken },
+            data: { progress: clamped },
+        });
+    } catch (error) {
+        console.warn(
+            `[Queue] Progress update for job ${jobId} failed and was ignored, ` +
+                `so it cannot fail the running job:`,
+            error,
+        );
+        return;
+    }
+
+    // A dropped progress update is harmless in itself, but it is the earliest
+    // observable sign that this execution has lost its claim — the handler is
+    // still running while something else owns the row. Worth a line, since the
+    // fence is otherwise indistinguishable from a successful write.
+    if (result.count === 0) {
+        console.warn(
+            `[Queue] Progress update for job ${jobId} was fenced: ` +
+                `claim ${claimToken} no longer owns the row.`,
+        );
+    }
 }
