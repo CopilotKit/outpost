@@ -22,6 +22,9 @@ const mockVerifyPassword = vi.fn();
 vi.mock('@copilotkit/outpost/shared', () => ({
     hashPassword: (...args: unknown[]) => mockHashPassword(...args),
     verifyPassword: (...args: unknown[]) => mockVerifyPassword(...args),
+    MIN_PASSWORD_LENGTH: 8,
+    MAX_PASSWORD_BYTES: 72,
+    passwordByteLength: (pw: string) => new TextEncoder().encode(pw).length,
 }));
 
 // ─── Mock next-auth ─────────────────────────────────────────────────────────
@@ -193,5 +196,28 @@ describe('PUT /api/profile', () => {
         expect(body.errors).toEqual(
             expect.arrayContaining([expect.stringContaining('8 characters')]),
         );
+    });
+
+    it('rejects a new password longer than bcrypts 72-byte limit', async () => {
+        mockGetServerSession.mockResolvedValue({
+            user: { id: 'member-1', role: 'ADMIN', memberId: 'member-1' },
+        });
+        mockFindUnique.mockResolvedValue(sampleMember);
+        mockVerifyPassword.mockResolvedValue(true);
+
+        const longPassword = 'a'.repeat(73);
+        const res = await PUT(makeRequest({
+            name: 'Alice Admin',
+            currentPassword: 'oldpass123',
+            newPassword: longPassword,
+            confirmNewPassword: longPassword,
+        }));
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.errors).toEqual(
+            expect.arrayContaining([expect.stringContaining('at most 72 bytes')]),
+        );
+        expect(mockHashPassword).not.toHaveBeenCalled();
     });
 });

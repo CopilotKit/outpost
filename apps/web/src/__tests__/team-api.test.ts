@@ -42,6 +42,15 @@ vi.mock('@copilotkit/outpost/db', () => ({
 
 vi.mock('@copilotkit/outpost/shared', () => ({
     hashPassword: vi.fn().mockResolvedValue('hashed-password-123'),
+    // Faithful mirror of the real policy (min 8 chars, max 72 UTF-8 bytes).
+    validatePassword: (pw: unknown) => {
+        if (typeof pw !== 'string' || pw.length === 0) return 'Password is required.';
+        if (pw.length < 8) return 'Password must be at least 8 characters.';
+        if (new TextEncoder().encode(pw).length > 72) {
+            return 'Password must be at most 72 bytes; bcrypt ignores anything beyond that.';
+        }
+        return null;
+    },
 }));
 
 vi.mock('@copilotkit/outpost/shared/server', () => ({
@@ -299,6 +308,24 @@ describe('Team API', () => {
                 expect.arrayContaining([expect.stringContaining('do not match')]),
             );
         });
+
+        it('rejects a password longer than bcrypts 72-byte limit', async () => {
+            const longPassword = 'a'.repeat(73);
+            const res = await acceptPost(
+                jsonRequest('http://localhost:3000/api/team/invite/accept', {
+                    token: 'valid-token',
+                    name: 'Test',
+                    password: longPassword,
+                    confirmPassword: longPassword,
+                }),
+            );
+
+            expect(res.status).toBe(400);
+            const body = await res.json();
+            expect(body.errors).toEqual(
+                expect.arrayContaining([expect.stringContaining('at most 72 bytes')]),
+            );
+        });
     });
 
     // ── Role change API ────────────────────────────────────────────────────
@@ -380,6 +407,7 @@ describe('Team API', () => {
                 email: 'invited@test.com',
                 status: 'INVITED',
             });
+            mockInviteTokenFindUnique.mockResolvedValue(null);
             mockInviteTokenDeleteMany.mockResolvedValue({ count: 1 });
             mockInviteTokenCreate.mockResolvedValue({ token: 'new-token' });
 
@@ -392,6 +420,58 @@ describe('Team API', () => {
             expect(res.status).toBe(200);
             const body = await res.json();
             expect(body.success).toBe(true);
+        });
+
+        it('returns 429 when the previous invite was sent seconds ago', async () => {
+            mockGetServerSession.mockResolvedValue(adminSession());
+            mockTeamMemberFindUnique.mockResolvedValue({
+                id: 'invited-1',
+                email: 'invited@test.com',
+                status: 'INVITED',
+            });
+            mockInviteTokenFindUnique.mockResolvedValue({
+                id: 'tok-old',
+                memberId: 'invited-1',
+                createdAt: new Date(Date.now() - 5_000),
+            });
+
+            const res = await resendInvite(
+                jsonRequest('http://localhost:3000/api/team/invite/resend', {
+                    memberId: 'invited-1',
+                }),
+            );
+
+            expect(res.status).toBe(429);
+            const body = await res.json();
+            expect(body.error).toContain('recently');
+            expect(res.headers.get('Retry-After')).not.toBeNull();
+            expect(mockInviteTokenDeleteMany).not.toHaveBeenCalled();
+            expect(mockInviteTokenCreate).not.toHaveBeenCalled();
+        });
+
+        it('allows a resend once the cooldown has elapsed', async () => {
+            mockGetServerSession.mockResolvedValue(adminSession());
+            mockTeamMemberFindUnique.mockResolvedValue({
+                id: 'invited-1',
+                email: 'invited@test.com',
+                status: 'INVITED',
+            });
+            mockInviteTokenFindUnique.mockResolvedValue({
+                id: 'tok-old',
+                memberId: 'invited-1',
+                createdAt: new Date(Date.now() - 61_000),
+            });
+            mockInviteTokenDeleteMany.mockResolvedValue({ count: 1 });
+            mockInviteTokenCreate.mockResolvedValue({ token: 'new-token' });
+
+            const res = await resendInvite(
+                jsonRequest('http://localhost:3000/api/team/invite/resend', {
+                    memberId: 'invited-1',
+                }),
+            );
+
+            expect(res.status).toBe(200);
+            expect(mockInviteTokenCreate).toHaveBeenCalledTimes(1);
         });
     });
 
