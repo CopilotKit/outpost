@@ -31,6 +31,41 @@ describe('generateTicketId', () => {
         }
         expect(ids.size).toBe(100);
     });
+
+    it('does not depend on Math.random (uses a CSPRNG)', () => {
+        // Pin Math.random to a constant: a Math.random-based implementation
+        // would then emit the same ID every time.
+        vi.spyOn(Math, 'random').mockReturnValue(0.5);
+        try {
+            const ids = new Set<string>();
+            for (let i = 0; i < 50; i++) {
+                ids.add(generateTicketId());
+            }
+            expect(ids.size).toBeGreaterThan(1);
+        } finally {
+            vi.restoreAllMocks();
+        }
+    });
+
+    it('produces unique IDs across 2000 calls', () => {
+        const ids = new Set<string>();
+        for (let i = 0; i < 2000; i++) {
+            ids.add(generateTicketId());
+        }
+        // 32^8 keyspace: collisions at 2000 draws are ~1 in a million;
+        // a failure here almost certainly means broken randomness.
+        expect(ids.size).toBe(2000);
+    });
+
+    it('covers the full alphabet over many draws', () => {
+        const seen = new Set<string>();
+        for (let i = 0; i < 2000; i++) {
+            for (const ch of generateTicketId().replace('TKT-', '')) {
+                seen.add(ch);
+            }
+        }
+        expect(seen.size).toBe(32);
+    });
 });
 
 describe('formatDuration', () => {

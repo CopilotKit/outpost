@@ -1,15 +1,20 @@
+import { randomInt } from 'node:crypto';
 import { TICKET_ID_PREFIX, BACKOFF_BASE_MS, BACKOFF_MAX_MS } from './constants.js';
 
 /**
  * Generate a unique ticket ID in the format TKT-XXXXXXXX.
  * Uses 8 random characters from a 32-char alphabet (~1.1 trillion keyspace)
  * to make collisions negligible at scale.
+ *
+ * Drawn from `crypto.randomInt` (CSPRNG): display IDs are pasted into public
+ * threads and are therefore harvestable, so a non-crypto RNG would let an
+ * attacker shrink the search space for ID enumeration.
  */
 export function generateTicketId(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Omit ambiguous chars
     let id = '';
     for (let i = 0; i < 8; i++) {
-        id += chars[Math.floor(Math.random() * chars.length)];
+        id += chars[randomInt(chars.length)];
     }
     return `${TICKET_ID_PREFIX}-${id}`;
 }
