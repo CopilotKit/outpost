@@ -21,3 +21,9 @@ packages/outpost/db/prisma/migrations/
 # apps/web/src/app/**/templates/, exempting them from both the CI check and
 # `pnpm format` with no way to bring them back into compliance.
 /templates/
+
+# CLAUDE.md is hand-maintained spec prose with a wide trigger/skill reference
+# table, the same shape as the skill definitions above. Prettier pads every cell
+# out to the widest one, so a one-word edit rewrites the whole table and the real
+# change disappears into the diff. Anchored for the reason /templates/ records.
+/CLAUDE.md
