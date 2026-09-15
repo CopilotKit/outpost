@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, requireAdmin } from '@/lib/require-admin';
 import { prisma } from '@copilotkit/outpost/db';
 import type { Prisma } from '@copilotkit/outpost/db';
+import {
+    articleCreateSchema,
+    formatZodError,
+    sanitizeSearch,
+} from '@/lib/validate';
 
 /**
  * GET /api/docs/articles
@@ -16,7 +21,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = request.nextUrl;
     const categoryId = searchParams.get('category');
     const status = searchParams.get('status')?.toUpperCase() as 'DRAFT' | 'PUBLISHED' | null;
-    const search = searchParams.get('search');
+    const search = sanitizeSearch(searchParams.get('search'));
 
     const where: Prisma.DocArticleWhereInput = {};
 
@@ -56,16 +61,29 @@ export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
 
-        if (!body.title || !body.categoryId || !body.content) {
+        if (
+            body.title === undefined ||
+            body.categoryId === undefined ||
+            body.content === undefined
+        ) {
             return NextResponse.json(
                 { error: 'title, categoryId, and content are required' },
                 { status: 400 },
             );
         }
 
+        const parsed = articleCreateSchema.safeParse(body);
+        if (!parsed.success) {
+            return NextResponse.json(
+                { error: formatZodError(parsed.error) },
+                { status: 400 },
+            );
+        }
+        const input = parsed.data;
+
         // Verify the category exists
         const category = await prisma.docCategory.findUnique({
-            where: { id: body.categoryId },
+            where: { id: input.categoryId },
         });
 
         if (!category) {
@@ -77,11 +95,11 @@ export async function POST(request: NextRequest) {
 
         const newArticle = await prisma.docArticle.create({
             data: {
-                title: body.title,
-                content: body.content,
+                title: input.title,
+                content: input.content,
                 status: 'DRAFT',
-                sourceUrl: body.sourceUrl || null,
-                categoryId: body.categoryId,
+                sourceUrl: input.sourceUrl || null,
+                categoryId: input.categoryId,
             },
             include: { category: true },
         });

@@ -2,8 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@copilotkit/outpost/db';
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, generateTicketId } from '@copilotkit/outpost/shared';
+import { generateTicketId } from '@copilotkit/outpost/shared';
 import { TicketStatus, TicketPriority, TicketType, TicketSource, Prisma } from '@copilotkit/outpost/db';
+import {
+    ticketCreateSchema,
+    formatZodError,
+    parsePagination,
+    sanitizeSearch,
+    ticketStatusFilter,
+    ticketSourceFilter,
+    ticketPriorityFilter,
+    ticketTypeFilter,
+} from '@/lib/validate';
 
 /**
  * GET /api/tickets
@@ -20,32 +30,47 @@ export async function GET(request: NextRequest) {
     try {
         const { searchParams } = request.nextUrl;
 
-        const status = searchParams.getAll('status');
-        const source = searchParams.getAll('source');
-        const priority = searchParams.getAll('priority');
-        const type = searchParams.getAll('type');
+        const rawStatus = searchParams.getAll('status');
+        const rawSource = searchParams.getAll('source');
+        const rawPriority = searchParams.getAll('priority');
+        const rawType = searchParams.getAll('type');
         const accountId = searchParams.get('accountId') || undefined;
         const assigneeId = searchParams.get('assigneeId') || undefined;
-        const search = searchParams.get('search') || undefined;
-        const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
-        const pageSize = Math.min(
-            MAX_PAGE_SIZE,
-            Math.max(1, parseInt(searchParams.get('pageSize') || String(DEFAULT_PAGE_SIZE), 10)),
-        );
+        const search = sanitizeSearch(searchParams.get('search'));
+        const { page, pageSize, skip } = parsePagination(searchParams);
+
+        // Unknown enum values are a client bug: report them as 400 instead of
+        // letting Prisma throw and returning a 500.
+        const status = ticketStatusFilter().parseAll(rawStatus);
+        if (!status.ok) {
+            return NextResponse.json({ error: status.error }, { status: 400 });
+        }
+        const source = ticketSourceFilter().parseAll(rawSource);
+        if (!source.ok) {
+            return NextResponse.json({ error: source.error }, { status: 400 });
+        }
+        const priority = ticketPriorityFilter().parseAll(rawPriority);
+        if (!priority.ok) {
+            return NextResponse.json({ error: priority.error }, { status: 400 });
+        }
+        const type = ticketTypeFilter().parseAll(rawType);
+        if (!type.ok) {
+            return NextResponse.json({ error: type.error }, { status: 400 });
+        }
 
         const where: Prisma.TicketWhereInput = {};
 
-        if (status.length) {
-            where.status = { in: status as TicketStatus[] };
+        if (status.values.length) {
+            where.status = { in: status.values };
         }
-        if (source.length) {
-            where.source = { in: source as TicketSource[] };
+        if (source.values.length) {
+            where.source = { in: source.values };
         }
-        if (priority.length) {
-            where.priority = { in: priority as TicketPriority[] };
+        if (priority.values.length) {
+            where.priority = { in: priority.values };
         }
-        if (type.length) {
-            where.type = { in: type as TicketType[] };
+        if (type.values.length) {
+            where.type = { in: type.values };
         }
         if (accountId) {
             where.accountId = accountId;
@@ -75,7 +100,7 @@ export async function GET(request: NextRequest) {
                 },
                 orderBy: { createdAt: 'desc' },
                 take: pageSize,
-                skip: (page - 1) * pageSize,
+                skip,
             }),
             prisma.ticket.count({ where }),
         ]);
@@ -110,27 +135,41 @@ export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
 
-        if (!body.title || !body.description) {
+        if (
+            body.title === undefined ||
+            body.description === undefined ||
+            (typeof body.title === 'string' && body.title.trim() === '') ||
+            (typeof body.description === 'string' && body.description.trim() === '')
+        ) {
             return NextResponse.json(
                 { error: 'title and description are required' },
                 { status: 400 },
             );
         }
 
+        const parsed = ticketCreateSchema.safeParse(body);
+        if (!parsed.success) {
+            return NextResponse.json(
+                { error: formatZodError(parsed.error) },
+                { status: 400 },
+            );
+        }
+        const input = parsed.data;
+
         const ticket = await prisma.ticket.create({
             data: {
                 displayId: generateTicketId(),
-                title: body.title,
-                description: body.description,
+                title: input.title,
+                description: input.description,
                 status: TicketStatus.OPEN,
-                priority: (body.priority as TicketPriority) || TicketPriority.MEDIUM,
-                type: (body.type as TicketType) || TicketType.QUESTION,
-                source: (body.source as TicketSource) || TicketSource.MANUAL,
-                sourceUrl: body.sourceUrl || null,
-                additionalInfo: body.additionalInfo || undefined,
-                assigneeId: body.assigneeId || null,
-                accountId: body.accountId || null,
-                userId: body.userId || null,
+                priority: input.priority ?? TicketPriority.MEDIUM,
+                type: input.type ?? TicketType.QUESTION,
+                source: input.source ?? TicketSource.MANUAL,
+                sourceUrl: input.sourceUrl || null,
+                additionalInfo: input.additionalInfo ?? undefined,
+                assigneeId: input.assigneeId || null,
+                accountId: input.accountId || null,
+                userId: input.userId || null,
             },
             include: {
                 account: true,

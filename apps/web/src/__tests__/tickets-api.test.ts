@@ -66,6 +66,15 @@ vi.mock('@copilotkit/outpost/db', () => ({
         BOT: 'BOT',
         SYSTEM: 'SYSTEM',
     },
+    BroadcastAudience: {
+        ALL_ACCOUNTS: 'ALL_ACCOUNTS',
+        SELECTED_ACCOUNTS: 'SELECTED_ACCOUNTS',
+        BY_SENTIMENT: 'BY_SENTIMENT',
+    },
+    BroadcastStatus: {
+        DRAFT: 'DRAFT',
+        SENT: 'SENT',
+    },
     Prisma: {},
 }));
 

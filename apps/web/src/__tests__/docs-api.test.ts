@@ -24,6 +24,44 @@ vi.mock('@copilotkit/outpost/db', () => ({
             findFirst: (...args: unknown[]) => mockDocCategoryFindFirst(...args),
         },
     },
+    TicketStatus: {
+        OPEN: 'OPEN',
+        IN_PROGRESS: 'IN_PROGRESS',
+        WAITING_ON_CUSTOMER: 'WAITING_ON_CUSTOMER',
+        WAITING_ON_TEAM: 'WAITING_ON_TEAM',
+        RESOLVED: 'RESOLVED',
+        CLOSED: 'CLOSED',
+    },
+    TicketPriority: { CRITICAL: 'CRITICAL', HIGH: 'HIGH', MEDIUM: 'MEDIUM', LOW: 'LOW' },
+    TicketType: {
+        BUG: 'BUG',
+        FEATURE_REQUEST: 'FEATURE_REQUEST',
+        QUESTION: 'QUESTION',
+        INTEGRATION_HELP: 'INTEGRATION_HELP',
+        ACCOUNT_ISSUE: 'ACCOUNT_ISSUE',
+        OTHER: 'OTHER',
+    },
+    TicketSource: {
+        DISCORD: 'DISCORD',
+        SLACK: 'SLACK',
+        GITHUB_ISSUE: 'GITHUB_ISSUE',
+        GITHUB_DISCUSSION: 'GITHUB_DISCUSSION',
+        WEB: 'WEB',
+        EMAIL: 'EMAIL',
+        LINEAR: 'LINEAR',
+        MANUAL: 'MANUAL',
+        ORCA: 'ORCA',
+        TEAMS: 'TEAMS',
+    },
+    BroadcastAudience: {
+        ALL_ACCOUNTS: 'ALL_ACCOUNTS',
+        SELECTED_ACCOUNTS: 'SELECTED_ACCOUNTS',
+        BY_SENTIMENT: 'BY_SENTIMENT',
+    },
+    BroadcastStatus: {
+        DRAFT: 'DRAFT',
+        SENT: 'SENT',
+    },
 }));
 
 // ─── Mock next-auth ─────────────────────────────────────────────────────────
