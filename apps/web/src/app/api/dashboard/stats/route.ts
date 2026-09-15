@@ -77,8 +77,14 @@ export async function GET(request: Request) {
             prisma.ticket.count({
                 where: { slaBreachedAt: { not: null } },
             }),
-            // Get tickets with their first non-system, non-user-authored message for avg first response
+            // Get tickets with their first non-system, non-user-authored message for avg first response.
+            // Scoped to the selected month: previously this loaded the entire
+            // ticket table on every dashboard view and the average ignored
+            // the month picker beside it.
             prisma.ticket.findMany({
+                where: {
+                    createdAt: { gte: monthStart, lte: monthEnd },
+                },
                 select: {
                     createdAt: true,
                     user: { select: { name: true } },
@@ -91,10 +97,14 @@ export async function GET(request: Request) {
                     },
                 },
             }),
-            // Resolved/closed tickets for avg resolution time
+            // Resolved/closed tickets created in the selected month for avg
+            // resolution time. Previously unbounded: every resolved ticket
+            // ever was loaded to compute an "all-time" number that did not
+            // match the selected month.
             prisma.ticket.findMany({
                 where: {
                     status: { in: [TicketStatus.RESOLVED, TicketStatus.CLOSED] },
+                    createdAt: { gte: monthStart, lte: monthEnd },
                 },
                 select: {
                     createdAt: true,

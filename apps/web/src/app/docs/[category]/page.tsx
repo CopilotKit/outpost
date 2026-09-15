@@ -33,7 +33,7 @@ export default function CategoryPage({ params }: CategoryPageProps) {
         async function fetchData() {
             try {
                 // Fetch articles for this category
-                const artRes = await fetch(`/api/docs/articles?category=${categoryId}`);
+                const artRes = await fetch(`/api/docs/articles?category=${categoryId}&pageSize=100`);
                 if (!artRes.ok) {
                     setNotFound(true);
                     return;

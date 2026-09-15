@@ -41,7 +41,7 @@ export default function DocsPage() {
             try {
                 const [catRes, artRes] = await Promise.all([
                     fetch('/api/docs/categories'),
-                    fetch('/api/docs/articles'),
+                    fetch('/api/docs/articles?pageSize=100'),
                 ]);
                 if (catRes.ok) {
                     const catData = await catRes.json();

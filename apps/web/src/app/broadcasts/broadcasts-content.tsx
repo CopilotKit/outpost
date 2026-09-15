@@ -29,8 +29,8 @@ export default function BroadcastsContent() {
         setError(null);
         try {
             const url = status
-                ? `/api/broadcasts?status=${status}`
-                : '/api/broadcasts';
+                ? `/api/broadcasts?status=${status}&pageSize=100`
+                : '/api/broadcasts?pageSize=100';
             const res = await apiFetch(url);
             if (res.ok) {
                 const data = await res.json();
