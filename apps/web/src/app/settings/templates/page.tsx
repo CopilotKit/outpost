@@ -5,6 +5,21 @@ import { Mail, FileText, RotateCcw, Save, Eye, ChevronLeft } from 'lucide-react'
 import { PageHeader } from '@/components/page-header';
 import { apiFetch } from '@/lib/api-fetch';
 
+/**
+ * Turn a failed response into a message worth showing.
+ *
+ * The routes return `{ error }` with an actionable reason — an empty field, a missing
+ * template, insufficient permissions — and reporting a fixed string instead sends the
+ * author looking for an outage. The status tail matters for a genuine 500, which has no
+ * JSON body: it is the only thing separating "your input was rejected" from "the server
+ * broke".
+ */
+async function describeFailure(res: Response, fallback: string): Promise<string> {
+    const detail = await res.json().catch(() => null);
+    const serverMessage = detail && typeof detail.error === 'string' ? detail.error : null;
+    return serverMessage ?? `${fallback} (HTTP ${res.status})`;
+}
+
 interface TemplateEntry {
     slug: string;
     name: string;
@@ -44,7 +59,7 @@ export default function TemplatesPage() {
     const fetchTemplates = useCallback(async () => {
         try {
             const res = await apiFetch('/api/templates');
-            if (!res.ok) throw new Error('Failed to load templates');
+            if (!res.ok) throw new Error(await describeFailure(res, 'Failed to load templates'));
             const data = await res.json();
             setTemplates(data);
         } catch (err) {
@@ -64,7 +79,7 @@ export default function TemplatesPage() {
 
         try {
             const res = await apiFetch(`/api/templates/${slug}`);
-            if (!res.ok) throw new Error('Failed to load template');
+            if (!res.ok) throw new Error(await describeFailure(res, 'Failed to load template'));
             const data: TemplateDetail = await res.json();
             setSelected(data);
             setEditSubject(data.subject);
@@ -78,12 +93,14 @@ export default function TemplatesPage() {
         if (!selected) return;
 
         try {
+            // Send the draft, not an empty body. Previously the server rendered the
+            // STORED template, so an author previewed content they were not saving.
             const res = await apiFetch(`/api/templates/${selected.slug}/preview`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
+                body: JSON.stringify({ draft: { subject: editSubject, body: editBody } }),
             });
-            if (!res.ok) throw new Error('Preview failed');
+            if (!res.ok) throw new Error(await describeFailure(res, 'Preview failed'));
             const data: PreviewResult = await res.json();
             setPreview(data);
             setShowPreview(true);
@@ -104,9 +121,21 @@ export default function TemplatesPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ subject: editSubject, body: editBody }),
             });
-            if (!res.ok) throw new Error('Save failed');
-            setSuccess('Template saved successfully');
+            if (!res.ok) throw new Error(await describeFailure(res, 'Save failed'));
             await fetchTemplates();
+            // Says what actually happened. The override is written and every read
+            // surface honours it — this list, GET, the preview — but outgoing email
+            // does not: `sendEmail` consults an override only when handed a
+            // `dbLookup` (shared/src/email/sender.ts:166), and neither
+            // api/team/invite/route.ts:72 nor invite/resend/route.ts:52 passes one.
+            // So an invitee receives the on-disk copy.
+            //
+            // "Template saved successfully" was true about the row and false about
+            // the thing the author cared about, which is the same silent-success
+            // shape as the rest of this screen's history. Wiring the lookup is
+            // tracked separately, and per outpost#253 would not make an edited
+            // template reach an invitee today either.
+            setSuccess('Saved. Not yet used for outgoing email — see outpost#226.');
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Save failed');
         } finally {
@@ -123,10 +152,19 @@ export default function TemplatesPage() {
             const res = await apiFetch(`/api/templates/${selected.slug}`, {
                 method: 'DELETE',
             });
-            if (!res.ok) throw new Error('Reset failed');
-            setSuccess('Template reset to default');
+            if (!res.ok) throw new Error(await describeFailure(res, 'Reset failed'));
+            const result = await res.json().catch(() => null);
+
+            // selectTemplate clears the banners, so the message has to be set after the
+            // reloads rather than before them — otherwise a destructive action that now
+            // really deletes gives the author no feedback at all.
             await selectTemplate(selected.slug);
             await fetchTemplates();
+            setSuccess(
+                result?.hadOverride === false
+                    ? 'Template was already using the default'
+                    : 'Template reset to default',
+            );
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Reset failed');
         }
@@ -136,12 +174,9 @@ export default function TemplatesPage() {
         <div>
             <PageHeader
                 title="Email Templates"
-                description="Manage outbound email templates. Customize content and preview before saving."
+                description="Edit and preview outbound email templates. Saved edits are not yet used for outgoing email — see outpost#226."
                 icon={Mail}
-                breadcrumbs={[
-                    { label: 'Settings', href: '/settings' },
-                    { label: 'Templates' },
-                ]}
+                breadcrumbs={[{ label: 'Settings', href: '/settings' }, { label: 'Templates' }]}
             />
 
             {error && (
@@ -183,7 +218,7 @@ export default function TemplatesPage() {
                                                     : 'bg-muted text-muted-foreground'
                                             }`}
                                         >
-                                            {t.isOverride ? 'Custom' : 'Default'}
+                                            {t.isOverride ? 'Custom (preview only)' : 'Default'}
                                         </span>
                                     </div>
                                     <p className="mt-1 text-xs text-muted-foreground truncate">
@@ -248,9 +283,34 @@ export default function TemplatesPage() {
                                             <strong>Subject:</strong> {preview.subject}
                                         </p>
                                     </div>
-                                    <div
-                                        className="rounded-md border border-border bg-white p-4"
-                                        dangerouslySetInnerHTML={{ __html: preview.html }}
+                                    {/*
+                                     * Rendered in a sandboxed iframe, not via
+                                     * dangerouslySetInnerHTML. Template bodies are
+                                     * author-editable and stored, so injecting them
+                                     * here would execute saved script in every later
+                                     * viewer's session — and because the csrf cookie
+                                     * must be readable by client JS for the
+                                     * double-submit header, that script could read the
+                                     * CSRF token too.
+                                     *
+                                     * `sandbox=""` grants nothing: no scripts, no
+                                     * same-origin access. Do not add allow-scripts or
+                                     * allow-same-origin — together they let the frame
+                                     * remove its own sandbox. An allowlist sanitiser
+                                     * was the alternative and was rejected: templates
+                                     * legitimately contain rich HTML, so a sanitiser
+                                     * fights the feature and gets loosened over time.
+                                     *
+                                     * The height is fixed because measuring content to
+                                     * auto-size requires scripting in the frame, which
+                                     * is the thing being prevented.
+                                     */}
+                                    <iframe
+                                        title="Template preview"
+                                        sandbox=""
+                                        referrerPolicy="no-referrer"
+                                        srcDoc={preview.html}
+                                        className="h-[32rem] w-full rounded-md border border-border bg-white"
                                     />
                                 </div>
                             ) : (

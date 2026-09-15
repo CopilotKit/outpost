@@ -1,0 +1,17 @@
+{
+    // The BUILD config. Excludes test material from the emitted package; nothing
+    // else differs from ./tsconfig.json.
+    //
+    // This exists because the exclusions cannot live in tsconfig.json: that file is
+    // also what `typecheck` runs against (`tsc --project ai/tsconfig.json
+    // --noEmit`), so excluding tests there stops them being typechecked at all.
+    // Verified with an injected error — `const x: number = 'nope'` in a .test.ts
+    // went unreported. That trades a packaging wart for type errors reaching main,
+    // which is the worse half: vitest exercises runtime behaviour, so a test
+    // asserting against a shape that no longer exists would only surface as a
+    // confusing failure, or not at all.
+    //
+    // The default config stays inclusive so anything inheriting it sees everything.
+    "extends": "./tsconfig.json",
+    "exclude": ["node_modules", "dist", "**/*.test.ts", "**/__tests__/**", "**/__fixtures__/**"]
+}

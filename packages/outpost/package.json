@@ -32,7 +32,7 @@
     "scripts": {
         "build": "pnpm run build:shared && pnpm run build:db && pnpm run build:ai && pnpm run build:queue",
         "build:db": "prisma generate --schema=db/prisma/schema.prisma && tsc --project db/tsconfig.json",
-        "build:ai": "tsc --project ai/tsconfig.json",
+        "build:ai": "tsc --project ai/tsconfig.build.json",
         "build:queue": "tsc --project queue/tsconfig.json",
         "build:shared": "tsc --project shared/tsconfig.json",
         "typecheck": "tsc --project db/tsconfig.json --noEmit && tsc --project ai/tsconfig.json --noEmit && tsc --project queue/tsconfig.json --noEmit && tsc --project shared/tsconfig.json --noEmit",

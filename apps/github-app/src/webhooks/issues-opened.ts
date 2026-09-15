@@ -5,6 +5,7 @@ import { InboundHandler, GitHubPlatformAdapter } from '@copilotkit/outpost/share
 import type { InboundPrismaLike, CreateJobFn } from '@copilotkit/outpost/shared';
 import { getOctokit } from '../lib/github-client.js';
 import { isRepoAllowed } from '../lib/repo-allowlist.js';
+import { isLikelySpamIssue } from '../lib/spam-filter.js';
 import { config } from '../config.js';
 
 export async function handleIssueOpened(
@@ -14,12 +15,31 @@ export async function handleIssueOpened(
 
     console.log(
         `[GitHub App] Issue opened: ${repository.full_name}#${issue.number} ` +
-        `"${issue.title}" by ${sender.login}`,
+            `"${issue.title}" by ${sender.login}`,
     );
 
     if (!isRepoAllowed(repository.full_name, config.allowedRepos)) {
+        console.log(`[GitHub App] Ignoring issue on non-allowlisted repo ${repository.full_name}`);
+        return;
+    }
+
+    // Drop link-spam BEFORE a ticket exists. This is the gate, not a
+    // post-filter: creating the ticket is what enqueues the AI job, and that job
+    // is what forwards the body verbatim into `search-docs`/`search-code` on
+    // mcp.copilotkit.ai and then posts a public reply. Returning here means the
+    // spammer gets nothing — no answer to point at, no retrieval traffic, no row
+    // in the analytics that feed the weekly report and the gap-analysis prompt.
+    // See lib/spam-filter.ts for the rule and the measurements behind it.
+    if (
+        isLikelySpamIssue({
+            body: issue.body,
+            authorAssociation: issue.author_association,
+        })
+    ) {
         console.log(
-            `[GitHub App] Ignoring issue on non-allowlisted repo ${repository.full_name}`,
+            `[GitHub App] Ignoring link-spam issue ${repository.full_name}#${issue.number} ` +
+                `by ${sender.login} (${issue.body?.length ?? 0} chars, untrusted author, ` +
+                `no code block, links concentrated at one third-party host)`,
         );
         return;
     }

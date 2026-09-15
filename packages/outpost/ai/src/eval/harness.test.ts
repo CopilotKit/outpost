@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { scoreCases, formatReport, HISTORICAL_FAILURES, TARGET_SHAPE } from './harness.js';
+import { scoreCases, formatReport } from './harness.js';
+import { HISTORICAL_FAILURES, TARGET_SHAPE } from './__fixtures__/historical-failures.js';
 import { RULES } from './rules.js';
+import type { SearchResult } from '../types.js';
 
 describe('scoreCases', () => {
     it('reports every rule for every case', () => {
@@ -38,6 +40,24 @@ describe('the documented failures are all caught', () => {
         expect(failed).toContain('no-banned-phrases');
     });
 
+    // Looked up by id rather than index: the cases above are positional, so
+    // inserting anywhere but the end silently reassigns which case each of those
+    // assertions is about.
+    it('catches case E for the praise opener and the self-positioning paragraph', () => {
+        const caseE = HISTORICAL_FAILURES.find(
+            (c) => c.id === 'case-e-mcp-headers-self-commentary',
+        );
+        if (!caseE) throw new Error('case-e fixture is missing');
+
+        const failed = scoreCases([caseE]).cases[0].failed;
+
+        // `failed` carries rule ids, not which phrase fired, so this pins the
+        // fixture rather than the pattern — the opener alone would satisfy it.
+        // Which phrases are caught is pinned in rules.test.ts, where reverting the
+        // widened pattern fails six cases.
+        expect(failed).toContain('no-banned-phrases');
+    });
+
     it('catches case B for the dead package and the invented name', () => {
         const failed = scoreCases([HISTORICAL_FAILURES[1]]).cases[0].failed;
         expect(failed).toContain('no-dead-package');
@@ -70,6 +90,37 @@ describe('the target shape passes', () => {
 describe('an empty case list', () => {
     it('is refused rather than scored as clean', () => {
         expect(() => scoreCases([])).toThrow(/no cases/i);
+    });
+});
+
+// A not-applicable rule carries `passed: false`, so an unfiltered failing-cases
+// block printed `n/a` for a rule and then listed it as a failure two lines later —
+// re-creating the double-counting in the human-readable output.
+describe('the report does not list an unevaluated rule as a failure', () => {
+    const urlLess: SearchResult[] = [
+        { title: 'CopilotChat', content: 'Use the `CopilotChat` component.', score: 0.9 },
+    ];
+    const report = () =>
+        formatReport(
+            scoreCases([
+                {
+                    id: 'c1',
+                    question: 'q',
+                    reply: 'Great question! ' + 'padding word '.repeat(30),
+                    sources: urlLess,
+                    provenance: 'test',
+                },
+            ]),
+        );
+
+    it('marks the citation rule n/a in the per-rule table', () => {
+        expect(report()).toContain('n/a  cites-or-is-a-short-handoff: 0/0');
+    });
+
+    it('does not repeat it under the failing cases', () => {
+        const failingBlock = report().split('Failing cases:')[1] ?? '';
+        expect(failingBlock).toContain('no-banned-phrases');
+        expect(failingBlock).not.toContain('cites-or-is-a-short-handoff');
     });
 });
 

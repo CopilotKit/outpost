@@ -73,6 +73,30 @@ export const config = {
         sessionTtlMs: 30 * 60 * 1000,
         /** Reconnect grace period before TTL expiry (5 minutes) */
         refreshBeforeExpiryMs: 5 * 60 * 1000,
+        /**
+         * Hard cap on the characters sent as an MCP search `query`.
+         *
+         * A retrieval query is an embedding input, not a transcript: the issue
+         * body still reaches the generator in full, only the SEARCH string is
+         * capped. Measured on 7 days of Pathfinder's `query_log`, the longest
+         * query from any client that is NOT a relay is 194 characters, while the
+         * SEO-spam bodies this relay forwarded verbatim ran 3,304-3,631 — and
+         * scored a feeble 0.33-0.43 cosine for it, so the long tail was buying
+         * nothing. 1000 leaves ~5x headroom over every observed human query.
+         */
+        maxQueryChars: parseInt(process.env.PATHFINDER_MAX_QUERY_CHARS ?? '1000', 10),
+        /**
+         * Value sent as `X-Pathfinder-Source` on the MCP `initialize` request.
+         *
+         * Pathfinder captures this header ONCE, at session initialisation, and
+         * closes over it for the session's lifetime — so it must ride on
+         * `initialize`, never on an individual `tools/call`. It exists so this
+         * relay's traffic is attributable and, more to the point, EXCLUDABLE:
+         * every query from here is machine traffic derived from someone else's
+         * text, and it should not rank in Top Queries or seed a gap-analysis
+         * prompt just because it was loud.
+         */
+        sourceTag: process.env.PATHFINDER_SOURCE ?? 'outpost',
     },
 } as const;
 
@@ -86,7 +110,7 @@ export function validateConfig(): void {
     if (!config.anthropicApiKey) {
         throw new Error(
             '[AI Config] ANTHROPIC_API_KEY is required but not set. ' +
-            'Set the ANTHROPIC_API_KEY environment variable before starting the pipeline.',
+                'Set the ANTHROPIC_API_KEY environment variable before starting the pipeline.',
         );
     }
 }

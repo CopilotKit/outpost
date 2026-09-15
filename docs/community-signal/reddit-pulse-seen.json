@@ -1,5 +1,5 @@
 {
-  "_comment": "DEDUP DATABASE for Reddit Pulse — operational state, NOT the report and NOT the Composio/Reddit connection. The Weekly Community Signal report lives ONLY in Notion; this file is the one allowed data artifact in the repo. It records Reddit post IDs already surfaced in past reports so the rolling 90-day Reddit Pulse never re-reports the same post. Each weekly run: read this file, skip any id listed, then append the run's surfaced + noise ids under a new dated entry; prune ids older than 90 days (they can't reappear in the window). NOTE: connecting to Composio/Reddit is separate and lives in .env (COMPOSIO_API_KEY, write-scoped) + a live connected_account_id fetched at runtime — none of that is stored here.",
+  "_comment": "DEDUP DATABASE for Reddit Pulse \u2014 operational state, NOT the report and NOT the Composio/Reddit connection. The Weekly Community Signal report lives ONLY in Notion; this file is the one allowed data artifact in the repo. It records Reddit post IDs already surfaced in past reports so the rolling 90-day Reddit Pulse never re-reports the same post. Each weekly run: read this file, skip any id listed, then append the run's surfaced + noise ids under a new dated entry; prune ids older than 90 days (they can't reappear in the window). NOTE: connecting to Composio/Reddit is separate and lives in .env (COMPOSIO_API_KEY, write-scoped) + a live connected_account_id fetched at runtime \u2014 none of that is stored here.",
   "runs": [
     {
       "run_date": "2026-06-19",
@@ -141,7 +141,7 @@
         "1v8mce6",
         "1ucfoy8"
       ],
-      "_note": "recovered 2026-08-14 from unmerged branch chore/community-signal-jul31-spec-updates (commit 6fe908b, 2026-08-01) — this run's dedup entry never reached main"
+      "_note": "recovered 2026-08-14 from unmerged branch chore/community-signal-jul31-spec-updates (commit 6fe908b, 2026-08-01) \u2014 this run's dedup entry never reached main"
     },
     {
       "run_date": "2026-08-07",
@@ -380,6 +380,33 @@
         "1vo4j26",
         "1vo4sl8",
         "1vo66kq"
+      ]
+    },
+    {
+      "run_date": "2026-08-21",
+      "window": "2026-05-23..2026-08-21",
+      "note": "Zero new brand posts. seen_ids are evaluated-and-dropped noise candidates only. Bare-term cap-noise ids (~116) deliberately not appended. Prune skipped: earlier runs store bare id strings with no dates.",
+      "seen_ids": [
+        {
+          "id": "1vubwb5",
+          "created": "2026-08-21"
+        },
+        {
+          "id": "1vudy45",
+          "created": "2026-08-21"
+        },
+        {
+          "id": "1vsnaan",
+          "created": "2026-08-19"
+        },
+        {
+          "id": "1vrkcgd",
+          "created": "2026-08-18"
+        },
+        {
+          "id": "1vrkcbi",
+          "created": "2026-08-18"
+        }
       ]
     }
   ]

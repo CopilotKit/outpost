@@ -22,6 +22,19 @@ This report is read by the **product + engineering teams**. A false surface / ti
 
 Non-negotiable. When in doubt, fetch again or drop the claim. The orchestrator's link-review pass re-checks these against the live pages before publish.
 
+### A WebFetch extraction is not a quote — grep the raw payload before claiming a gate
+
+**Learned 2026-08-21, the hard way.** This scan reported that `docs.copilotkit.ai/premium/headless-ui` had gained an explicit premium gate, quoting a sentence about needing Cloud or a self-hosted license. It went into the report and into this file. The link-review pass then grepped the page's full 264KB Next.js payload — markdown extraction, raw-HTML text, and the script/RSC blocks — and found `license` **zero times**. Every hit for "Enterprise Intelligence Platform", "self-host" and "premium" was sidebar navigation, sidebar-tree JSON, or `<meta>`/OG tags. The "quote" was assembled from chrome, not from body copy. Both the report and this file had to be corrected.
+
+So, for any claim that a feature **is gated, is Premium, is Enterprise-only, or changed tier**:
+
+- **WebFetch markdown extraction alone is not sufficient evidence.** These are JS-heavy marketing and docs pages; the extractor flattens nav, sidebar JSON, and meta tags into the same text stream as the prose, and a gating sentence can be synthesized from fragments that are not next to each other on the rendered page.
+- **Fetch the raw payload and grep it**, then confirm the words sit in **body copy** — not in a nav list, a sidebar tree, a `<meta>` tag, or an OG description. Say which, in your return.
+- **A URL path is not a gate.** A page living under `/premium/` tells you how the docs are organized. It does not tell you the feature is paid. Report the path as a path.
+- **Absence claims need the same treatment, and they hold up better** — the same pass confirmed "Coming Soon" was genuinely gone from `/copilotkit-intelligence` by grepping the full page twice. A negative you have grepped is stronger evidence than a positive you have only extracted.
+
+When the two methods disagree, the raw grep wins and the claim is dropped.
+
 ## What it does
 
 1. **Fetch the canonical pages** (below) with `WebFetch`. If a page 404s or is unreachable, record that (don't guess) — a page going live/dead is itself a signal (e.g. `copilotkit.ai/enterprise` is currently a 404; if it goes live, flag it).

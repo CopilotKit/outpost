@@ -8,6 +8,7 @@ import {
     buildChannelGuidance,
     extractResponseText,
 } from './generator.js';
+import { checkReply, HANDOFF_WORD_CAP } from './eval/rules.js';
 import { ConfidenceLevel } from './types.js';
 import type { SearchResult } from './types.js';
 
@@ -333,9 +334,7 @@ describe('ResponseGenerator', () => {
         // The JSON result format and the plain-text fallback carry no marker, so an
         // unlabelled source must not be asserted as either kind.
         it('leaves a source of unknown kind unlabelled', () => {
-            const prompt = build([
-                { title: 'Untitled', content: 'something', score: 0.5 },
-            ]);
+            const prompt = build([{ title: 'Untitled', content: 'something', score: 0.5 }]);
 
             expect(prompt).toContain('[Source 1: Untitled');
             expect(prompt).not.toContain('DOCS Source 1');
@@ -347,7 +346,9 @@ describe('ResponseGenerator', () => {
         it('states the model has not reproduced or tested, and has read only what was retrieved', () => {
             expect(GROUNDING_RULES).toContain('reproduced');
             expect(GROUNDING_RULES).toContain('run any test');
-            expect(GROUNDING_RULES).toContain('not read any file that is not in the Documentation Context');
+            expect(GROUNDING_RULES).toContain(
+                'not read any file that is not in the Documentation Context',
+            );
         });
 
         // The regression guard that matters. This exact instruction was in the
@@ -404,6 +405,142 @@ describe('ResponseGenerator', () => {
             expect(GROUNDING_RULES).toContain(
                 'override the personality and formatting rules above',
             );
+        });
+    });
+
+    // The prompt is the other half of `eval/rules.ts`. #241 landed the reply
+    // rules as code while this prompt still mandated the shape they penalise —
+    // "Always include code examples", "**bold headers**", "Was this helpful?" —
+    // so the linter built to enforce the rules would have collapsed drafts the
+    // prompt had just asked for. Root cause 2 in the Agent's Output Doc is that
+    // contradiction: formatting was mandatory and having something to say was
+    // not, so a short honest reply was impossible to produce.
+    //
+    // These tests pin the two halves together. The killed mandates cannot come
+    // back silently, and each mechanical rule is asserted against the linter
+    // that fails a reply for breaking it — so the prompt and the rule name the
+    // same thing or the test goes red.
+    describe('SYSTEM_PROMPT_PREFIX reply shape', () => {
+        it('no longer mandates a code example in every reply', () => {
+            expect(SYSTEM_PROMPT_PREFIX).not.toContain('Always include code examples');
+        });
+
+        it('no longer mandates bold headers and bullet points', () => {
+            expect(SYSTEM_PROMPT_PREFIX).not.toContain('Structure responses with **bold headers**');
+            expect(SYSTEM_PROMPT_PREFIX).not.toContain('Use bold for emphasis');
+        });
+
+        // The closing slot is what Case D filled with issue-writing advice once
+        // it had no facts left to report.
+        it('no longer requires a closing follow-up suggestion', () => {
+            expect(SYSTEM_PROMPT_PREFIX).not.toContain('Was this helpful?');
+            expect(SYSTEM_PROMPT_PREFIX).not.toContain('End with a relevant follow-up');
+        });
+
+        it('puts the verdict in the first sentence', () => {
+            expect(SYSTEM_PROMPT_PREFIX).toContain('first sentence');
+            expect(SYSTEM_PROMPT_PREFIX).toContain('never build up to it');
+        });
+
+        it('asks for one approach rather than a menu', () => {
+            expect(SYSTEM_PROMPT_PREFIX).toContain('Never a menu of three');
+        });
+
+        it('ties length to the evidence instead of to a required layout', () => {
+            expect(SYSTEM_PROMPT_PREFIX).toContain('Length follows the evidence');
+            expect(SYSTEM_PROMPT_PREFIX).toContain('enough content to organise');
+        });
+
+        it('requires a docs page or repo file for a substantive claim', () => {
+            expect(SYSTEM_PROMPT_PREFIX).toContain('repo file');
+            expect(SYSTEM_PROMPT_PREFIX).toContain('only lives in code');
+        });
+
+        it('holds one API version per reply', () => {
+            expect(SYSTEM_PROMPT_PREFIX).toContain('One version of the API per reply');
+        });
+
+        // The doc's "if someone asks about v1, answer the v1 question" — the
+        // recommendation is v2, which is not the same as refusing the question
+        // that was asked.
+        it('answers a v1 question rather than redirecting it', () => {
+            expect(SYSTEM_PROMPT_PREFIX).toContain('answer the v1 question');
+        });
+    });
+
+    // Each of these pairs the prompt with the linter rule that fails a reply for
+    // breaking it. Asserting the rule fails first is what keeps the pair honest:
+    // a prompt line matched against a rule that no longer fires would pass while
+    // enforcing nothing.
+    describe('SYSTEM_PROMPT_PREFIX matches the linter rules', () => {
+        const ruleFor = (reply: string, rule: string) =>
+            checkReply(reply, []).find((r) => r.rule === rule);
+
+        it('bans the praise opener the linter fails a reply for', () => {
+            expect(
+                ruleFor(`Great question. ${'detail '.repeat(20)}`, 'no-banned-phrases')?.passed,
+            ).toBe(false);
+            expect(SYSTEM_PROMPT_PREFIX).toContain('Great question');
+        });
+
+        it('bans the self-commentary the linter fails a reply for', () => {
+            expect(
+                ruleFor(`What I can't do from here is ${'detail '.repeat(20)}`, 'no-banned-phrases')
+                    ?.passed,
+            ).toBe(false);
+            expect(SYSTEM_PROMPT_PREFIX).toContain("What I can't do from here");
+        });
+
+        it('bans the hedged name the linter fails a reply for', () => {
+            expect(
+                ruleFor(
+                    `Use useCopilotAction or the equivalent hook. ${'detail '.repeat(20)}`,
+                    'no-hedged-names',
+                )?.passed,
+            ).toBe(false);
+            expect(SYSTEM_PROMPT_PREFIX).toContain('or the equivalent');
+        });
+
+        // The linter's carve-out is the same as the prompt's: naming the retired
+        // package is only correct as a migration instruction, alongside the live
+        // package that replaced it.
+        it('bans the retired package the linter fails a reply for, with the same carve-out', () => {
+            expect(
+                ruleFor(`Install @copilotkitnext/react. ${'detail '.repeat(20)}`, 'no-dead-package')
+                    ?.passed,
+            ).toBe(false);
+            expect(SYSTEM_PROMPT_PREFIX).toContain('@copilotkitnext');
+            expect(SYSTEM_PROMPT_PREFIX).toContain('@copilotkit');
+        });
+
+        // Reads the cap off the rules module rather than restating 60, so moving
+        // the cap moves the prompt or breaks this test.
+        it('states the handoff cap the linter enforces', () => {
+            expect(SYSTEM_PROMPT_PREFIX).toContain(`${HANDOFF_WORD_CAP} words`);
+            expect(SYSTEM_PROMPT_PREFIX).toContain('two sentences');
+        });
+    });
+
+    // Zero retrieval used to invite the model to answer "from general CopilotKit
+    // knowledge if possible" — root cause 1 written into the prompt, and exactly
+    // what produced an invented answer when Pathfinder returned nothing. With no
+    // sources there is nothing to be right from, so the only correct reply is the
+    // handoff.
+    describe('buildSystemPrompt with no sources', () => {
+        const generator = new ResponseGenerator({ apiKey: 'test-key' });
+        const build = () =>
+            (
+                generator as unknown as {
+                    buildSystemPrompt: (s: SearchResult[], src?: undefined) => string;
+                }
+            ).buildSystemPrompt([], undefined);
+
+        it('does not invite an answer from general knowledge', () => {
+            expect(build()).not.toContain('general CopilotKit knowledge');
+        });
+
+        it('asks for the handoff instead', () => {
+            expect(build()).toContain('two-sentence handoff');
         });
     });
 

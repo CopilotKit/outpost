@@ -47,14 +47,24 @@ export type {
     TopIssueInput,
     ScoredTopIssue,
 } from './front-door.js';
-// The rule set and the scorer are API — Phase 3's linter consumes them.
-// HISTORICAL_FAILURES and TARGET_SHAPE deliberately are NOT: they are test data,
-// and exporting them put reconstructed bad replies containing
-// `useCopilotFabricatedRender` and `@copilotkitnext/react` into dist and the
-// worker image, where they would surface in a bundle grep for the dead package.
-// Import them from './eval/harness.js' directly in tests and offline runners.
+// The rule set, the scorer and the linter are API — the linter consumes the
+// first two.
+//
+// The eval fixtures are not, and are no longer reachable from here: they live in
+// `eval/__fixtures__/`, which `ai/tsconfig.json` excludes from the build. Not
+// re-exporting them was never sufficient on its own — `tsc` emits per file and
+// this module imports `./eval/harness.js`, so while they lived in `harness.ts`
+// the reconstructed bad replies shipped in `dist/eval/harness.js` regardless of
+// what this entry point declared.
+//
+// Verified against a built `dist`: no fixture reply text remains. `@copilotkitnext`
+// still appears in `dist/eval/rules.js`, and has to — that is the rule which bans
+// it. A bundle grep for the dead package name will hit the rule, not a fabricated
+// example of it.
 export { checkReply, RULES, HANDOFF_WORD_CAP, MIN_REPLY_WORDS } from './eval/rules.js';
 export type { RuleId, RuleResult } from './eval/rules.js';
 export { scoreCases, formatReport } from './eval/harness.js';
+export { lintDraft, describeVerdict } from './eval/linter.js';
+export type { LintMode, LintVerdict } from './eval/linter.js';
 export type { EvalCase, CaseScore, EvalReport } from './eval/harness.js';
 export * from './types.js';

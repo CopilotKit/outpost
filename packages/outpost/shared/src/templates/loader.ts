@@ -29,8 +29,10 @@ export function parseFrontmatter(raw: string): { meta: TemplateMeta; body: strin
         const key = line.slice(0, colonIdx).trim();
         let value = line.slice(colonIdx + 1).trim();
         // Strip surrounding quotes
-        if ((value.startsWith('"') && value.endsWith('"')) ||
-            (value.startsWith("'") && value.endsWith("'"))) {
+        if (
+            (value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))
+        ) {
             value = value.slice(1, -1);
         }
         meta[key] = value;
@@ -117,6 +119,34 @@ export async function loadTemplate(
 }
 
 /** List all available template slugs from the filesystem. */
+/**
+ * Whether `slug` names one of the templates that actually exist.
+ *
+ * The reason this exists rather than a path check: `loadFromFilesystem` builds
+ * `join(dir, slug + '.md')` with no validation, and Next decodes percent-encoding
+ * in a dynamic segment before a handler sees it — so `../docs/deployment` reaches
+ * the loader as a traversal and reads the file. Verified against the real
+ * function: `../README`, `../CLAUDE`, `../docs/deployment` and
+ * `invite/../../README` all returned file contents, and the API route hands
+ * `subject` and `body` back in its JSON response.
+ *
+ * An existence check does NOT close that, and this is the part worth being
+ * explicit about: a guard shaped like `if (!loadFromFilesystem(slug))` SUCCEEDS
+ * for every path above, so it approves the request it looks like it rejects. The
+ * check performs the escape it appears to prevent.
+ *
+ * Membership in the real slug list is the property that holds, because a
+ * traversal path is never a member however it is spelled. It also makes the
+ * existence probes redundant — a slug that passed here is known to exist.
+ *
+ * Note the interaction with outpost#253: where `templates/` is absent from the
+ * running image, this returns false for everything and callers 404. That is the
+ * same behaviour those callers already had, and it fails in the safe direction.
+ */
+export function isKnownTemplateSlug(slug: string): boolean {
+    return listTemplateSlugs().includes(slug);
+}
+
 export function listTemplateSlugs(): string[] {
     const dir = findTemplatesDir();
     try {

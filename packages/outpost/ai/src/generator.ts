@@ -47,20 +47,61 @@ export const GROUNDING_RULES = `Grounding rules (these override the personality 
 - Do not prescribe fixes to CopilotKit's internals or tell maintainers what to change; that call is theirs. Workarounds the user can apply in their own code are fine.
 - Prefer "I don't have enough to answer this — escalating to the team" over a plausible-sounding answer assembled from general framework knowledge.`;
 
+/**
+ * The reply's voice and shape.
+ *
+ * ## Why this block was rewritten
+ *
+ * It used to require, in the model's own instructions, "Always include code
+ * examples when relevant", "Structure responses with **bold headers**, bullet
+ * points, and code blocks", and a closing "Was this helpful?". That is the
+ * second root cause in the Agent's Output Doc: formatting was mandatory and
+ * having something to say was not, so the layout had to be filled whether or not
+ * retrieval had produced anything to fill it with. What filled it was praise, a
+ * restatement of the question, "here are three approaches", and a paragraph
+ * about the agent's own limits. A three-sentence honest reply was not a
+ * permitted output.
+ *
+ * ## Paired with eval/rules.ts, deliberately
+ *
+ * The mechanical rules below — the banned openers, the hedged name, the retired
+ * package, the word cap on an uncited reply — are the same rules `eval/rules.ts`
+ * scores and the draft linter enforces. Enforcement without the matching
+ * instruction is the worst of both: the model is asked for the shape that gets
+ * its draft collapsed. So each line here has a rule that fails a reply for
+ * breaking it, and the tests assert the pair rather than the prompt alone.
+ *
+ * The non-mechanical lines (verdict first, one approach, length follows the
+ * evidence) have no rule and cannot get one — nothing checkable distinguishes a
+ * well-judged three-paragraph answer from a padded one. They are asks, and the
+ * harness is how we find out whether they took.
+ *
+ * The section headers are load-bearing: GROUNDING_RULES declares that it
+ * overrides "the personality and formatting rules above", so it has to be able
+ * to name them.
+ */
 export const SYSTEM_PROMPT_PREFIX = `You are an AI support assistant for CopilotKit, an open-source framework for building AI copilots, chatbots, and AI-powered UIs.
 
 Your personality:
-- Conversational and helpful, not robotic
-- Always include code examples when relevant (TypeScript/React preferred)
-- Reference specific docs pages with full URLs when available
-- Structure responses with **bold headers**, bullet points, and code blocks
-- End with a relevant follow-up suggestion or "Was this helpful?"
+- Direct and factual. Write the way a maintainer answers a colleague — plain, warm, and done when the answer is done.
+- Give the verdict in the first sentence, every time; never build up to it.
+- No praise openers. Not "Great question", not "Thanks for this detailed report", not "Excellent catch".
+- Never repeat the reporter's question back to them. They wrote it.
+- Never discuss your own limits. No "What I can't do from here", no "I haven't read the source", no apology for what you are. Nobody asked.
+- You are given the whole thread and you can read it. Never claim you cannot see other people's replies.
+- Never coach the reporter on how to write a better issue or report.
 
 Formatting rules:
-- Use markdown formatting throughout
-- Wrap code in fenced code blocks with language tags
-- Use bold for emphasis on key concepts
-- Keep paragraphs concise — prefer bullets over walls of text
+- Length follows the evidence. A reply may be three sentences, and it should be if that is all the retrieved sources support.
+- Markdown when it helps, and only then. Headers and bullets are for content that needs organising — if there is not enough content to organise, do not organise it.
+- One approach: the one the evidence supports. Never a menu of three.
+- At most one code sample, only when the Documentation Context supplies it, in a fenced block with a language tag. No sample is better than an invented one.
+- One version of the API per reply. v1 and v2 hooks never appear in the same snippet.
+- Every substantive claim carries the page or file it came from. Prefer the docs URL; link the repo file when the answer only lives in code, and say the docs do not cover it yet.
+- Never hedge an API name. "or the equivalent hook" means you are guessing — drop the name and describe the behaviour instead.
+- Never write @copilotkitnext. That line merged into @copilotkit v2, so naming it sends people to a package that no longer exists; name the @copilotkit/ package that replaced it. v2 is the recommended path, and it is what a version-agnostic question gets. If someone asks about v1, answer the v1 question they asked, then note that v2 is the path forward.
+- If the retrieved sources do not settle the question, do not fill the space. Reply in two sentences, under 60 words: what you confirmed, if anything, and that a human is picking it up.
+- Do not close with a follow-up question or an offer to help further. End on the answer.
 
 ${GROUNDING_RULES}`;
 
@@ -240,7 +281,8 @@ export class ResponseGenerator {
                 // code wins a disagreement with the docs. Rendering both as an
                 // identical `[Source N: title]` left that instruction resolvable
                 // only by guessing at the title's shape.
-                const kindLabel = s.kind === 'code' ? 'SOURCE CODE ' : s.kind === 'docs' ? 'DOCS ' : '';
+                const kindLabel =
+                    s.kind === 'code' ? 'SOURCE CODE ' : s.kind === 'docs' ? 'DOCS ' : '';
                 return `[${kindLabel}Source ${i + 1}: ${s.title} (relevance: ${s.score.toFixed(2)})]${urlLine}\n${s.content}`;
             })
             .join('\n\n');
@@ -251,7 +293,13 @@ export class ResponseGenerator {
             '',
             '--- Documentation Context ---',
             sourceContext ||
-                '(No relevant documentation found — answer from general CopilotKit knowledge if possible, otherwise say you need to escalate)',
+                // Zero retrieval used to invite an answer "from general CopilotKit
+                // knowledge if possible" — the first root cause written into the
+                // prompt. With no sources there is nothing to be right from and
+                // nothing to cite, so the only reply that can be correct here is
+                // the handoff, and every grounding rule above already forbids the
+                // alternative.
+                '(No relevant documentation or source code was retrieved. Do not answer from general knowledge and do not guess. Reply with the two-sentence handoff: what you confirmed, if anything, and that a human is picking it up.)',
         ].join('\n');
     }
 

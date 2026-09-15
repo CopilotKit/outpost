@@ -36,6 +36,31 @@ function blobUrl(repository: string | undefined, path: string | undefined): stri
 }
 
 /**
+ * Cap what goes out as an MCP search `query`.
+ *
+ * The relay forwards a whole GitHub issue body as the retrieval string. That is
+ * wrong twice over. It is bad retrieval — a 3.3 KB marketing blob scored 0.33
+ * cosine against our docs, worse than the one-line questions it sits beside —
+ * and it is an amplification channel: whatever an anonymous stranger types
+ * arrives verbatim in Pathfinder's `query_log`, its Top Queries panel, the
+ * weekly Notion report, and the monthly gap-analysis LLM prompt. Capping it is
+ * content-independent: it bounds the NEXT campaign too, whatever it advertises.
+ *
+ * The head is kept rather than the tail because the opening sentences are where
+ * the question lives — a bug report leads with the symptom and trails into
+ * environment dumps. The cut is pulled back to the last whitespace in the final
+ * 15% so a query does not end mid-token, which is noise to an embedding.
+ *
+ * Exported for the test that proves the cap actually reaches the wire.
+ */
+export function capQuery(query: string, maxChars: number): string {
+    if (maxChars <= 0 || query.length <= maxChars) return query;
+    const head = query.slice(0, maxChars);
+    const lastSpace = head.search(/\s\S*$/);
+    return (lastSpace > maxChars * 0.85 ? head.slice(0, lastSpace) : head).trimEnd();
+}
+
+/**
  * The Pathfinder search tools, verified against `tools/list` on
  * https://mcp.copilotkit.ai/mcp. All four take the same arguments
  * (`query`, `limit`, `min_score`, `version`).
@@ -96,16 +121,22 @@ export class PathfinderClient {
         // would fall back forever.
         this.reset();
 
-        const { body, sessionId } = await this.post({
-            jsonrpc: '2.0',
-            id: this.nextId++,
-            method: 'initialize',
-            params: {
-                protocolVersion: '2024-11-05',
-                capabilities: {},
-                clientInfo: { name: 'outpost', version: '1.0.0' },
+        const { body, sessionId } = await this.post(
+            {
+                jsonrpc: '2.0',
+                id: this.nextId++,
+                method: 'initialize',
+                params: {
+                    protocolVersion: '2024-11-05',
+                    capabilities: {},
+                    clientInfo: { name: 'outpost', version: '1.0.0' },
+                },
             },
-        });
+            // Identify the relay. Pathfinder reads `X-Pathfinder-Source` only on
+            // the request that mints the session and closes over it for every
+            // later tool call, so `initialize` is the one place it can be set.
+            { 'X-Pathfinder-Source': config.pathfinder.sourceTag },
+        );
 
         const parsed = this.parseJsonRpc(body);
         if (parsed.error) {
@@ -145,6 +176,7 @@ export class PathfinderClient {
      */
     private async post(
         message: Record<string, unknown>,
+        extraHeaders?: Record<string, string>,
     ): Promise<{ body: string; sessionId: string | null }> {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), config.pathfinder.requestTimeoutMs);
@@ -157,6 +189,7 @@ export class PathfinderClient {
             if (this.sessionId) {
                 headers['Mcp-Session-Id'] = this.sessionId;
             }
+            Object.assign(headers, extraHeaders);
 
             const response = await fetch(this.endpoint, {
                 method: 'POST',
@@ -335,6 +368,15 @@ export class PathfinderClient {
             // A code block is the one with a PATH and no TITLE. Derived from the
             // headers rather than from PATH alone, so a docs block can never be
             // mistaken for code and lose its citable URL.
+            //
+            // This depends on a server-side contract we do not own: that a code
+            // hit never carries a TITLE. It holds against the current
+            // `tools/list` on mcp.copilotkit.ai. If a code result ever gains one,
+            // `isCode` goes false, `source` falls back to `header('SOURCE')`
+            // — absent on a code block — and the file path silently stops being
+            // citable, which the reply rules then turn into a handoff. The
+            // both-headers case is pinned in pathfinder.test.ts so the change in
+            // behaviour is visible rather than silent.
             const isCode = !titleHeader && !!path;
 
             const title = titleHeader ?? path ?? 'Documentation';
@@ -376,7 +418,7 @@ export class PathfinderClient {
     private async search(tool: SearchTool, query: PathfinderQuery): Promise<SearchResult[]> {
         try {
             const result = await this.callTool(tool, {
-                query: query.query,
+                query: capQuery(query.query, config.pathfinder.maxQueryChars),
                 limit: query.limit ?? config.pathfinder.defaultLimit,
                 min_score: query.minScore ?? config.pathfinder.defaultMinScore,
             });
@@ -419,7 +461,7 @@ export class PathfinderClient {
     async searchDocs(query: PathfinderQuery): Promise<SearchResult[]> {
         try {
             const result = await this.callTool('search-docs', {
-                query: query.query,
+                query: capQuery(query.query, config.pathfinder.maxQueryChars),
                 limit: query.limit ?? config.pathfinder.defaultLimit,
                 min_score: query.minScore ?? config.pathfinder.defaultMinScore,
             });
@@ -514,7 +556,10 @@ export class PathfinderClient {
             const score = matchCount / queryTerms.length;
 
             // Extract title from first line
-            const firstLine = section.split('\n')[0].replace(/^#+\s*/, '').trim();
+            const firstLine = section
+                .split('\n')[0]
+                .replace(/^#+\s*/, '')
+                .trim();
 
             return {
                 title: firstLine || 'Documentation',

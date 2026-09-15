@@ -14,7 +14,8 @@ const DOCS = [source('Use the `CopilotChat` component with the `instructions` pr
 /** Convenience: the ids of every rule the reply violated. */
 const broken = (reply: string, sources: SearchResult[] = DOCS): string[] =>
     checkReply(reply, sources)
-        .filter((r) => !r.passed)
+        // A not-applicable rule is not a failure. See RuleResult.applicable.
+        .filter((r) => r.applicable && !r.passed)
         .map((r) => r.rule);
 
 describe('checkReply', () => {
@@ -67,18 +68,30 @@ describe('cites-or-is-a-short-handoff', () => {
         expect(broken(wordy)).toContain('cites-or-is-a-short-handoff');
     });
 
-    it('passes a long answer that links the docs', () => {
+    // Both of these cite the URL the fixture actually retrieved. An arbitrary
+    // docs-shaped URL no longer counts — see "the citation rule consults the
+    // retrieved sources" below for why.
+    it('passes a long answer that links the docs page it was given', () => {
         const wordy =
             'You can configure this in several ways. '.repeat(12) +
-            ' https://docs.copilotkit.ai/guides/configuration';
+            ' https://docs.copilotkit.ai/reference/components/chat/CopilotChat';
         expect(broken(wordy)).not.toContain('cites-or-is-a-short-handoff');
     });
 
-    it('passes a long answer that links a repo file, since code is a real answer', () => {
+    it('passes a long answer that links a retrieved repo file, since code is a real answer', () => {
+        const CODE = [
+            {
+                title: 'packages/runtime/src/agent.ts',
+                content: 'export function streamSubgraphEvents() {}',
+                score: 0.9,
+                sourceUrl:
+                    'https://github.com/CopilotKit/CopilotKit/blob/main/packages/runtime/src/agent.ts',
+            },
+        ];
         const wordy =
             'This is handled by the adapter. '.repeat(12) +
             ' https://github.com/CopilotKit/CopilotKit/blob/main/packages/runtime/src/agent.ts';
-        expect(broken(wordy)).not.toContain('cites-or-is-a-short-handoff');
+        expect(broken(wordy, CODE)).not.toContain('cites-or-is-a-short-handoff');
     });
 
     it('passes a short handoff with no link at all', () => {
@@ -90,6 +103,148 @@ describe('cites-or-is-a-short-handoff', () => {
 
 // "Nothing found -> two sentences, done." A no-answer that runs to 400 words is
 // the single thing the doc says changes the feel of the product most.
+// Both of these block promoting the rules to a linter, where a false positive
+// costs a reporter a correct answer.
+describe('the citation rule consults the retrieved sources', () => {
+    const wordy = (tail: string) => 'You can configure this in several ways. '.repeat(12) + tail;
+
+    // The URL was both the citation and the laundering: a reply could write its
+    // invented hook name INSIDE a docs.copilotkit.ai link and satisfy the rule,
+    // because the rule only checked that the link looked like ours.
+    it('rejects a link that matches no retrieved source', () => {
+        expect(
+            broken(wordy('See https://docs.copilotkit.ai/hooks/useCopilotFabricated'), DOCS),
+        ).toContain('cites-or-is-a-short-handoff');
+    });
+
+    it('accepts a link that matches a retrieved source', () => {
+        expect(
+            broken(
+                wordy('See https://docs.copilotkit.ai/reference/components/chat/CopilotChat'),
+                DOCS,
+            ),
+        ).not.toContain('cites-or-is-a-short-handoff');
+    });
+
+    it('accepts a retrieved source URL carrying an anchor or query', () => {
+        expect(
+            broken(
+                wordy('See https://docs.copilotkit.ai/reference/components/chat/CopilotChat#slots'),
+                DOCS,
+            ),
+        ).not.toContain('cites-or-is-a-short-handoff');
+    });
+});
+
+// Pathfinder's plain-text fallback (`textSearch`) sets sourceUrl: undefined on
+// every result, so under a flat requirement a CORRECT answer built from it could
+// never cite and would always collapse into a handoff. The rule has to know the
+// difference between "did not cite" and "had nothing citable".
+// Zero retrieval and retrieval-without-URLs are different facts. Treating them
+// the same let the doc's Case A — a long, uncited reply built on nothing — publish
+// under enforcement, which is the single input where citing matters most.
+describe('when retrieval returned nothing at all', () => {
+    it('still requires a citation, so a long uncited non-answer fails', () => {
+        const failed = broken(
+            'Deep Agents probably supports subagents in some form. '.repeat(8),
+            [],
+        );
+        expect(failed).toContain('cites-or-is-a-short-handoff');
+    });
+
+    it('still lets a short handoff through', () => {
+        expect(
+            broken('Nothing in the docs or source covers this. Routing it to the team.', []),
+        ).toEqual([]);
+    });
+});
+
+// A bare `includes` accepted anything appended to a retrieved URL, so the
+// laundering just moved a level deeper — retrieval routinely returns section and
+// index URLs.
+describe('citation boundaries', () => {
+    const SECTION = [
+        {
+            title: 'Reference',
+            content: 'Use the `CopilotChat` component.',
+            score: 0.9,
+            sourceUrl: 'https://docs.copilotkit.ai/reference',
+        },
+    ];
+    const wordy = (tail: string) => 'You can configure this in several ways. '.repeat(12) + tail;
+
+    it('rejects an invented path appended to a retrieved URL', () => {
+        expect(
+            broken(
+                wordy('See https://docs.copilotkit.ai/reference/hooks/useCopilotFabricated'),
+                SECTION,
+            ),
+        ).toContain('cites-or-is-a-short-handoff');
+    });
+
+    it('accepts the retrieved URL itself, with an anchor', () => {
+        expect(
+            broken(wordy('See https://docs.copilotkit.ai/reference#slots'), SECTION),
+        ).not.toContain('cites-or-is-a-short-handoff');
+    });
+
+    // Scheme and host are case-insensitive in practice, and both models and
+    // reporters echo mixed-case hostnames. A case-sensitive compare withheld a
+    // correctly-cited answer.
+    it('accepts a mixed-case scheme and host', () => {
+        expect(broken(wordy('See HTTPS://DOCS.COPILOTKIT.AI/reference'), SECTION)).not.toContain(
+            'cites-or-is-a-short-handoff',
+        );
+    });
+});
+
+// Naming a live package alone excused the dead one with no requirement that the
+// two be related — which waved through Case B's own failure mode, since naming
+// both as if both were current IS version-mixing.
+describe('the dead-package carve-out needs migration framing', () => {
+    it('rejects naming both packages as if both were current', () => {
+        expect(
+            broken(
+                'Install `@copilotkit/react-core` and also add `@copilotkitnext/react` for the newer surface here.',
+            ),
+        ).toContain('no-dead-package');
+    });
+
+    it('accepts a genuine migration instruction', () => {
+        expect(
+            broken(
+                "You're importing `@copilotkitnext/react`, which merged into `@copilotkit/react-core` v2 — switch the import.",
+            ),
+        ).not.toContain('no-dead-package');
+    });
+});
+
+describe('when no retrieved source carries a URL', () => {
+    const URL_LESS = [
+        { title: 'CopilotChat', content: 'Use the `CopilotChat` component.', score: 0.9 },
+    ];
+
+    it('marks the citation rule not applicable rather than failing it', () => {
+        const result = checkReply(
+            'You can configure this in several ways. '.repeat(12),
+            URL_LESS,
+        ).find((r) => r.rule === 'cites-or-is-a-short-handoff');
+
+        expect(result?.applicable).toBe(false);
+        expect(result?.detail).toMatch(/none carries a url/i);
+    });
+
+    it('does not count a not-applicable rule as a failure', () => {
+        expect(broken('You can configure this in several ways. '.repeat(12), URL_LESS)).toEqual([]);
+    });
+
+    it('still applies every other rule', () => {
+        expect(broken('Great question! Call `useCopilotFabricated()`.', URL_LESS)).toEqual(
+            expect.arrayContaining(['no-banned-phrases', 'grounded-identifiers']),
+        );
+    });
+});
+
 describe('the handoff cap', () => {
     it('fails a handoff that pads past the cap', () => {
         const padded =
@@ -204,5 +359,142 @@ describe('no-dead-package', () => {
 
     it('passes the live package', () => {
         expect(broken('Install `@copilotkit/react-core` first.')).not.toContain('no-dead-package');
+    });
+});
+
+// CopilotKit#6927, 2026-09-06. The reply praised the write-up, then spent a
+// paragraph announcing what it had not done, then handed the question back. Only
+// the praise opener fired against the rule set as it stood: `read the source`
+// missed "inspected the source" on the verb alone, so the self-positioning
+// paragraph — the part that makes the reply worse than silence — published.
+describe('self-commentary the narrower patterns let through (CopilotKit#6927)', () => {
+    const cited = 'See https://docs.copilotkit.ai/integrations/built-in-agent/mcp-servers.';
+
+    it.each([
+        "I haven't run this code or inspected the source, so I can't confirm the root cause.",
+        'I have not inspected the source, so I cannot confirm this.',
+        "I haven't read the code in question.",
+        "I didn't review the implementation before answering.",
+        "I haven't looked at the codebase for this.",
+        'I did not examine the code.',
+    ])('flags %j', (line) => {
+        expect(broken(`${line} ${cited}`)).toContain('no-banned-phrases');
+    });
+
+    it('flags the self-positioning framing on its own', () => {
+        expect(
+            broken(
+                `To be clear about my position: the header is dropped before the transport. ${cited}`,
+            ),
+        ).toContain('no-banned-phrases');
+    });
+
+    // The docblock on BANNED_PHRASES is explicit that a false positive costs a
+    // reporter a correct answer, because a linter failure collapses the draft into
+    // a handoff. These are the shapes closest to the patterns that must NOT fire:
+    // a reporter describing their own testing, and the agent describing the code
+    // rather than itself.
+    it.each([
+        "I haven't run this on Windows yet, but the repro is attached.",
+        "You haven't inspected the source here — the header is dropped in SSEClientTransport.",
+        // These two flagged under an earlier draft that allowed a 60-character gap
+        // between the verb and its object. Both are the reporter describing their
+        // own testing, and collapsing either into a handoff costs them an answer.
+        "I haven't run the repro yet — can you share the code you used?",
+        "I haven't run into this, but the implementation forwards headers only for stdio.",
+        "I haven't been able to reproduce it with the code you posted.",
+        'The transport does not read the headers option, so nothing reaches the wire.',
+        'Run the code in the reproduction and the Authorization header is absent.',
+        'To be clear about the behaviour: headers are accepted but never forwarded.',
+    ])('does not flag %j', (line) => {
+        expect(broken(`${line} ${cited}`)).not.toContain('no-banned-phrases');
+    });
+});
+
+// The needle strips its own trailing `/#?`, so a reply reproducing a
+// canonicalised URL VERBATIM arrived at the boundary check with `/` next and was
+// read as a path continuation — "cited nothing" against a reply quoting the
+// retrieved URL exactly. Doc sites canonicalise with a trailing slash, so every
+// row below is ordinary traffic rather than an exotic input, and the failure was
+// a false positive: the direction that silently argues against ever enforcing.
+//
+// Every existing fixture URL in this file is bare, which is why this read as
+// covered.
+describe('trailing slashes on either side of the citation', () => {
+    // Past HANDOFF_WORD_CAP, or the handoff branch satisfies the rule and the
+    // citation half is never exercised.
+    const LONG =
+        ' The header is dropped before the transport is constructed, so nothing reaches the wire and the server sees an anonymous request instead of an authenticated one.'.repeat(
+            3,
+        );
+    const cites = (reply: string, sourceUrl: string): boolean => {
+        const result = checkReply(reply + LONG, [
+            { title: 'Reference', content: 'CopilotChat instructions prop', score: 0.9, sourceUrl },
+        ]);
+        return result.find((r) => r.rule === 'cites-or-is-a-short-handoff')!.passed;
+    };
+
+    const BARE = 'https://docs.copilotkit.ai/reference';
+    const SLASHED = `${BARE}/`;
+
+    it('counts a reply that reproduces a canonicalised URL exactly', () => {
+        expect(cites(`See ${SLASHED}`, SLASHED)).toBe(true);
+    });
+
+    it('counts a reply that adds a slash the retrieved URL did not have', () => {
+        expect(cites(`See ${SLASHED}`, BARE)).toBe(true);
+    });
+
+    it('counts a markdown link where both sides carry the slash', () => {
+        expect(cites(`See [docs](${SLASHED})`, SLASHED)).toBe(true);
+    });
+
+    it('counts a slashed URL carrying a query', () => {
+        expect(cites(`See ${SLASHED}?v=2`, SLASHED)).toBe(true);
+    });
+
+    // The control, and the reason the boundary check exists at all: stepping over
+    // ONE slash must not excuse a further path segment. Retrieval routinely
+    // returns a section URL, and a reply can invent a page beneath it.
+    it('still refuses a deeper path invented under the retrieved URL', () => {
+        expect(cites(`See ${BARE}/hooks/useCopilotFabricated`, BARE)).toBe(false);
+    });
+
+    it('still counts an anchor on a bare retrieved URL', () => {
+        expect(cites(`See ${BARE}#slots`, BARE)).toBe(true);
+    });
+});
+
+// `blocksPublish` is exported API. lintDraft filters on `applicable` before
+// reading it, but a consumer reading it alone must not be handed `true` for a
+// rule that could not be evaluated — that is the draft `applicable` exists to
+// protect: Pathfinder's plain-text fallback, where a correct answer has nothing
+// it could possibly cite.
+describe('blocksPublish is never true for a rule that could not be evaluated', () => {
+    it('does not block when retrieval returned results but none carries a URL', () => {
+        const longUncited = 'The header is dropped before the transport is constructed. '.repeat(
+            12,
+        );
+        const citation = checkReply(longUncited, [
+            { title: 'Reference', content: 'CopilotChat instructions prop', score: 0.9 },
+        ]).find((r) => r.rule === 'cites-or-is-a-short-handoff')!;
+
+        expect(citation.applicable).toBe(false);
+        expect(citation.passed).toBe(false);
+        expect(citation.blocksPublish).toBe(false);
+    });
+
+    // Zero retrieval is a different fact and must still block: a long uncited
+    // reply built on nothing is the doc's Case A.
+    it('still blocks a long uncited reply built on zero retrieval', () => {
+        const longUncited = 'The header is dropped before the transport is constructed. '.repeat(
+            12,
+        );
+        const citation = checkReply(longUncited, []).find(
+            (r) => r.rule === 'cites-or-is-a-short-handoff',
+        )!;
+
+        expect(citation.applicable).toBe(true);
+        expect(citation.blocksPublish).toBe(true);
     });
 });

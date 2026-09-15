@@ -83,8 +83,30 @@ const BANNED_PHRASES: Array<{ pattern: RegExp; why: string }> = [
     // Case D's "What I can't do from here" section, and the rule against the
     // agent performing its own humility.
     { pattern: /\bwhat i (?:can'?t|cannot) do\b/i, why: 'self-commentary about its own limits' },
+    // Widened from `read the source` after CopilotKit#6927 (2026-09-06), where the
+    // agent opened with "I haven't run this code or inspected the source". The
+    // narrower pattern missed it on the verb alone, so the whole self-positioning
+    // paragraph published.
+    //
+    // The verb binds DIRECTLY to its object, with no free gap between them. An
+    // earlier draft allowed up to 60 characters and flagged two ordinary reporter
+    // sentences in testing — "I haven't run the repro yet, can you share the code
+    // you used?" and "I haven't run into this, but the implementation forwards
+    // headers only for stdio". Both are the reporter talking about their own
+    // testing, and in the linter a false positive collapses a correct answer into
+    // a handoff. So the object list is closed and adjacency is required: this
+    // matches the agent saying it did not look at the code, not someone saying
+    // they have not run something.
     {
-        pattern: /\bi (?:haven'?t|have not) read the source\b/i,
+        pattern:
+            /\bi (?:haven'?t|have not|did ?n'?t|did not|do not|don'?t)\s+(?:\w+\s+){0,2}?(?:run|read|inspect(?:ed)?|review(?:ed)?|examine(?:d)?|look(?:ed)? at)\s+(?:this|the)\s+(?:source|code|codebase|implementation)\b/i,
+        why: 'self-commentary about its own limits',
+    },
+    // Same reply's framing device. The agent announcing its own epistemic
+    // standing is the thing the doc bans; it is never information the reporter
+    // asked for, and it reads as hedging a correct answer.
+    {
+        pattern: /\bto be clear about my (?:position|limits|limitations)\b/i,
         why: 'self-commentary about its own limits',
     },
     {
@@ -137,9 +159,80 @@ const DEAD_PACKAGE = /@copilotkitnext\b/i;
  */
 const LIVE_PACKAGE = /@copilotkit\/[a-z-]+/i;
 
-/** A link that constitutes a citation: a docs page or a file in the repo. */
-const CITATION_LINK =
-    /https?:\/\/(?:[a-z0-9-]+\.)*(?:copilotkit\.ai|github\.com\/CopilotKit|github\.com\/ag-ui-protocol)\/\S+/i;
+/**
+ * The migration framing that makes naming the dead package legitimate.
+ *
+ * Requiring only that a live `@copilotkit/` package appear somewhere was too
+ * loose: it excused the dead one with no requirement that the two be related,
+ * which waved through the exact failure Case B documents. "Install
+ * `@copilotkit/react-core` and also add `@copilotkitnext/react` for the newer
+ * surface" passed — and naming both packages as if both were current IS
+ * version-mixing, so the rule became a no-op on its own worst case.
+ */
+const MIGRATION_FRAMING =
+    /\b(?:merged into|replaced by|moved to|superseded by|switch (?:the )?(?:import|to)|instead of|use .{0,20}instead|no longer (?:exists|published|maintained)|is (?:dead|retired|deprecated))\b/i;
+
+/**
+ * True when the reply links a source it was actually given.
+ *
+ * Checked against the retrieved `sources` rather than against a pattern for
+ * "looks like one of our URLs". Under a pattern test the URL was both the
+ * citation and the laundering: a reply could write its invented hook name
+ * *inside* a `docs.copilotkit.ai` link — `/hooks/useCopilotFabricated` — and
+ * satisfy the rule with a page that does not exist. The identifier rule cannot
+ * catch that either, because `assessGroundedness` blanks URLs before it looks.
+ *
+ * Substring rather than equality, so a cited URL may carry an anchor or a query
+ * the retrieved one did not (`…/CopilotChat#slots`).
+ */
+function citesARetrievedSource(reply: string, sources: SearchResult[]): boolean {
+    // Scheme and host lowercased on both sides: they are case-insensitive in
+    // practice, and models and reporters both echo mixed-case hostnames. A
+    // case-sensitive compare withheld a correctly-cited answer.
+    const normalise = (text: string) =>
+        text.replace(/[a-z]+:\/\/[^/\s]+/gi, (m) => m.toLowerCase());
+    const haystack = normalise(reply);
+
+    return sources.some((s) => {
+        if (!s.sourceUrl) return false;
+        const needle = normalise(s.sourceUrl).replace(/[/#?]+$/, '');
+        let from = 0;
+        for (;;) {
+            const at = haystack.indexOf(needle, from);
+            if (at === -1) return false;
+            // A bare `includes` accepted anything APPENDED to a retrieved URL, so
+            // the laundering simply moved one level deeper: retrieval routinely
+            // returns a section or index URL, and
+            // `…/reference/hooks/useCopilotFabricated` counted as citing
+            // `…/reference`. The character after the match has to end the URL
+            // rather than continue its path.
+            // The needle has its own trailing `/#?` stripped, so a reply that
+            // reproduces a canonicalised URL VERBATIM lands here with `/` as the
+            // next character. Treating that as a path continuation made the rule
+            // report "cited nothing" against a reply quoting the retrieved URL
+            // exactly — a false positive, in the direction that looks
+            // conservative, which is the worst kind to leave in a measurement
+            // this PR exists to collect. Doc sites canonicalise with a trailing
+            // slash, so it is an ordinary input rather than an exotic one.
+            //
+            // Only a FURTHER path segment continues the URL, so step over one
+            // slash and judge what follows it: `…/reference/` ends, while
+            // `…/reference/hooks/useCopilotFabricated` still does not cite
+            // `…/reference`.
+            let next = haystack[at + needle.length];
+            if (next === '/') next = haystack[at + needle.length + 1];
+            if (
+                next === undefined ||
+                /[\s)\]}.,;"'<>]/.test(next) ||
+                next === '#' ||
+                next === '?'
+            ) {
+                return true;
+            }
+            from = at + 1;
+        }
+    });
+}
 
 export const RULES = [
     'says-something',
@@ -155,7 +248,37 @@ export type RuleId = (typeof RULES)[number];
 export interface RuleResult {
     rule: RuleId;
     passed: boolean;
-    /** Why it failed, naming the offending text. Empty when it passed. */
+    /**
+     * False when the rule could not be evaluated at all, as opposed to evaluated
+     * and passed. A not-applicable rule is never a failure and is never counted
+     * in a pass rate.
+     *
+     * The case that forced the distinction: Pathfinder's plain-text fallback
+     * (`textSearch`) sets `sourceUrl: undefined` on every result, so a CORRECT
+     * answer built from it has nothing it could possibly cite. Under a flat
+     * requirement that answer fails the citation rule forever and — once these
+     * rules gate publishing — collapses into a handoff every time the fallback is
+     * in play. "Did not cite" and "had nothing citable" are different facts.
+     */
+    applicable: boolean;
+    /**
+     * Whether this failure should stop the draft publishing, as opposed to being
+     * worth reporting.
+     *
+     * The two are not the same, and collapsing them made the linter stricter than
+     * the pipeline it sits beside. `grounded-identifiers` is the case that forced
+     * the split: the doc's success criterion is *zero* invented API names, so one
+     * occurrence has to show up in a score — but `groundedness.ts` suppresses only
+     * at SUPPRESS_AT_UNSOURCED_IDENTIFIERS = 2, reasoning that "one could be a
+     * formatting artifact; two is a pattern of fabrication". Gating a publish at
+     * one withholds answers production would publish, which is the
+     * false-withholding direction both modules warn about.
+     *
+     * So the harness scores against `passed` and the linter gates on
+     * `blocksPublish`. For every other rule the two agree.
+     */
+    blocksPublish: boolean;
+    /** Why it failed, or why it was not applicable. Empty when it passed. */
     detail: string;
 }
 
@@ -174,7 +297,9 @@ function countWords(text: string): number {
  */
 export function checkReply(reply: string, sources: SearchResult[]): RuleResult[] {
     const words = countWords(reply);
-    const cites = CITATION_LINK.test(reply);
+    const cites = citesARetrievedSource(reply, sources);
+    // Whether citing was possible at all. See RuleResult.applicable.
+    const anySourceHasUrl = sources.some((s) => !!s.sourceUrl);
 
     // A reply that cites nothing is only acceptable as a short handoff, so the
     // two rules below are the two halves of that single sentence in the doc.
@@ -184,10 +309,28 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
     const banned = BANNED_PHRASES.filter(({ pattern }) => pattern.test(reply));
     const hedged = HEDGED_NAME_PATTERNS.filter((pattern) => pattern.test(reply));
 
+    // Each rule's verdict, bound once. `blocksPublish` used to restate these
+    // expressions, twice over for no-dead-package — which is the drift this
+    // module exists to prevent, reintroduced inside the module itself.
+    const saysSomething = words >= MIN_REPLY_WORDS;
+    const citationSatisfied = cites || isShortEnoughForHandoff;
+    const citationApplicable = !(
+        sources.length > 0 &&
+        !anySourceHasUrl &&
+        !isShortEnoughForHandoff
+    );
+    const noBannedPhrases = banned.length === 0;
+    const noHedgedNames = hedged.length === 0;
+    const deadPackageOk =
+        !DEAD_PACKAGE.test(reply) || (LIVE_PACKAGE.test(reply) && MIGRATION_FRAMING.test(reply));
+
     return [
         {
             rule: 'says-something',
-            passed: words >= MIN_REPLY_WORDS,
+            // Metric and gate agree for this rule.
+            blocksPublish: !saysSomething,
+            applicable: true,
+            passed: saysSomething,
             detail:
                 words >= MIN_REPLY_WORDS
                     ? ''
@@ -195,9 +338,15 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
         },
         {
             rule: 'grounded-identifiers',
+            applicable: true,
+            // The doc's criterion is ZERO invented API names, so one fails the
+            // metric. The publish gate is the pipeline's own threshold, so one does
+            // not withhold the answer. See RuleResult.blocksPublish.
             passed: groundedness.unsourcedIdentifiers.length === 0,
+            blocksPublish: groundedness.suppress,
             detail: groundedness.unsourcedIdentifiers.length
-                ? `names not present in any source: ${groundedness.unsourcedIdentifiers.join(', ')}`
+                ? `names not present in any source: ${groundedness.unsourcedIdentifiers.join(', ')}` +
+                  (groundedness.suppress ? '' : ' (below the suppression threshold)')
                 : '',
         },
         {
@@ -206,29 +355,55 @@ export function checkReply(reply: string, sources: SearchResult[]): RuleResult[]
             // which presented five independent signals as six and double-counted
             // every failure in both the per-rule table and the report.
             rule: 'cites-or-is-a-short-handoff',
-            passed: cites || isShortEnoughForHandoff,
-            detail:
-                cites || isShortEnoughForHandoff
-                    ? ''
-                    : `${words} words with no docs or repo link, over the ${HANDOFF_WORD_CAP}-word handoff cap; a reply this long has to cite what it came from`,
+            // `applicable &&` is load-bearing, not defensive. When retrieval
+            // returned results but none carries a URL, `passed` is false because
+            // nothing WAS cited — but nothing COULD be, so this must not stop a
+            // publish. lintDraft already filters on `applicable`; computing it
+            // here means a consumer reading `blocksPublish` on its own cannot
+            // collapse the very draft `applicable` was added to protect.
+            blocksPublish: citationApplicable && !citationSatisfied,
+            // Not-applicable ONLY when retrieval returned results that happen to
+            // carry no URL — Pathfinder's plain-text fallback, where a correct
+            // answer has nothing it could cite.
+            //
+            // `sources: []` is a different fact and must still fail: a long,
+            // uncited reply built on zero retrieval is the doc's Case A, the
+            // exact input where the citation requirement matters most. Treating
+            // the two the same let that reply publish under enforcement.
+            applicable: citationApplicable,
+            passed: citationSatisfied,
+            detail: !citationApplicable
+                ? 'not evaluated: retrieval returned results but none carries a URL, so nothing could be cited'
+                : citationSatisfied
+                  ? ''
+                  : `${words} words and no link to a retrieved source, over the ${HANDOFF_WORD_CAP}-word handoff cap; a reply this long has to cite what it came from`,
         },
         {
             rule: 'no-banned-phrases',
-            passed: banned.length === 0,
+            // Metric and gate agree for this rule.
+            blocksPublish: !noBannedPhrases,
+            applicable: true,
+            passed: noBannedPhrases,
             detail: banned.map(({ why }) => why).join('; '),
         },
         {
             rule: 'no-hedged-names',
-            passed: hedged.length === 0,
+            // Metric and gate agree for this rule.
+            blocksPublish: !noHedgedNames,
+            applicable: true,
+            passed: noHedgedNames,
             detail: hedged.length ? 'hedges an API name, which means it is guessing' : '',
         },
         {
             rule: 'no-dead-package',
-            passed: !DEAD_PACKAGE.test(reply) || LIVE_PACKAGE.test(reply),
-            detail:
-                DEAD_PACKAGE.test(reply) && !LIVE_PACKAGE.test(reply)
-                    ? 'mentions @copilotkitnext without naming the @copilotkit/ package that replaced it'
-                    : '',
+            applicable: true,
+            passed: deadPackageOk,
+            blocksPublish: !deadPackageOk,
+            detail: !DEAD_PACKAGE.test(reply)
+                ? ''
+                : LIVE_PACKAGE.test(reply)
+                  ? 'names @copilotkitnext alongside a live package but not as a migration — reads as if both are current, which is the version-mixing failure'
+                  : 'mentions @copilotkitnext without naming the @copilotkit/ package that replaced it',
         },
     ];
 }
