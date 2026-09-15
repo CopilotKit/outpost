@@ -11,7 +11,7 @@ const PUBLIC_PATHS = ['/login', '/api/auth', '/setup', '/api/setup', '/api/healt
  * This replaces a bare `pathname.includes('.')` check. That heuristic treated ANY
  * dotted path as a static asset, and because it ran ahead of the auth and CSRF
  * checks below, `PATCH /api/accounts/x.json` reached the handler with neither
- * applied (outpost#225).
+ * applied.
  *
  * Deliberately an allowlist of extensions rather than "has a dot": a request path
  * is attacker-controlled, so anything that decides "skip the security checks" has

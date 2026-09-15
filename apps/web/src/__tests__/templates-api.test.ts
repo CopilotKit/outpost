@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 /**
- * Template routes: persistence and preview fidelity (outpost#226).
+ * Template routes: persistence and preview fidelity.
  *
  * Before this suite, all three write paths were stubs. `PUT` validated its input
  * and returned a success body without touching the database, while the UI reported
@@ -84,7 +84,7 @@ function routeParams(slug: string) {
     return { params: Promise.resolve({ slug }) };
 }
 
-describe('template persistence and preview (outpost#226)', () => {
+describe('template persistence and preview', () => {
     beforeEach(() => {
         mockGetServerSession.mockReset();
         mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
