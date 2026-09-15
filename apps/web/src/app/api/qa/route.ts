@@ -4,6 +4,82 @@ import { AIPipeline } from '@copilotkit/outpost/ai';
 import type { ConfidenceLevel, SearchResult } from '@copilotkit/outpost/ai';
 
 /**
+ * Ingress limits for POST /api/qa.
+ *
+ * The question and history are concatenated into the Anthropic prompt, so an
+ * unbounded request is a direct line to the model bill. These caps keep a
+ * single request to a predictable token budget.
+ */
+export const MAX_QUESTION_CHARS = 4000;
+export const MAX_HISTORY_ITEMS = 20;
+export const MAX_HISTORY_ITEM_CHARS = 4000;
+export const MAX_HISTORY_TOTAL_CHARS = 12000;
+
+type HistoryRole = 'user' | 'assistant';
+
+interface HistoryItem {
+    role: HistoryRole;
+    content: string;
+}
+
+/**
+ * Validate the optional conversation history. Returns the sanitized history,
+ * or an error message naming the first problem found.
+ */
+export function sanitizeHistory(
+    raw: unknown,
+): { ok: true; history: HistoryItem[] | undefined } | { ok: false; error: string } {
+    if (raw === undefined || raw === null) {
+        return { ok: true, history: undefined };
+    }
+    if (!Array.isArray(raw)) {
+        return { ok: false, error: 'conversationHistory must be an array' };
+    }
+    if (raw.length > MAX_HISTORY_ITEMS) {
+        return {
+            ok: false,
+            error: `conversationHistory must have at most ${MAX_HISTORY_ITEMS} items`,
+        };
+    }
+    const history: HistoryItem[] = [];
+    let totalChars = 0;
+    for (let i = 0; i < raw.length; i++) {
+        const item = raw[i] as { role?: unknown; content?: unknown };
+        if (typeof item !== 'object' || item === null) {
+            return { ok: false, error: `conversationHistory[${i}] must be an object` };
+        }
+        if (item.role !== 'user' && item.role !== 'assistant') {
+            return {
+                ok: false,
+                error: `conversationHistory[${i}].role must be "user" or "assistant"`,
+            };
+        }
+        if (typeof item.content !== 'string' || item.content.trim() === '') {
+            return {
+                ok: false,
+                error: `conversationHistory[${i}].content must be a non-empty string`,
+            };
+        }
+        const content = item.content.trim();
+        if (content.length > MAX_HISTORY_ITEM_CHARS) {
+            return {
+                ok: false,
+                error: `conversationHistory[${i}].content must be at most ${MAX_HISTORY_ITEM_CHARS} characters`,
+            };
+        }
+        totalChars += content.length;
+        if (totalChars > MAX_HISTORY_TOTAL_CHARS) {
+            return {
+                ok: false,
+                error: `conversationHistory must total at most ${MAX_HISTORY_TOTAL_CHARS} characters`,
+            };
+        }
+        history.push({ role: item.role, content });
+    }
+    return { ok: true, history: history.length > 0 ? history : undefined };
+}
+
+/**
  * POST /api/qa
  *
  * Accepts a question and optional conversation history. Runs the full
@@ -11,6 +87,10 @@ import type { ConfidenceLevel, SearchResult } from '@copilotkit/outpost/ai';
  * the response back using Server-Sent Events.
  *
  * Request body: { question: string, conversationHistory?: Array<{ role, content }> }
+ *
+ * Ingress limits: question <= 4000 chars; history <= 20 items, <= 4000 chars
+ * each and <= 12000 chars total, roles restricted to user/assistant. A client
+ * disconnect aborts the pipeline instead of generating for nobody.
  *
  * SSE events:
  *   data: { type: "token", text: "..." }      — streamed text chunks
@@ -27,7 +107,7 @@ export async function POST(request: Request) {
         );
     }
 
-    let body: { question?: string; conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }> };
+    let body: { question?: string; conversationHistory?: unknown };
 
     try {
         body = await request.json();
@@ -38,10 +118,27 @@ export async function POST(request: Request) {
         );
     }
 
-    const question = body.question?.trim();
+    const question = typeof body.question === 'string' ? body.question.trim() : '';
     if (!question) {
         return new Response(
             JSON.stringify({ error: 'question is required' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+    }
+
+    if (question.length > MAX_QUESTION_CHARS) {
+        return new Response(
+            JSON.stringify({
+                error: `question must be at most ${MAX_QUESTION_CHARS} characters`,
+            }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+    }
+
+    const sanitized = sanitizeHistory(body.conversationHistory);
+    if (!sanitized.ok) {
+        return new Response(
+            JSON.stringify({ error: sanitized.error }),
             { status: 400, headers: { 'Content-Type': 'application/json' } },
         );
     }
@@ -53,17 +150,36 @@ export async function POST(request: Request) {
         const stream = new ReadableStream({
             async start(controller) {
                 const encoder = new TextEncoder();
+                let settled = false;
 
                 function sendEvent(data: string) {
                     controller.enqueue(encoder.encode(`data: ${data}\n\n`));
                 }
+
+                // If the client disconnects mid-generation, stop the pipeline
+                // instead of running it to completion for nobody.
+                request.signal.addEventListener(
+                    'abort',
+                    () => {
+                        if (!settled) {
+                            settled = true;
+                            pipeline.destroy();
+                            try {
+                                controller.close();
+                            } catch {
+                                // Already closed/errored by the generator below.
+                            }
+                        }
+                    },
+                    { once: true },
+                );
 
                 try {
                     const result = await pipeline.generateSupportResponse(
                         question,
                         {
                             source: 'web',
-                            conversationHistory: body.conversationHistory,
+                            conversationHistory: sanitized.history,
                         },
                     );
 
@@ -120,7 +236,10 @@ export async function POST(request: Request) {
                     );
                     sendEvent('[DONE]');
                 } finally {
-                    controller.close();
+                    if (!settled) {
+                        settled = true;
+                        controller.close();
+                    }
                     pipeline.destroy();
                 }
             },
