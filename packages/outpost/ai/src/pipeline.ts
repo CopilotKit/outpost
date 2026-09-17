@@ -5,11 +5,21 @@ import type {
     TicketClassification,
     TokenUsage,
     SearchResult,
+    GeneratedResponse,
 } from './types.js';
 import { ConfidenceLevel, SUPPRESSED_CONFIDENCE_CAP, classifyConfidence } from './types.js';
 import { assessGroundedness } from './groundedness.js';
 import { AI_CONFIDENCE } from '@copilotkit/outpost/shared';
 import { PathfinderClient } from './pathfinder.js';
+import {
+    SupportAgent,
+    InvalidSupportReplyError,
+    InvestigationBudgetError,
+    supportConversation,
+} from './support-agent.js';
+import { supportReplyText } from './support-reply.js';
+import type { SupportReply } from './support-reply.js';
+import { lintDraft, describeVerdict } from './eval/linter.js';
 import { ResponseGenerator } from './generator.js';
 import { ConfidenceScorer } from './confidence.js';
 import { TicketClassifier } from './classifier.js';
@@ -21,22 +31,9 @@ import {
 } from './formatter.js';
 import { config, validateConfig } from './config.js';
 
-/**
- * The text published in place of a suppressed draft.
- *
- * The groundedness gate lives HERE, at the boundary where the response is
- * produced, not at each consumer. When `groundedness.suppress` is true the
- * pipeline swaps this copy into `formatted`, so every consumer — the queue
- * handler, the web QA route, anything added later — publishes safe text without
- * having to know the gate exists. The model's draft is still returned on
- * `PipelineResult.response` for the human picking up the escalation.
- *
- * The copy promises a human follow-up itself, which is why callers pair it with
- * the plain `AI_DISCLAIMER` rather than `AI_DISCLAIMER_ESCALATED` — stacking
- * both would promise the same follow-up twice.
- */
+/** Public handoff copy makes no claim that every consumer has already escalated. */
 export const SUPPRESSED_RESPONSE_TEXT =
-    "I couldn't find an answer to this in the CopilotKit or AG-UI documentation or source code, so I don't want to guess. I've escalated this to our team — someone will follow up in this thread.";
+    'This needs a maintainer review to give you a reliable next step.';
 
 /**
  * Highest confidence score that still classifies BELOW HIGH. A degraded
@@ -73,10 +70,9 @@ function interleaveByRank(first: SearchResult[], second: SearchResult[]): Search
 /**
  * Main entry point for the Outpost AI pipeline.
  *
- * Orchestrates: Pathfinder retrieval → Claude response generation → confidence
- * scoring (against the real generated response) → response formatting. Every
- * step has error handling — the pipeline never crashes, always returns a
- * graceful fallback.
+ * Orchestrates investigation → independent confidence verification → formatting.
+ * Invalid drafts become handoffs; provider/transport failures propagate so workers retry.
+ * An explicit Anthropic provider retains the legacy retrieval/generation path.
  *
  * The groundedness gate is enforced HERE, not by consumers. Both entry points
  * withhold an ungrounded draft themselves: `generateSupportResponse` swaps
@@ -87,6 +83,7 @@ function interleaveByRank(first: SearchResult[], second: SearchResult[]): Search
  * remain on the result for analytics and escalation routing.
  */
 export class AIPipeline {
+    private supportAgent?: Pick<SupportAgent, 'investigate'>;
     private pathfinder: PathfinderClient;
     private generator: ResponseGenerator;
     private confidenceScorer: ConfidenceScorer;
@@ -94,6 +91,7 @@ export class AIPipeline {
     private formatter: ResponseFormatter;
 
     constructor(options?: {
+        supportAgent?: Pick<SupportAgent, 'investigate'>;
         pathfinder?: PathfinderClient;
         generator?: ResponseGenerator;
         confidenceScorer?: ConfidenceScorer;
@@ -102,6 +100,11 @@ export class AIPipeline {
     }) {
         validateConfig();
         this.pathfinder = options?.pathfinder ?? new PathfinderClient();
+        this.supportAgent =
+            options?.supportAgent ??
+            (config.responseProvider === 'openai'
+                ? new SupportAgent({ pathfinder: this.pathfinder, model: config.responseModel })
+                : undefined);
         this.generator = options?.generator ?? new ResponseGenerator();
         this.confidenceScorer = options?.confidenceScorer ?? new ConfidenceScorer();
         this.classifier = options?.classifier ?? new TicketClassifier();
@@ -121,107 +124,135 @@ export class AIPipeline {
         const startTime = Date.now();
         const totalTokenUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
-        // Step 1: Query Pathfinder for relevant content — docs AND source.
-        //
-        // Source first, docs second, per the decision in the Agent's Output Doc:
-        // we ship fast, so the code is the truth and the docs are the lagging
-        // indicator. Until this, only `searchDocs` ran, so any question whose
-        // answer lived in the source had nothing behind it and the answer came
-        // from general framework priors. That is how a reporter asking whether
-        // Deep Agents supports subagents got told there was no timeline for a
-        // feature that already shipped.
-        //
-        // Run in parallel and merge rather than sequentially: they are
-        // independent queries against the same server, and a docs-only latency
-        // budget is the one we already live with.
-        //
-        // Each tool gets half the budget and the merged list is still capped, so
-        // the prompt carries what it always did. Without either, it would have
-        // carried up to 2x the sources — and code snippets are line-numbered file
-        // excerpts far larger than doc snippets, so input tokens per ticket
-        // roughly doubled, with a real path to a context-length error that lands
-        // in the generator's catch and publishes the apology fallback.
-        //
-        // AG-UI is deliberately NOT queried here. `searchAgUiDocs` and
-        // `searchAgUiCode` exist on the client, but firing them on every
-        // CopilotKit question buys noise and spend with no way to tell when they
-        // are relevant. Choosing the retrieval strategy from the kind of question
-        // asked is the doc's step 5, and it needs the classifier's answer.
-        // allSettled, not all: `Promise.all` rejects on the first failure, so one
-        // retrieval throwing threw away the other one's results and the answer was
-        // built from nothing. Whichever source survives is worth more than
-        // symmetry.
-        // Split the budget across the two tools instead of asking each for a full
-        // `defaultLimit` and discarding half. Over-fetching paid for 16 snippets to
-        // keep 8, and it also cost docs recall on the majority path: a purely
-        // docs-answerable question used to get 8 docs snippets and would have got
-        // 4, with the other 4 going to code hits that merely cleared min_score.
-        const perTool = Math.ceil(config.pathfinder.defaultLimit / 2);
-        const [docsOutcome, codeOutcome] = await Promise.allSettled([
-            this.pathfinder.searchDocs({ query: question, limit: perTool }),
-            this.pathfinder.searchCode({ query: question, limit: perTool }),
-        ]);
-        for (const [label, outcome] of [
-            ['searchDocs', docsOutcome],
-            ['searchCode', codeOutcome],
-        ] as const) {
-            if (outcome.status === 'rejected') {
-                console.error(
-                    `[Pipeline] ${label} failed: ${
-                        outcome.reason instanceof Error
-                            ? outcome.reason.message
-                            : String(outcome.reason)
-                    }`,
-                );
-            }
-        }
-        // Coerced rather than trusted. This class's contract is that it never
-        // crashes, and `Promise.allSettled` reports a non-promise or an
-        // `undefined` return as *fulfilled* — so a client that answers with
-        // anything other than an array would reach the merge and throw on
-        // `.length`, taking down the one code path that is supposed to always
-        // produce an answer. The old `try`/`catch` hid this; removing it made it
-        // reachable, which is a good reason to handle it rather than re-wrap.
-        const asResults = (outcome: PromiseSettledResult<SearchResult[]>): SearchResult[] =>
-            outcome.status === 'fulfilled' && Array.isArray(outcome.value) ? outcome.value : [];
-        const docs = asResults(docsOutcome);
-        const code = asResults(codeOutcome);
-
-        // Code leads, because the stated precedence is source first, docs second.
-        // Interleaved rather than concatenated so neither source is buried: the
-        // list is capped just below, and docs-then-code would let weak docs hits
-        // push the file that actually answers the question off the end.
-        const searchResults = interleaveByRank(code, docs).slice(
-            0,
-            config.pathfinder.defaultLimit,
-        );
-
-        // Step 2: Generate response
+        let reply: SupportReply | undefined;
+        let searchResults: SearchResult[];
+        let generatedResponse: GeneratedResponse;
+        let mustRoute = false;
         const pipelineContext: PipelineContext = {
             question,
             source: options.source,
+            questionMetadata: options.questionMetadata,
         };
+        if (this.supportAgent) {
+            try {
+                const investigation = await this.supportAgent.investigate(
+                    pipelineContext,
+                    options.conversationHistory,
+                );
+                reply = investigation.reply;
+                searchResults = investigation.sources;
+                mustRoute = reply.decision === 'route';
+                generatedResponse = {
+                    text: supportReplyText(reply),
+                    sources: searchResults,
+                    confidenceScore: mustRoute ? SUPPRESSED_CONFIDENCE_CAP : 1,
+                    confidenceLevel: mustRoute ? ConfidenceLevel.LOW : ConfidenceLevel.HIGH,
+                    reasoning: reply.handoffReason,
+                    tokenUsage: investigation.tokenUsage,
+                };
+            } catch (error) {
+                if (
+                    !(error instanceof InvalidSupportReplyError) &&
+                    !(error instanceof InvestigationBudgetError)
+                )
+                    throw error;
+                // Invalid drafts route to review. Transport failures propagate for worker retry.
+                console.error(
+                    '[Pipeline] Support investigation failed:',
+                    error instanceof Error ? error.message : String(error),
+                );
+                mustRoute = true;
+                searchResults = [];
+                generatedResponse = {
+                    text: '',
+                    sources: [],
+                    confidenceScore: 0,
+                    confidenceLevel: ConfidenceLevel.LOW,
+                    reasoning: 'Investigation failed validation or execution',
+                };
+            }
+        } else {
+            const perTool = Math.ceil(config.pathfinder.defaultLimit / 2);
+            const [docsOutcome, codeOutcome] = await Promise.allSettled([
+                this.pathfinder.searchDocs({ query: question, limit: perTool }),
+                this.pathfinder.searchCode({ query: question, limit: perTool }),
+            ]);
+            for (const [label, outcome] of [
+                ['searchDocs', docsOutcome],
+                ['searchCode', codeOutcome],
+            ] as const) {
+                if (outcome.status === 'rejected') {
+                    console.error(
+                        `[Pipeline] ${label} failed: ${
+                            outcome.reason instanceof Error
+                                ? outcome.reason.message
+                                : String(outcome.reason)
+                        }`,
+                    );
+                }
+            }
+            // Coerced rather than trusted. This class's contract is that it never
+            // crashes, and `Promise.allSettled` reports a non-promise or an
+            // `undefined` return as *fulfilled* — so a client that answers with
+            // anything other than an array would reach the merge and throw on
+            // `.length`, taking down the one code path that is supposed to always
+            // produce an answer. The old `try`/`catch` hid this; removing it made it
+            // reachable, which is a good reason to handle it rather than re-wrap.
+            const asResults = (outcome: PromiseSettledResult<SearchResult[]>): SearchResult[] =>
+                outcome.status === 'fulfilled' && Array.isArray(outcome.value) ? outcome.value : [];
+            const docs = asResults(docsOutcome);
+            const code = asResults(codeOutcome);
 
-        const generatedResponse = await this.generator.generate(
-            pipelineContext,
+            // Code leads, because the stated precedence is source first, docs second.
+            // Interleaved rather than concatenated so neither source is buried: the
+            // list is capped just below, and docs-then-code would let weak docs hits
+            // push the file that actually answers the question off the end.
+            searchResults = interleaveByRank(code, docs).slice(0, config.pathfinder.defaultLimit);
+
+            generatedResponse = await this.generator.generate(
+                pipelineContext,
+                searchResults,
+                options.conversationHistory,
+            );
+        }
+        const lint = lintDraft(
+            generatedResponse.text,
             searchResults,
-            options.conversationHistory,
+            config.draftLintMode === 'enforce' ? 'enforce' : 'report',
         );
+        if (lint.wouldCollapse) console.warn(describeVerdict(lint, options.source));
+        mustRoute ||= !lint.publish;
 
         // Step 3: Score confidence against the ACTUAL generated response
         // (sequential, not parallel — the scorer needs the real text to
         // produce a meaningful signal, not a retrieval-quality proxy).
-        const confidenceAssessment = await this.confidenceScorer
-            .score(question, generatedResponse.text, searchResults)
-            .catch((error) => {
-                console.error(
-                    `[Pipeline] Confidence scoring failed: ${error instanceof Error ? error.message : String(error)}`,
-                );
-                // The LLM scorer is unavailable — the heuristic fallback scores off
-                // Pathfinder's synthetic rank-scores (not real relevance), so it is an
-                // UNCERTAIN signal. Mark it degraded so it can't be trusted as HIGH below.
-                return { ...this.confidenceScorer.heuristicScore(searchResults), degraded: true };
-            });
+        const confidenceAssessment = mustRoute
+            ? { score: 0, degraded: true, tokenUsage: { inputTokens: 0, outputTokens: 0 } }
+            : await this.confidenceScorer
+                  .score(
+                      this.supportAgent
+                          ? supportConversation(pipelineContext, options.conversationHistory)
+                          : question,
+                      generatedResponse.text,
+                      searchResults,
+                  )
+                  .catch((error) => {
+                      console.error(
+                          `[Pipeline] Confidence scoring failed: ${error instanceof Error ? error.message : String(error)}`,
+                      );
+                      // The LLM scorer is unavailable — the heuristic fallback scores off
+                      // Pathfinder's synthetic rank-scores (not real relevance), so it is an
+                      // UNCERTAIN signal. Mark it degraded so it can't be trusted as HIGH below.
+                      return {
+                          ...this.confidenceScorer.heuristicScore(searchResults),
+                          degraded: true,
+                      };
+                  });
+
+        // The new provider publishes only when the independent verifier is usable.
+        mustRoute ||=
+            !!this.supportAgent &&
+            (confidenceAssessment.degraded || confidenceAssessment.score < AI_CONFIDENCE.ESCALATE);
 
         // Aggregate token usage
         if (generatedResponse.tokenUsage) {
@@ -237,10 +268,16 @@ export class AIPipeline {
             generatedResponse.confidenceScore,
             confidenceAssessment.score,
         );
-        const calibration = options.confidenceCalibration ?? 0;
+        const calibration = Number.isFinite(options.confidenceCalibration)
+            ? Math.max(-0.15, Math.min(0.15, options.confidenceCalibration ?? 0))
+            : 0;
         let finalConfidenceScore = Math.max(
             0,
-            Math.min(1, combinedConfidenceScore + calibration),
+            Math.min(
+                1,
+                (Number.isFinite(combinedConfidenceScore) ? combinedConfidenceScore : 0) +
+                    calibration,
+            ),
         );
 
         // Groundedness is deducted AFTER calibration so aggregate 👍/👎 feedback can
@@ -289,7 +326,7 @@ export class AIPipeline {
         // > 0`: "this is a known issue, fixed in 1.9.2" and "the fix is to pass the
         // `input` prop" are ordinary sentences in a correct docs-grounded answer.
         // They are priced, not escalated. See ESCALATION_FORCING_CATEGORIES.
-        if (groundedness.suppress || groundedness.forcesEscalation) {
+        if (mustRoute || groundedness.suppress || groundedness.forcesEscalation) {
             finalConfidenceScore = Math.min(finalConfidenceScore, SUPPRESSED_CONFIDENCE_CAP);
         }
 
@@ -300,10 +337,7 @@ export class AIPipeline {
         // score that still classifies below HIGH so the response keeps a disclaimer. This
         // only ever LOWERS the score — a genuinely low degraded signal is left untouched and
         // still falls through to escalation.
-        if (
-            confidenceAssessment.degraded &&
-            finalConfidenceScore >= AI_CONFIDENCE.HIGH_THRESHOLD
-        ) {
+        if (confidenceAssessment.degraded && finalConfidenceScore >= AI_CONFIDENCE.HIGH_THRESHOLD) {
             finalConfidenceScore = DEGRADED_CONFIDENCE_CAP;
         }
         const finalConfidence = classifyConfidence(finalConfidenceScore);
@@ -314,9 +348,8 @@ export class AIPipeline {
         // text cannot leak through any consumer — publishing `formatted` is
         // always safe by construction. `response` below still carries the draft
         // for the human handling the escalation.
-        const publishedText = groundedness.suppress
-            ? SUPPRESSED_RESPONSE_TEXT
-            : generatedResponse.text;
+        const suppressed = mustRoute || groundedness.suppress;
+        const publishedText = suppressed ? SUPPRESSED_RESPONSE_TEXT : generatedResponse.text;
 
         // The "we've escalated this" copy must be gated on the SAME condition the
         // worker uses to actually enqueue the ESCALATION job — score < ESCALATE
@@ -333,16 +366,17 @@ export class AIPipeline {
         // AI_DISCLAIMER doc comment in formatter.ts.
         const needsDisclaimer = finalConfidence !== ConfidenceLevel.HIGH;
         const willEscalate = finalConfidenceScore < AI_CONFIDENCE.ESCALATE;
-        const disclaimerText = groundedness.suppress
+        const disclaimerText = suppressed
             ? AI_DISCLAIMER
             : willEscalate
               ? AI_DISCLAIMER_ESCALATED
               : AI_DISCLAIMER_REVIEWED;
 
-        const formatted = this.formatter.format(publishedText, options.source, {
-            addDisclaimer: needsDisclaimer,
-            disclaimerText,
-        });
+        const formatOptions = { addDisclaimer: needsDisclaimer, disclaimerText };
+        const formatted =
+            reply && !suppressed
+                ? this.formatter.formatStructured(reply, options.source, formatOptions)
+                : this.formatter.format(publishedText, options.source, formatOptions);
 
         const latencyMs = Date.now() - startTime;
 
@@ -363,7 +397,18 @@ export class AIPipeline {
             tokenUsage: totalTokenUsage,
             latencyMs,
             groundedness,
-            suppressed: groundedness.suppress,
+            suppressed,
+            handoffReason: suppressed
+                ? (
+                      generatedResponse.reasoning ||
+                      [...groundedness.reasons, ...(!lint.publish ? lint.reasons : [])].join(
+                          '; ',
+                      ) ||
+                      (confidenceAssessment.degraded
+                          ? 'Independent verification was unavailable or malformed'
+                          : 'Independent verification found insufficient support')
+                  ).slice(0, 2000)
+                : undefined,
         };
     }
 
@@ -411,6 +456,12 @@ export class AIPipeline {
         question: string,
         options: PipelineOptions,
     ): AsyncIterable<string> {
+        if (this.supportAgent) {
+            const result = await this.generateSupportResponse(question, options);
+            yield [result.formatted.text, result.formatted.details].filter(Boolean).join('\n\n');
+            return;
+        }
+
         // Fetch search results first
         let searchResults: SearchResult[];
         try {

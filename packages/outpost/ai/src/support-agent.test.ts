@@ -1,0 +1,304 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useAimock } from './test-utils/aimock.js';
+import {
+    SupportAgent,
+    InvalidSupportReplyError,
+    InvestigationBudgetError,
+} from './support-agent.js';
+import type { SupportReply } from './support-reply.js';
+import type { PathfinderClient } from './pathfinder.js';
+
+const source = {
+    title: 'Tools',
+    content: 'Register frontend tools with useFrontendTool.',
+    sourceUrl: 'https://docs.copilotkit.ai/tools',
+    score: 0.9,
+};
+const reply: SupportReply = {
+    decision: 'answer',
+    summary: 'Register this action with `useFrontendTool`.',
+    details: 'Use the tool registration hook in your client component.',
+    apiVersion: 'v2',
+    appliesTo: 'CopilotKit v2',
+    evidence: [{ sourceUrl: source.sourceUrl, quote: source.content }],
+    handoffReason: '',
+};
+
+describe('OpenAI support agent', () => {
+    const mock = useAimock();
+    afterEach(() => vi.unstubAllGlobals());
+    function setup() {
+        const searchEvidence = vi
+            .fn<PathfinderClient['searchEvidence']>()
+            .mockResolvedValue([source]);
+        const agent = new SupportAgent({
+            apiKey: 'test-key',
+            baseURL: mock().url,
+            tracingDisabled: true,
+            pathfinder: { searchEvidence },
+        });
+        return { agent, searchEvidence };
+    }
+    function toolRoundtrip(output: unknown = reply) {
+        mock().llm.on(
+            { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+            { content: JSON.stringify(output) },
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_search',
+                    name: 'search_evidence',
+                    arguments: {
+                        query: 'frontend tools',
+                        corpus: 'copilotkit',
+                        kind: 'docs',
+                        version: 'v2',
+                    },
+                },
+            ],
+        });
+    }
+    it('executes the SDK tool loop and validates the final output against actual sources', async () => {
+        toolRoundtrip();
+        const { agent, searchEvidence } = setup();
+        const result = await agent.investigate({
+            question: 'How do I register frontend tools?',
+            source: 'github',
+        });
+        expect(searchEvidence).toHaveBeenCalledWith(
+            'search-docs',
+            expect.objectContaining({ query: 'frontend tools', version: 'v2' }),
+            expect.any(AbortSignal),
+        );
+        expect(result.reply).toEqual(reply);
+        expect(result.sources).toEqual([source]);
+        expect(mock().llm.getRequests()).toHaveLength(2);
+        expect(mock().llm.getLastRequest()?.body?.model).toBe('gpt-5.6-luna');
+    });
+    it.each(['not JSON', '{}'])(
+        'routes SDK-level malformed structured output: %s',
+        async (content) => {
+            mock().llm.onMessage(/./, { content });
+            await expect(
+                setup().agent.investigate({ question: 'Tools?', source: 'github' }),
+            ).rejects.toBeInstanceOf(InvalidSupportReplyError);
+        },
+    );
+    it('routes a run that exhausts its turns without output', async () => {
+        mock().llm.onMessage(/./, { content: '' });
+        await expect(
+            setup().agent.investigate({ question: 'Tools?', source: 'github' }),
+        ).rejects.toBeInstanceOf(InvestigationBudgetError);
+    });
+    it('resolves a source ref to a pinned commit and reads only the allowlisted repository', async () => {
+        const sha = 'a'.repeat(40);
+        const url = `https://github.com/CopilotKit/CopilotKit/blob/${sha}/packages/tools.ts`;
+        const output = { ...reply, evidence: [{ sourceUrl: url, quote: source.content }] };
+        const realFetch = globalThis.fetch;
+        const githubRequests: string[] = [];
+        vi.stubGlobal(
+            'fetch',
+            vi.fn<typeof fetch>(async (input, init) => {
+                const requestUrl = input instanceof Request ? input.url : String(input);
+                if (!requestUrl.startsWith('https://api.github.com/'))
+                    return realFetch(input, init);
+                githubRequests.push(requestUrl);
+                return new Response(
+                    JSON.stringify(
+                        requestUrl.includes('/commits/')
+                            ? { sha }
+                            : {
+                                  encoding: 'base64',
+                                  content: Buffer.from(source.content).toString('base64'),
+                                  size: source.content.length,
+                              },
+                    ),
+                );
+            }),
+        );
+        mock().llm.on(
+            { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+            { content: JSON.stringify(output) },
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_source',
+                    name: 'read_source',
+                    arguments: {
+                        repository: 'CopilotKit/CopilotKit',
+                        path: 'packages/tools.ts',
+                        ref: 'v2.0.0',
+                    },
+                },
+            ],
+        });
+        const result = await setup().agent.investigate({ question: 'Tools?', source: 'github' });
+        expect(result.sources[0].sourceUrl).toBe(url);
+        expect(githubRequests).toEqual([
+            'https://api.github.com/repos/CopilotKit/CopilotKit/commits/v2.0.0',
+            `https://api.github.com/repos/CopilotKit/CopilotKit/contents/packages/tools.ts?ref=${sha}`,
+        ]);
+    });
+    it('reads explicit release evidence without inferring a release from main', async () => {
+        const url = 'https://github.com/CopilotKit/CopilotKit/releases/tag/v2.0.0';
+        const realFetch = globalThis.fetch;
+        const githubRequests: string[] = [];
+        vi.stubGlobal(
+            'fetch',
+            vi.fn<typeof fetch>(async (input, init) => {
+                const requestUrl = input instanceof Request ? input.url : String(input);
+                if (!requestUrl.startsWith('https://api.github.com/'))
+                    return realFetch(input, init);
+                githubRequests.push(requestUrl);
+                return new Response(
+                    JSON.stringify({
+                        tag_name: 'v2.0.0',
+                        html_url: url,
+                        body: source.content,
+                        published_at: '2026-01-01',
+                        draft: false,
+                        prerelease: false,
+                    }),
+                );
+            }),
+        );
+        mock().llm.on(
+            { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+            {
+                content: JSON.stringify({
+                    ...reply,
+                    evidence: [{ sourceUrl: url, quote: source.content }],
+                }),
+            },
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_release',
+                    name: 'read_release',
+                    arguments: { repository: 'CopilotKit/CopilotKit', tag: 'v2.0.0' },
+                },
+            ],
+        });
+        const result = await setup().agent.investigate({ question: 'Tools?', source: 'github' });
+        expect(result.sources[0].sourceUrl).toBe(url);
+        expect(githubRequests).toEqual([
+            'https://api.github.com/repos/CopilotKit/CopilotKit/releases/tags/v2.0.0',
+        ]);
+    });
+    it('lets the investigator route a missing release without treating it as a transport outage', async () => {
+        const realFetch = globalThis.fetch;
+        vi.stubGlobal(
+            'fetch',
+            vi.fn<typeof fetch>(async (input, init) => {
+                const url = input instanceof Request ? input.url : String(input);
+                return url.startsWith('https://api.github.com/')
+                    ? new Response('', { status: 404 })
+                    : realFetch(input, init);
+            }),
+        );
+        const route = {
+            ...reply,
+            decision: 'route',
+            summary: 'This needs a version check.',
+            details: '',
+            evidence: [],
+            handoffReason: 'Requested release tag was not found',
+        };
+        mock().llm.on(
+            { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+            { content: JSON.stringify(route) },
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_release',
+                    name: 'read_release',
+                    arguments: { repository: 'CopilotKit/CopilotKit', tag: 'v9.9.9' },
+                },
+            ],
+        });
+        const result = await setup().agent.investigate({ question: 'Version?', source: 'github' });
+        expect(result.reply.decision).toBe('route');
+        expect(result.sources).toEqual([]);
+        expect(JSON.stringify(mock().llm.getLastRequest()?.body)).toContain('not_found');
+    });
+    it('rejects source paths escaping the repository before making a GitHub request', async () => {
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_source',
+                    name: 'read_source',
+                    arguments: {
+                        repository: 'CopilotKit/CopilotKit',
+                        path: '../secret',
+                        ref: 'main',
+                    },
+                },
+            ],
+        });
+        await expect(
+            setup().agent.investigate({ question: 'Tools?', source: 'github' }),
+        ).rejects.toBeInstanceOf(InvalidSupportReplyError);
+    });
+    it('explicitly broadens an empty version index and labels the fallback scope', async () => {
+        toolRoundtrip();
+        const { agent, searchEvidence } = setup();
+        searchEvidence.mockResolvedValueOnce([]).mockResolvedValueOnce([source]);
+        const result = await agent.investigate({ question: 'Tools in v2?', source: 'github' });
+        expect(searchEvidence).toHaveBeenCalledTimes(2);
+        expect(searchEvidence.mock.calls[1][1].version).toBeUndefined();
+        expect(result.sources).toEqual([source]);
+        expect(JSON.stringify(mock().llm.getLastRequest()?.body)).toContain('unfiltered_fallback');
+    });
+    it('rejects a fabricated evidence quote', async () => {
+        toolRoundtrip({
+            ...reply,
+            evidence: [{ sourceUrl: source.sourceUrl, quote: 'This feature is not supported.' }],
+        });
+        await expect(
+            setup().agent.investigate({ question: 'Tools?', source: 'github' }),
+        ).rejects.toThrow('evidence');
+    });
+    it('rejects unsourced output even when the model skips investigation', async () => {
+        mock().llm.onMessage(/./, { content: JSON.stringify(reply) });
+        await expect(
+            setup().agent.investigate({ question: 'Tools?', source: 'github' }),
+        ).rejects.toThrow('evidence');
+    });
+    it('does not disguise a retrieval failure as a valid answer', async () => {
+        toolRoundtrip();
+        const { agent, searchEvidence } = setup();
+        searchEvidence.mockRejectedValue(new Error('Pathfinder unavailable'));
+        await expect(agent.investigate({ question: 'Tools?', source: 'github' })).rejects.toThrow(
+            'Pathfinder unavailable',
+        );
+    });
+    it('stops a repeated tool loop at the tool budget', async () => {
+        for (let i = 0; i < 8; i++)
+            mock().llm.on(
+                { userMessage: /./, sequenceIndex: i },
+                {
+                    toolCalls: [
+                        {
+                            id: `call_${i}`,
+                            name: 'search_evidence',
+                            arguments: {
+                                query: 'tools',
+                                corpus: 'copilotkit',
+                                kind: 'docs',
+                                version: 'unknown',
+                            },
+                        },
+                    ],
+                },
+            );
+        const { agent, searchEvidence } = setup();
+        await expect(agent.investigate({ question: 'Tools?', source: 'github' })).rejects.toThrow(
+            InvestigationBudgetError,
+        );
+        expect(searchEvidence).toHaveBeenCalledTimes(6);
+    });
+});

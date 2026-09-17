@@ -11,20 +11,27 @@ export const config = {
     /** Anthropic API key — required for Claude calls */
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
 
+    openaiApiKey: process.env.OPENAI_API_KEY ?? '',
+    responseProvider: process.env.AI_RESPONSE_PROVIDER || 'openai',
+    draftLintMode: process.env.AI_DRAFT_LINT_MODE || 'report',
+
     /** Pathfinder MCP server URL */
-    pathfinderMcpUrl: process.env.PATHFINDER_MCP_URL ?? 'https://mcp.copilotkit.ai',
+    pathfinderMcpUrl: process.env.PATHFINDER_MCP_URL || 'https://mcp.copilotkit.ai',
 
     /** Fallback docs URL when MCP is unavailable */
-    fallbackDocsUrl: process.env.FALLBACK_DOCS_URL ?? 'https://docs.copilotkit.ai/llms-full.txt',
+    fallbackDocsUrl: process.env.FALLBACK_DOCS_URL || 'https://docs.copilotkit.ai/llms-full.txt',
 
     /** Model used for response generation */
-    responseModel: process.env.AI_RESPONSE_MODEL ?? 'claude-sonnet-4-6',
+    responseModel:
+        process.env.AI_RESPONSE_MODEL ||
+        (process.env.AI_RESPONSE_PROVIDER === 'anthropic' ? 'claude-sonnet-4-6' : 'gpt-5.6-luna'),
+    legacyResponseModel: process.env.AI_LEGACY_RESPONSE_MODEL || 'claude-sonnet-4-6',
 
     /** Model used for confidence scoring (cheaper, faster) */
-    confidenceModel: process.env.AI_CONFIDENCE_MODEL ?? 'claude-haiku-4-5-20251001',
+    confidenceModel: process.env.AI_CONFIDENCE_MODEL || 'claude-haiku-4-5-20251001',
 
     /** Model used for ticket classification (cheaper, faster) */
-    classifierModel: process.env.AI_CLASSIFIER_MODEL ?? 'claude-haiku-4-5-20251001',
+    classifierModel: process.env.AI_CLASSIFIER_MODEL || 'claude-haiku-4-5-20251001',
 
     /** Maximum tokens for response generation */
     maxResponseTokens: 2048,
@@ -36,7 +43,7 @@ export const config = {
     maxClassifierTokens: 512,
 
     /** Model used for sentiment analysis (cheap, fast) */
-    sentimentModel: process.env.AI_SENTIMENT_MODEL ?? 'claude-haiku-4-5-20251001',
+    sentimentModel: process.env.AI_SENTIMENT_MODEL || 'claude-haiku-4-5-20251001',
 
     /** Maximum tokens for sentiment analysis */
     maxSentimentTokens: 512,
@@ -106,11 +113,27 @@ export type AIConfig = typeof config;
  * Validate that required configuration values are present.
  * Throws if any critical config is missing.
  */
-export function validateConfig(): void {
-    if (!config.anthropicApiKey) {
+export function validateConfig(
+    values: Pick<
+        AIConfig,
+        'anthropicApiKey' | 'openaiApiKey' | 'responseProvider' | 'responseModel' | 'draftLintMode'
+    > = config,
+): void {
+    if (!values.anthropicApiKey) {
         throw new Error(
             '[AI Config] ANTHROPIC_API_KEY is required but not set. ' +
                 'Set the ANTHROPIC_API_KEY environment variable before starting the pipeline.',
         );
     }
+    if (!['openai', 'anthropic'].includes(values.responseProvider))
+        throw new Error('[AI Config] AI_RESPONSE_PROVIDER must be openai or anthropic');
+    if (values.responseProvider === 'openai' && !values.openaiApiKey)
+        throw new Error('[AI Config] OPENAI_API_KEY is required for the OpenAI support agent');
+    if (
+        (values.responseProvider === 'openai' && values.responseModel.startsWith('claude-')) ||
+        (values.responseProvider === 'anthropic' && values.responseModel.startsWith('gpt-'))
+    )
+        throw new Error('[AI Config] AI_RESPONSE_MODEL does not match AI_RESPONSE_PROVIDER');
+    if (!['report', 'enforce'].includes(values.draftLintMode))
+        throw new Error('[AI Config] AI_DRAFT_LINT_MODE must be report or enforce');
 }

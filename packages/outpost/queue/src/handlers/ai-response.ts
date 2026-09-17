@@ -615,14 +615,17 @@ export async function handleAiResponse(
 
     // 2. Build conversation context from every other non-SYSTEM message.
     //
-    // AIPipeline ultimately appends `question` after `conversationHistory`, so
+    // The pipeline carries the opening `question` separately from history, so
     // including the opening row here would send that question twice. Keep later
     // follow-ups as context, but let the explicit question carry the opener once.
     const conversationHistory = ticket.messages
         .filter((m: { type: string }) => m.type !== 'SYSTEM' && m !== openingUserMessage)
-        .map((m: { type: string; content: string }) => ({
+        .map((m: { type: string; content: string; author: string; createdAt?: Date }) => ({
             role: (m.type === 'USER' ? 'user' : 'assistant') as 'user' | 'assistant',
             content: m.content,
+            authorName: m.author,
+            createdAt: m.createdAt?.toISOString(),
+            authorRole: m.type === 'USER' ? 'participant' : 'support',
         }));
 
     // `ticket.messages` is loaded `orderBy: { createdAt: 'asc' }`, so the FIRST
@@ -700,6 +703,13 @@ export async function handleAiResponse(
             pipelineResult = await pipeline.generateSupportResponse(question, {
                 source: platform,
                 conversationHistory,
+                questionMetadata: openingUserMessage
+                    ? {
+                          authorName: openingUserMessage.author,
+                          authorRole: 'participant',
+                          createdAt: openingUserMessage.createdAt?.toISOString(),
+                      }
+                    : undefined,
                 confidenceCalibration,
             });
         } catch (error) {
@@ -815,7 +825,7 @@ export async function handleAiResponse(
         if (pipelineResult.suppressed) {
             console.warn(
                 `[AI Response] Ungrounded draft withheld for ticket ${ticketId} — ` +
-                    `${pipelineResult.groundedness.reasons.join('; ')}. ` +
+                    `${pipelineResult.handoffReason || pipelineResult.groundedness.reasons.join('; ') || 'Insufficient verified evidence'}. ` +
                     `Publishing the safe replacement and escalating to a human.`,
             );
         }
@@ -916,7 +926,7 @@ export async function handleAiResponse(
         }
 
         const nonDeliveryEscalationReason = pipelineResult.suppressed
-            ? `AI response withheld (${pipelineResult.groundedness.reasons.join('; ')}) — needs a human answer`
+            ? `AI response withheld (${pipelineResult.handoffReason || pipelineResult.groundedness.reasons.join('; ') || 'Insufficient verified evidence'}) — needs a human answer`
             : pipelineResult.confidenceScore < AI_CONFIDENCE.ESCALATE
               ? `Low AI confidence (${(pipelineResult.confidenceScore * 100).toFixed(0)}%) — automated escalation`
               : null;

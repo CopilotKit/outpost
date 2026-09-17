@@ -125,6 +125,23 @@ describe('ChatInput', () => {
 });
 
 describe('ChatMessage', () => {
+    it('keeps technical details in a collapsed native disclosure', () => {
+        const { container } = render(
+            <ChatMessage
+                message={{
+                    id: 'structured',
+                    role: 'assistant',
+                    content: 'Use the supported tool hook.',
+                    details: 'Verified **technical details**.',
+                }}
+            />,
+        );
+        expect(screen.getByText('Use the supported tool hook.')).toBeInTheDocument();
+        expect(screen.getByText('Technical details and sources')).toBeInTheDocument();
+        expect(container.querySelector('details')).not.toHaveAttribute('open');
+        expect(container.querySelector('details strong')).toHaveTextContent('technical details');
+    });
+
     it('renders user message correctly', () => {
         const message: ChatMessageData = {
             id: 'msg-1',

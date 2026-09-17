@@ -13,5 +13,12 @@
     //
     // The default config stays inclusive so anything inheriting it sees everything.
     "extends": "./tsconfig.json",
-    "exclude": ["node_modules", "dist", "**/*.test.ts", "**/__tests__/**", "**/__fixtures__/**"]
+    "exclude": [
+        "node_modules",
+        "dist",
+        "**/*.test.ts",
+        "**/__tests__/**",
+        "**/__fixtures__/**",
+        "**/test-utils/**"
+    ]
 }

@@ -171,7 +171,11 @@ export class ResponseGenerator {
         this.client = new Anthropic({
             apiKey: options?.apiKey ?? config.anthropicApiKey,
         });
-        this.model = options?.model ?? config.responseModel;
+        this.model =
+            options?.model ??
+            (config.responseProvider === 'openai'
+                ? config.legacyResponseModel
+                : config.responseModel);
     }
 
     /**

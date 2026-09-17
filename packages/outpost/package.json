@@ -49,11 +49,13 @@
         "@linear/sdk": "^81.0.0",
         "@octokit/auth-app": "^7.0.0",
         "@octokit/rest": "^21.0.0",
+        "@openai/agents": "0.18.0",
         "@prisma/client": "^6.2.0",
+        "@slack/web-api": "^7.9.0",
         "bcryptjs": "^3.0.3",
-        "postmark": "^4.0.0",
         "discord.js": "^14.16.0",
-        "@slack/web-api": "^7.9.0"
+        "postmark": "^4.0.0",
+        "zod": "^4.3.6"
     },
     "devDependencies": {
         "@copilotkit/aimock": "^1.14.0",

@@ -102,7 +102,11 @@ describe('POST /api/qa', () => {
     it('calls pipeline and streams response', async () => {
         mockGenerateSupportResponse.mockResolvedValue({
             response: 'CopilotKit is great.',
-            formatted: { text: 'CopilotKit is great.', truncated: false },
+            formatted: {
+                text: 'CopilotKit is great.',
+                details: 'Verified technical detail',
+                truncated: false,
+            },
             confidenceLevel: 'HIGH',
             confidenceScore: 0.92,
             searchResults: [
@@ -122,6 +126,7 @@ describe('POST /api/qa', () => {
         expect(response.headers.get('Content-Type')).toBe('text/event-stream');
 
         const streamText = await readStream(response);
+        expect(streamText).toContain('Verified technical detail');
 
         // Should contain token events
         expect(streamText).toContain('"type":"token"');
@@ -150,10 +155,12 @@ describe('POST /api/qa', () => {
             { role: 'assistant', content: 'Hello!' },
         ];
 
-        await POST(makeRequest({
-            question: 'Follow up question',
-            conversationHistory: history,
-        }));
+        await POST(
+            makeRequest({
+                question: 'Follow up question',
+                conversationHistory: history,
+            }),
+        );
 
         expect(mockGenerateSupportResponse).toHaveBeenCalledWith(
             'Follow up question',

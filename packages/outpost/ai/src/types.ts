@@ -2,8 +2,8 @@
  * Types for the Outpost AI pipeline.
  */
 
-import { AI_CONFIDENCE, TicketPriority, TicketType } from '@copilotkit/outpost/shared';
-import type { PlatformTarget } from '@copilotkit/outpost/shared';
+import { AI_CONFIDENCE } from '@copilotkit/outpost/shared';
+import type { PlatformTarget, TicketPriority, TicketType } from '@copilotkit/outpost/shared';
 // Type-only import — erased at build time, so the types.ts ↔ groundedness.ts
 // cycle never exists at runtime.
 import type { GroundednessAssessment } from './groundedness.js';
@@ -112,6 +112,7 @@ export interface TokenUsage {
 }
 
 export interface PipelineContext {
+    questionMetadata?: { authorName?: string; authorRole?: string; createdAt?: string };
     /** The user's question or message */
     question: string;
     /** Additional context (ticket history, account info, etc.) */
@@ -129,6 +130,8 @@ export interface PipelineContext {
 }
 
 export interface PathfinderQuery {
+    /** Requested documentation API generation (v1/v2). */
+    version?: string;
     /** The search query */
     query: string;
     /** Maximum number of results */
@@ -219,13 +222,22 @@ export interface SentimentTrendResult {
     delta: number;
 }
 
+export interface ConversationMessage {
+    role: 'user' | 'assistant';
+    content: string;
+    authorName?: string;
+    authorRole?: string;
+    createdAt?: string;
+}
+
 export interface PipelineOptions {
+    questionMetadata?: PipelineContext['questionMetadata'];
     /** Platform target for response formatting */
     source: PlatformTarget;
     /** Whether to use streaming mode */
     streaming?: boolean;
     /** Conversation history for follow-up questions */
-    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+    conversationHistory?: ConversationMessage[];
     /** Maximum output tokens */
     maxTokens?: number;
     /** Bounded confidence adjustment from aggregate 👍/👎 feedback (default 0). */
@@ -233,6 +245,8 @@ export interface PipelineOptions {
 }
 
 export interface FormattedResponse {
+    /** Validated Markdown displayed in a native web disclosure. */
+    details?: string;
     /** The formatted response text */
     text: string;
     /** Action buttons metadata (for Discord bot) */
@@ -244,6 +258,8 @@ export interface FormattedResponse {
 }
 
 export interface PipelineResult {
+    /** Internal reason preserved for durable human escalation; never public copy. */
+    handoffReason?: string;
     /**
      * The model's draft, always — including when `suppressed` is true. Internal
      * only: it is what the human handling an escalation edits from. Never publish
@@ -263,7 +279,7 @@ export interface PipelineResult {
     confidenceScore: number;
     /** Search results used as context */
     searchResults: SearchResult[];
-    /** Token usage across all Claude calls */
+    /** Token usage across generation and verification calls */
     tokenUsage: TokenUsage;
     /** End-to-end latency in milliseconds */
     latencyMs: number;
@@ -271,8 +287,8 @@ export interface PipelineResult {
     groundedness: GroundednessAssessment;
     /**
      * True when the draft makes a claim we can't stand behind, so `formatted`
-     * carries the safe replacement instead of `response`. Mirrors
-     * `groundedness.suppress`. This is a SIGNAL, not a gate a consumer must
+     * carries the safe replacement instead of `response`. Includes validation,
+     * routing, verification, lint, and groundedness failures. This is a SIGNAL, not a gate a consumer must
      * enforce — the pipeline already withheld the text. Read it to escalate to a
      * human, to log, or for analytics; you do not need it to post safely.
      */

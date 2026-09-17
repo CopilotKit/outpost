@@ -14,6 +14,7 @@ export interface ChatMessageData {
     id: string;
     role: 'user' | 'assistant';
     content: string;
+    details?: string;
     confidence?: ConfidenceLevel;
     sources?: SourceItem[];
     latencyMs?: number;
@@ -30,25 +31,16 @@ export function ChatMessage({ message }: ChatMessageProps) {
     return (
         <div
             data-testid={`chat-message-${message.role}`}
-            className={cn(
-                'flex gap-3 px-4 py-4',
-                isUser ? 'bg-transparent' : 'bg-muted/20',
-            )}
+            className={cn('flex gap-3 px-4 py-4', isUser ? 'bg-transparent' : 'bg-muted/20')}
         >
             {/* Avatar */}
             <div
                 className={cn(
                     'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                    isUser
-                        ? 'bg-primary/10 text-primary'
-                        : 'bg-accent text-accent-foreground',
+                    isUser ? 'bg-primary/10 text-primary' : 'bg-accent text-accent-foreground',
                 )}
             >
-                {isUser ? (
-                    <User className="h-4 w-4" />
-                ) : (
-                    <Bot className="h-4 w-4" />
-                )}
+                {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
             </div>
 
             {/* Content */}
@@ -68,9 +60,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
                 </div>
 
                 {isUser ? (
-                    <p className="text-sm text-foreground whitespace-pre-wrap">
-                        {message.content}
-                    </p>
+                    <p className="text-sm text-foreground whitespace-pre-wrap">{message.content}</p>
                 ) : (
                     <div className="prose prose-sm prose-invert max-w-none text-foreground">
                         <ReactMarkdown
@@ -130,15 +120,31 @@ export function ChatMessage({ message }: ChatMessageProps) {
                     </div>
                 )}
 
+                {!isUser && message.details && !message.streaming && (
+                    <details className="mt-3 text-sm">
+                        <summary className="cursor-pointer text-muted-foreground">
+                            Technical details and sources
+                        </summary>
+                        <div className="prose prose-sm prose-invert max-w-none mt-2">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {message.details}
+                            </ReactMarkdown>
+                        </div>
+                    </details>
+                )}
+
                 {/* Actions for AI messages */}
                 {!isUser && !message.streaming && message.content && (
                     <div className="mt-2 flex items-center gap-2">
-                        <CopyButton text={message.content} label="Copy response" />
+                        <CopyButton
+                            text={[message.content, message.details].filter(Boolean).join('\n\n')}
+                            label="Copy response"
+                        />
                     </div>
                 )}
 
                 {/* Source panel for AI messages */}
-                {!isUser && message.sources && message.sources.length > 0 && (
+                {!isUser && !message.details && message.sources && message.sources.length > 0 && (
                     <SourcePanel sources={message.sources} />
                 )}
             </div>

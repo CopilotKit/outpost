@@ -1242,6 +1242,26 @@ describe('handleAiResponse', () => {
             expect(mockGenerateSupportResponse).toHaveBeenCalledTimes(1);
         });
 
+        it('preserves the investigator handoff reason in durable escalation', async () => {
+            mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
+            mockGenerateSupportResponse.mockResolvedValue({
+                ...suppressedResult,
+                handoffReason: 'Reporter version cannot be matched to a release',
+            });
+            await handleAiResponse({ ticketId: 'tkt-1', source: 'discord' }, makeContext());
+            expect(mockPrismaMessage.update).toHaveBeenCalledWith({
+                where: { id: 'msg-new' },
+                data: {
+                    escalationRequiredReason: expect.stringContaining(
+                        'Reporter version cannot be matched to a release',
+                    ),
+                },
+            });
+            expect(JSON.stringify(mockPostResponse.mock.calls)).not.toContain(
+                'Reporter version cannot be matched to a release',
+            );
+        });
+
         it.each([
             ['low-confidence', lowConfidenceResult, 'Low AI confidence'],
             ['suppressed', suppressedResult, 'AI response withheld'],
@@ -1869,8 +1889,18 @@ describe('handleAiResponse', () => {
             'Hello',
             expect.objectContaining({
                 conversationHistory: [
-                    { role: 'assistant', content: 'Hi there!' },
-                    { role: 'user', content: 'Follow up question' },
+                    expect.objectContaining({
+                        role: 'assistant',
+                        content: 'Hi there!',
+                        authorRole: 'support',
+                        createdAt: '2026-04-23T10:01:00.000Z',
+                    }),
+                    expect.objectContaining({
+                        role: 'user',
+                        content: 'Follow up question',
+                        authorRole: 'participant',
+                        createdAt: '2026-04-23T10:03:00.000Z',
+                    }),
                 ],
             }),
         );
@@ -1928,7 +1958,12 @@ describe('handleAiResponse', () => {
             expect(mockGenerateSupportResponse).toHaveBeenCalledWith(
                 'How do I use CopilotKit with Next.js?',
                 expect.objectContaining({
-                    conversationHistory: [{ role: 'user', content: 'btw I am on the app router' }],
+                    conversationHistory: [
+                        expect.objectContaining({
+                            role: 'user',
+                            content: 'btw I am on the app router',
+                        }),
+                    ],
                 }),
             );
         });
