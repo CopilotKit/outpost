@@ -34,7 +34,7 @@ describe('TicketClassifier', () => {
     let classifier: TicketClassifier;
 
     beforeEach(() => {
-        classifier = new TicketClassifier({ apiKey: 'test-key' });
+        classifier = new TicketClassifier({ provider: 'anthropic', apiKey: 'test-key' });
     });
 
     describe('classify', () => {
@@ -53,9 +53,11 @@ describe('TicketClassifier', () => {
                 usage: { input_tokens: 10, output_tokens: 10 },
             });
 
-            await new TicketClassifier({ apiKey: 'test-key', model: 'claude-opus-5' }).classify(
-                'how do I do the thing?',
-            );
+            await new TicketClassifier({
+                provider: 'anthropic',
+                apiKey: 'test-key',
+                model: 'claude-opus-5',
+            }).classify('how do I do the thing?');
 
             const body = mock.getLastRequest()?.body as Record<string, unknown>;
             expect(body.model).toBe('claude-opus-5');
@@ -74,6 +76,7 @@ describe('TicketClassifier', () => {
             });
 
             await new TicketClassifier({
+                provider: 'anthropic',
                 apiKey: 'test-key',
                 model: 'claude-haiku-4-5-20251001',
             }).classify('how do I do the thing?');
@@ -208,9 +211,7 @@ describe('TicketClassifier', () => {
         it('should fall back to heuristic on API failure', async () => {
             mock.nextRequestError(500, { message: 'API error' });
 
-            const result = await classifier.classify(
-                'Error: Cannot connect to CopilotKit runtime',
-            );
+            const result = await classifier.classify('Error: Cannot connect to CopilotKit runtime');
 
             expect(result.priority).toBe(TicketPriority.HIGH); // Error keyword triggers HIGH
             expect(result.type).toBe(TicketType.BUG);
@@ -252,6 +253,20 @@ describe('TicketClassifier', () => {
             expect(result.tags).toContain('next.js');
             expect(result.tags).toContain('langgraph');
         });
+
+        it('does not infer TypeScript from incidental letters in a subagent question', () => {
+            const result = classifier.heuristicClassify('Does Deep Agents support subagents?');
+            expect(result.tags).not.toContain('typescript');
+        });
+
+        it.each(['TypeScript', 'ts', 'TSX', 'component.tsx', 'index.ts'])(
+            'still tags an explicit TypeScript mention: %s',
+            (mention) => {
+                expect(classifier.heuristicClassify(`Help with ${mention}`).tags).toContain(
+                    'typescript',
+                );
+            },
+        );
 
         it('should default to MEDIUM priority for ambiguous tickets', () => {
             const result = classifier.heuristicClassify(

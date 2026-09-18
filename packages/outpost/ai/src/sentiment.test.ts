@@ -45,10 +45,10 @@ describe('analyzeSentiment', () => {
             usage: { input_tokens: 150, output_tokens: 20 },
         });
 
-        const result = await analyzeSentiment([
-            'Thanks so much for your help!',
-            'This is working perfectly now.',
-        ], { apiKey: 'test-key' });
+        const result = await analyzeSentiment(
+            ['Thanks so much for your help!', 'This is working perfectly now.'],
+            { provider: 'anthropic', apiKey: 'test-key' },
+        );
 
         expect(result.score).toBe(10);
         expect(result.label).toBe(SentimentLabel.POSITIVE);
@@ -62,7 +62,11 @@ describe('analyzeSentiment', () => {
             usage: { input_tokens: 10, output_tokens: 10 },
         });
 
-        await analyzeSentiment(['thanks!'], { apiKey: 'test-key', model: 'claude-opus-5' });
+        await analyzeSentiment(['thanks!'], {
+            provider: 'anthropic',
+            apiKey: 'test-key',
+            model: 'claude-opus-5',
+        });
 
         const body = mock.getLastRequest()?.body as Record<string, unknown>;
         expect(body.model).toBe('claude-opus-5');
@@ -83,7 +87,10 @@ describe('analyzeSentiment', () => {
             usage: { input_tokens: 10, output_tokens: 10 },
         });
 
-        const result = await analyzeSentiment(['this is still broken'], { apiKey: 'test-key' });
+        const result = await analyzeSentiment(['this is still broken'], {
+            provider: 'anthropic',
+            apiKey: 'test-key',
+        });
 
         expect(result.degraded).toBe(true);
     });
@@ -95,7 +102,10 @@ describe('analyzeSentiment', () => {
             usage: { input_tokens: 200, output_tokens: 20 },
         });
 
-        const result = await analyzeSentiment(['This is still broken.'], { apiKey: 'test-key' });
+        const result = await analyzeSentiment(['This is still broken.'], {
+            provider: 'anthropic',
+            apiKey: 'test-key',
+        });
 
         expect(result.score).toBe(65);
         expect(result.label).toBe(SentimentLabel.NEGATIVE);
@@ -107,10 +117,13 @@ describe('analyzeSentiment', () => {
             usage: { input_tokens: 200, output_tokens: 20 },
         });
 
-        const result = await analyzeSentiment([
-            'This is broken again! I reported this last week.',
-            'Nothing works, extremely frustrated.',
-        ], { apiKey: 'test-key' });
+        const result = await analyzeSentiment(
+            [
+                'This is broken again! I reported this last week.',
+                'Nothing works, extremely frustrated.',
+            ],
+            { provider: 'anthropic', apiKey: 'test-key' },
+        );
 
         expect(result.score).toBe(65);
         expect(result.label).toBe(SentimentLabel.NEGATIVE);
@@ -122,9 +135,10 @@ describe('analyzeSentiment', () => {
             usage: { input_tokens: 180, output_tokens: 20 },
         });
 
-        const result = await analyzeSentiment([
-            'We are evaluating alternatives. This product is unusable.',
-        ], { apiKey: 'test-key' });
+        const result = await analyzeSentiment(
+            ['We are evaluating alternatives. This product is unusable.'],
+            { provider: 'anthropic', apiKey: 'test-key' },
+        );
 
         expect(result.score).toBe(85);
         expect(result.label).toBe(SentimentLabel.CRITICAL);
@@ -133,36 +147,45 @@ describe('analyzeSentiment', () => {
     it('should fall back to NEUTRAL on API failure', async () => {
         mock.nextRequestError(500, { message: 'API rate limit' });
 
-        const result = await analyzeSentiment([
-            'Some message content',
-        ], { apiKey: 'test-key' });
+        const result = await analyzeSentiment(['Some message content'], {
+            provider: 'anthropic',
+            apiKey: 'test-key',
+        });
 
         expect(result.score).toBe(50);
         expect(result.label).toBe(SentimentLabel.NEUTRAL);
         expect(result.tokenUsage.inputTokens).toBe(0);
     });
 
-    it('should clamp scores to 0-100 range', async () => {
+    it('rejects out-of-range scores as degraded', async () => {
         mock.onMessage(/./, {
             content: JSON.stringify({ score: 150, label: 'CRITICAL' }),
             usage: { input_tokens: 100, output_tokens: 20 },
         });
 
-        const result = await analyzeSentiment(['test'], { apiKey: 'test-key' });
+        const result = await analyzeSentiment(['test'], {
+            provider: 'anthropic',
+            apiKey: 'test-key',
+        });
 
-        expect(result.score).toBe(100);
+        expect(result.score).toBe(50);
+        expect(result.degraded).toBe(true);
     });
 
-    it('should derive label from score when label is missing', async () => {
+    it('rejects incomplete structured sentiment as degraded', async () => {
         mock.onMessage(/./, {
             content: JSON.stringify({ score: 15 }),
             usage: { input_tokens: 100, output_tokens: 20 },
         });
 
-        const result = await analyzeSentiment(['test'], { apiKey: 'test-key' });
+        const result = await analyzeSentiment(['test'], {
+            provider: 'anthropic',
+            apiKey: 'test-key',
+        });
 
-        expect(result.score).toBe(15);
-        expect(result.label).toBe(SentimentLabel.POSITIVE);
+        expect(result.score).toBe(50);
+        expect(result.label).toBe(SentimentLabel.NEUTRAL);
+        expect(result.degraded).toBe(true);
     });
 
     it('should handle malformed JSON response gracefully', async () => {
@@ -171,10 +194,14 @@ describe('analyzeSentiment', () => {
             usage: { input_tokens: 100, output_tokens: 20 },
         });
 
-        const result = await analyzeSentiment(['test'], { apiKey: 'test-key' });
+        const result = await analyzeSentiment(['test'], {
+            provider: 'anthropic',
+            apiKey: 'test-key',
+        });
 
         expect(result.score).toBe(50);
         expect(result.label).toBe(SentimentLabel.NEUTRAL);
+        expect(result.degraded).toBe(true);
         // Token usage still tracked even with parse failure
         expect(result.tokenUsage.inputTokens).toBe(100);
     });
@@ -185,11 +212,10 @@ describe('analyzeSentiment', () => {
             usage: { input_tokens: 300, output_tokens: 20 },
         });
 
-        await analyzeSentiment([
-            'Message 1',
-            'Message 2',
-            'Message 3',
-        ], { apiKey: 'test-key' });
+        await analyzeSentiment(['Message 1', 'Message 2', 'Message 3'], {
+            provider: 'anthropic',
+            apiKey: 'test-key',
+        });
 
         // Verify the request was made and contains all messages
         const lastReq = mock.getLastRequest();
@@ -199,9 +225,7 @@ describe('analyzeSentiment', () => {
         expect(body).not.toBeNull();
         const userMessage = body!.messages.find((m: { role: string }) => m.role === 'user');
         expect(userMessage).toBeDefined();
-        const content = typeof userMessage!.content === 'string'
-            ? userMessage!.content
-            : '';
+        const content = typeof userMessage!.content === 'string' ? userMessage!.content : '';
         expect(content).toContain('[Message 1]');
         expect(content).toContain('[Message 2]');
         expect(content).toContain('[Message 3]');

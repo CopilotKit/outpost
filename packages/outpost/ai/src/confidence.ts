@@ -1,9 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { z } from 'zod';
+import { AuxiliaryModel, auxiliaryErrorUsage } from './auxiliary-model.js';
+import type { AuxiliaryModelOptions } from './auxiliary-model.js';
 import type { SearchResult, TokenUsage } from './types.js';
 import { ConfidenceLevel, classifyConfidence } from './types.js';
 import { config } from './config.js';
-import { samplingParams } from './model-capabilities.js';
-import { extractResponseText } from './generator.js';
 
 export interface ConfidenceAssessment {
     level: ConfidenceLevel;
@@ -50,20 +50,15 @@ Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
 /**
  * Confidence scorer that runs after response generation completes.
  *
- * Uses Claude Haiku for cost-effective, fast confidence assessment. Scores
+ * Uses an independent Luna run by default for cost-effective, fast confidence assessment. Scores
  * the quality of the search results against the actual generated response
  * text, sequentially after the response generator has produced it.
  */
 export class ConfidenceScorer {
-    private client: Anthropic;
-    private model: string;
+    private readonly model: AuxiliaryModel;
 
-    constructor(options?: { apiKey?: string; model?: string; baseURL?: string }) {
-        this.client = new Anthropic({
-            apiKey: options?.apiKey ?? config.anthropicApiKey,
-            baseURL: options?.baseURL,
-        });
-        this.model = options?.model ?? config.confidenceModel;
+    constructor(options?: AuxiliaryModelOptions) {
+        this.model = new AuxiliaryModel(config.confidenceModel, options);
     }
 
     /**
@@ -77,42 +72,41 @@ export class ConfidenceScorer {
         const userMessage = this.buildAssessmentPrompt(question, response, searchResults);
 
         try {
-            const message = await this.client.messages.create({
-                model: this.model,
-                max_tokens: config.maxConfidenceTokens,
-                ...samplingParams(this.model, config.confidenceTemperature),
-                system: CONFIDENCE_SYSTEM_PROMPT,
-                messages: [{ role: 'user', content: userMessage }],
+            const { output, tokenUsage } = await this.model.run({
+                name: 'Outpost confidence verification',
+                instructions: CONFIDENCE_SYSTEM_PROMPT,
+                input: userMessage,
+                schema: z.object({
+                    score: z.number().min(0).max(1),
+                    level: z.enum(['HIGH', 'MEDIUM', 'LOW']),
+                    reasoning: z.string().min(1),
+                }),
+                maxTokens: config.maxConfidenceTokens,
+                temperature: config.confidenceTemperature,
             });
-
-            const text = extractResponseText(message.content);
-
-            // An empty extraction is a FAILURE, not a result. Falling through to
-            // the parser turned it into a fabricated value reported as healthy:
-            // the parse catch returned a constant while `degraded` stayed false,
-            // so the caller could not tell a measured answer from a missing one.
-            // Reachable as soon as a thinking-default model is configured, since
-            // this call's max_tokens sits below a thinking turn — which is exactly
-            // the swap the temperature gate exists to enable.
-            if (!text.trim()) {
-                throw new Error('Model response contained no usable text');
-            }
-            const tokenUsage: TokenUsage = {
-                inputTokens: message.usage.input_tokens,
-                outputTokens: message.usage.output_tokens,
+            return {
+                ...output,
+                level: classifyConfidence(output.score),
+                tokenUsage,
+                degraded: false,
             };
-
-            return this.parseAssessment(text, tokenUsage);
         } catch (error) {
-            console.error(`[ConfidenceScorer] Scoring failed, falling back to heuristics:`, error);
-            // Fallback to heuristic scoring when Claude call fails
-            return { ...this.heuristicScore(searchResults), degraded: true };
+            console.error(
+                `[ConfidenceScorer] Scoring failed, falling back to heuristics:`,
+                error instanceof Error ? error.message : 'Unknown error',
+            );
+            // A fallback is never independent evidence that a draft is safe.
+            return {
+                ...this.heuristicScore(searchResults),
+                tokenUsage: auxiliaryErrorUsage(error),
+                degraded: true,
+            };
         }
     }
 
     /**
-     * Heuristic-only scoring (no Claude call). Used as fallback and for
-     * pre-filtering before making the Claude call.
+     * Heuristic-only scoring (no model call). Used as fallback and for
+     * pre-filtering before making the model call.
      */
     heuristicScore(searchResults: SearchResult[]): ConfidenceAssessment {
         if (searchResults.length === 0) {
@@ -168,52 +162,5 @@ export class ConfidenceScorer {
             '**Generated Response:**',
             response,
         ].join('\n');
-    }
-
-    private parseAssessment(text: string, tokenUsage: TokenUsage): ConfidenceAssessment {
-        try {
-            // Strip any markdown code fences
-            const cleaned = text
-                .replace(/```json?\s*/g, '')
-                .replace(/```\s*/g, '')
-                .trim();
-            const parsed = JSON.parse(cleaned) as {
-                score?: number;
-                level?: string;
-                reasoning?: string;
-            };
-
-            if (typeof parsed.score !== 'number' || !Number.isFinite(parsed.score))
-                throw new Error('Confidence score must be a finite number');
-            const score = Math.max(0, Math.min(1, parsed.score));
-            const level = this.parseLevel(parsed.level) ?? classifyConfidence(score);
-
-            return {
-                level,
-                score,
-                reasoning: String(parsed.reasoning ?? 'No reasoning provided'),
-                tokenUsage,
-                degraded: false,
-            };
-        } catch (error) {
-            console.warn(`[ConfidenceScorer] Failed to parse confidence assessment JSON:`, error);
-            // If parsing fails, fall back to a moderate score
-            return {
-                level: ConfidenceLevel.MEDIUM,
-                score: 0.5,
-                reasoning: 'Failed to parse confidence assessment',
-                tokenUsage,
-                degraded: true,
-            };
-        }
-    }
-
-    private parseLevel(level: string | undefined): ConfidenceLevel | null {
-        if (!level) return null;
-        const upper = level.toUpperCase();
-        if (upper === 'HIGH') return ConfidenceLevel.HIGH;
-        if (upper === 'MEDIUM') return ConfidenceLevel.MEDIUM;
-        if (upper === 'LOW') return ConfidenceLevel.LOW;
-        return null;
     }
 }

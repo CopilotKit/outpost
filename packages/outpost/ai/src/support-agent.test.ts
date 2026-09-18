@@ -276,7 +276,7 @@ describe('OpenAI support agent', () => {
             'Pathfinder unavailable',
         );
     });
-    it('stops a repeated tool loop at the tool budget', async () => {
+    it('rejects a model that calls a tool after tools have been removed', async () => {
         for (let i = 0; i < 8; i++)
             mock().llm.on(
                 { userMessage: /./, sequenceIndex: i },
@@ -297,8 +297,36 @@ describe('OpenAI support agent', () => {
             );
         const { agent, searchEvidence } = setup();
         await expect(agent.investigate({ question: 'Tools?', source: 'github' })).rejects.toThrow(
-            InvestigationBudgetError,
+            InvalidSupportReplyError,
         );
         expect(searchEvidence).toHaveBeenCalledTimes(6);
+    });
+    it('removes tools after six calls so the final turn can use the collected evidence', async () => {
+        mock().llm.on({ userMessage: /./, sequenceIndex: 6 }, { content: JSON.stringify(reply) });
+        for (let i = 0; i < 6; i++) {
+            mock().llm.on(
+                { userMessage: /./, sequenceIndex: i },
+                {
+                    toolCalls: [
+                        {
+                            id: `call_budget_${i}`,
+                            name: 'search_evidence',
+                            arguments: {
+                                query: 'tools',
+                                corpus: 'copilotkit',
+                                kind: 'docs',
+                                version: 'unknown',
+                            },
+                        },
+                    ],
+                },
+            );
+        }
+        const { agent, searchEvidence } = setup();
+        const result = await agent.investigate({ question: 'Tools?', source: 'github' });
+        expect(result.reply).toEqual(reply);
+        expect(searchEvidence).toHaveBeenCalledTimes(6);
+        expect(mock().llm.getRequests()).toHaveLength(7);
+        expect(mock().llm.getLastRequest()?.body?.tools ?? []).toEqual([]);
     });
 });

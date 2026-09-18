@@ -1,7 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AIPipeline, SUPPRESSED_RESPONSE_TEXT } from './pipeline.js';
 import { SupportAgent } from './support-agent.js';
-import { ConfidenceScorer } from './confidence.js';
 import { useAimock } from './test-utils/aimock.js';
 import type { PathfinderClient } from './pathfinder.js';
 import type { SupportReply } from './support-reply.js';
@@ -11,8 +10,13 @@ vi.mock('./config.js', async (importOriginal) => {
     const original = await importOriginal<typeof ConfigModule>();
     return {
         ...original,
-        validateConfig: () => {},
-        config: { ...original.config, anthropicApiKey: 'test-key' },
+        validateConfig: () =>
+            original.validateConfig({
+                ...original.config,
+                anthropicApiKey: '',
+                openaiApiKey: 'test-key',
+            }),
+        config: { ...original.config, anthropicApiKey: '', openaiApiKey: 'test-key' },
     };
 });
 
@@ -34,11 +38,22 @@ const reply: SupportReply = {
 
 describe('OpenAI publication boundary', () => {
     const mock = useAimock();
+    beforeEach(() => {
+        vi.stubEnv('OPENAI_BASE_URL', mock().url);
+        vi.stubEnv('OPENAI_AGENTS_DISABLE_TRACING', '1');
+    });
+    afterEach(() => vi.unstubAllEnvs());
     function setup(
         output: SupportReply = reply,
         confidence = '{"score":0.95,"level":"HIGH","reasoning":"Sources support the answer"}',
     ) {
-        mock().llm.on({ model: /claude/ }, { content: confidence });
+        mock().llm.on(
+            {
+                predicate: (req) =>
+                    JSON.stringify(req.messages).includes('confidence scoring system'),
+            },
+            { content: confidence },
+        );
         mock().llm.on(
             { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
             { content: JSON.stringify(output) },
@@ -67,9 +82,21 @@ describe('OpenAI publication boundary', () => {
                 tracingDisabled: true,
                 pathfinder: { searchEvidence },
             }),
-            confidenceScorer: new ConfidenceScorer({ apiKey: 'test-key', baseURL: mock().url }),
         });
     }
+    it('constructs default pipeline clients with only the OpenAI key and classifies using Luna', async () => {
+        mock().llm.onMessage(/./, {
+            content: JSON.stringify({
+                priority: 'LOW',
+                type: 'QUESTION',
+                tags: [],
+                reasoning: 'How-to',
+            }),
+        });
+        const result = await new AIPipeline().classifyTicket('How do I configure this?');
+        expect(result.type).toBe('QUESTION');
+        expect(mock().llm.getLastRequest()?.body?.model).toBe('gpt-5.6-luna');
+    });
     it('propagates transport failures for the worker retry policy', async () => {
         const pipeline = new AIPipeline({
             supportAgent: {
@@ -99,7 +126,7 @@ describe('OpenAI publication boundary', () => {
         });
         const verification = mock()
             .llm.getRequests()
-            .find((request) => request.body?.model?.startsWith('claude'));
+            .find((request) => JSON.stringify(request.body).includes('confidence scoring system'));
         expect(JSON.stringify(verification?.body)).toContain('Correction: using v2.');
         expect(JSON.stringify(verification?.body)).toContain('maintainer');
     });
@@ -121,7 +148,7 @@ describe('OpenAI publication boundary', () => {
         expect(result.formatted.text).not.toContain(reply.summary);
         expect(result.formatted.details).toBeUndefined();
     });
-    it.each(['not json', '{"score":0.2,"reasoning":"Unsupported"}'])(
+    it.each(['not json', '{"score":0.2,"level":"LOW","reasoning":"Unsupported"}'])(
         'withholds a draft when the verifier is unusable or rejects it: %s',
         async (score) => {
             const result = await setup(reply, score).generateSupportResponse('Tools?', {

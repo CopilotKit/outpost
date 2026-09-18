@@ -1,9 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { z } from 'zod';
+import { AuxiliaryModel, auxiliaryErrorUsage } from './auxiliary-model.js';
+import type { AuxiliaryModelOptions } from './auxiliary-model.js';
 import type { TicketClassification, TokenUsage } from './types.js';
 import { TicketPriority, TicketType } from './types.js';
 import { config } from './config.js';
-import { samplingParams } from './model-capabilities.js';
-import { extractResponseText } from './generator.js';
 
 const CLASSIFIER_SYSTEM_PROMPT = `You are a support ticket classifier for CopilotKit, an open-source AI framework. Classify the ticket and respond with ONLY a JSON object (no markdown, no explanation):
 
@@ -30,63 +30,50 @@ Classification guidelines:
 Tags should be specific CopilitKit concepts when relevant: "copilotkit-runtime", "coagent", "copilot-textarea", "react-ui", "cloud", "self-hosted", "actions", "hooks", "integration", "authentication", "deployment", "performance", "typescript", "next.js", "langchain", "langgraph", "crewai", "ag2"`;
 
 /**
- * Ticket classifier that combines fast heuristics with Claude-powered
+ * Ticket classifier that combines fast heuristics with model-powered
  * classification for nuanced categorization.
  *
  * Uses heuristics first for quick wins (error messages, obvious patterns),
- * then refines with Claude Haiku when heuristics are insufficient.
+ * then refines with Luna when heuristics are insufficient.
  */
 export class TicketClassifier {
-    private client: Anthropic;
-    private model: string;
+    private readonly model: AuxiliaryModel;
 
-    constructor(options?: { apiKey?: string; model?: string }) {
-        this.client = new Anthropic({
-            apiKey: options?.apiKey ?? config.anthropicApiKey,
-        });
-        this.model = options?.model ?? config.classifierModel;
+    constructor(options?: AuxiliaryModelOptions) {
+        this.model = new AuxiliaryModel(config.classifierModel, options);
     }
 
     /**
      * Classify a ticket based on its content.
-     * Applies heuristics first, then refines with Claude.
+     * Applies heuristics first, then refines with the configured model.
      */
-    async classify(content: string): Promise<TicketClassification & { tokenUsage: TokenUsage; degraded: boolean }> {
+    async classify(
+        content: string,
+    ): Promise<TicketClassification & { tokenUsage: TokenUsage; degraded: boolean }> {
         // Apply heuristics for fast pre-classification
         const heuristic = this.heuristicClassify(content);
 
         try {
-            const message = await this.client.messages.create({
-                model: this.model,
-                max_tokens: config.maxClassifierTokens,
-                ...samplingParams(this.model, config.classifierTemperature),
-                system: CLASSIFIER_SYSTEM_PROMPT,
-                messages: [{ role: 'user', content: content.slice(0, 3000) }],
+            const { output: parsed, tokenUsage } = await this.model.run({
+                name: 'Outpost ticket classification',
+                instructions: CLASSIFIER_SYSTEM_PROMPT,
+                input: content.slice(0, 3000),
+                schema: z.object({
+                    priority: z.enum(TicketPriority),
+                    type: z.enum(TicketType),
+                    tags: z.array(z.string()),
+                    reasoning: z.string().min(1),
+                }),
+                maxTokens: config.maxClassifierTokens,
+                temperature: config.classifierTemperature,
             });
 
-            const text = extractResponseText(message.content);
-
-            // An empty extraction is a FAILURE, not a result. Falling through to
-            // the parser turned it into a fabricated value reported as healthy:
-            // the parse catch returned a constant while `degraded` stayed false,
-            // so the caller could not tell a measured answer from a missing one.
-            // Reachable as soon as a thinking-default model is configured, since
-            // this call's max_tokens sits below a thinking turn — which is exactly
-            // the swap the temperature gate exists to enable.
-            if (!text.trim()) {
-                throw new Error('Model response contained no usable text');
-            }
-            const tokenUsage: TokenUsage = {
-                inputTokens: message.usage.input_tokens,
-                outputTokens: message.usage.output_tokens,
-            };
-
-            const parsed = this.parseClassification(text);
-
-            // Merge: heuristic HIGH priority overrides Claude's assessment (errors are always urgent)
-            const finalPriority = heuristic.priority === TicketPriority.HIGH
-                ? TicketPriority.HIGH
-                : parsed.priority;
+            // Heuristics provide an urgency floor, never downgrade CRITICAL.
+            const finalPriority =
+                heuristic.priority === TicketPriority.HIGH &&
+                parsed.priority !== TicketPriority.CRITICAL
+                    ? TicketPriority.HIGH
+                    : parsed.priority;
 
             // Merge tags from both sources, deduplicate
             const allTags = [...new Set([...heuristic.tags, ...parsed.tags])];
@@ -100,10 +87,13 @@ export class TicketClassifier {
                 degraded: false,
             };
         } catch (error) {
-            console.error(`[Classifier] Claude classification failed, falling back to heuristics:`, error);
+            console.error(
+                `[Classifier] Classification failed, falling back to heuristics:`,
+                error instanceof Error ? error.message : 'Unknown error',
+            );
             return {
                 ...heuristic,
-                tokenUsage: { inputTokens: 0, outputTokens: 0 },
+                tokenUsage: auxiliaryErrorUsage(error),
                 degraded: true,
             };
         }
@@ -120,19 +110,40 @@ export class TicketClassifier {
         let priority = TicketPriority.MEDIUM;
 
         const highPriorityPatterns = [
-            /error:/i, /exception/i, /crash/i, /fatal/i, /broken/i,
-            /not working/i, /fails?/i, /bug/i, /production/i,
-            /urgent/i, /critical/i, /security/i, /data loss/i,
-            /typeerror/i, /referenceerror/i, /syntaxerror/i,
-            /cannot read prop/i, /undefined is not/i,
-            /500\s*(error|internal)/i, /502|503|504/i,
+            /error:/i,
+            /exception/i,
+            /crash/i,
+            /fatal/i,
+            /broken/i,
+            /not working/i,
+            /fails?/i,
+            /bug/i,
+            /production/i,
+            /urgent/i,
+            /critical/i,
+            /security/i,
+            /data loss/i,
+            /typeerror/i,
+            /referenceerror/i,
+            /syntaxerror/i,
+            /cannot read prop/i,
+            /undefined is not/i,
+            /500\s*(error|internal)/i,
+            /502|503|504/i,
         ];
 
         const lowPriorityPatterns = [
-            /how (do|can|to)/i, /is (it|there) (a way|possible)/i,
-            /feature request/i, /would be nice/i, /suggestion/i,
-            /documentation/i, /example/i, /tutorial/i,
-            /what is/i, /explain/i, /difference between/i,
+            /how (do|can|to)/i,
+            /is (it|there) (a way|possible)/i,
+            /feature request/i,
+            /would be nice/i,
+            /suggestion/i,
+            /documentation/i,
+            /example/i,
+            /tutorial/i,
+            /what is/i,
+            /explain/i,
+            /difference between/i,
         ];
 
         if (highPriorityPatterns.some((p) => p.test(content))) {
@@ -144,17 +155,35 @@ export class TicketClassifier {
         // Type detection
         let type = TicketType.OTHER;
         const issuePatterns = [
-            /error/i, /bug/i, /crash/i, /broken/i, /not working/i,
-            /fail/i, /issue/i, /problem/i, /wrong/i,
+            /error/i,
+            /bug/i,
+            /crash/i,
+            /broken/i,
+            /not working/i,
+            /fail/i,
+            /issue/i,
+            /problem/i,
+            /wrong/i,
         ];
         const questionPatterns = [
-            /how (do|can|to)/i, /what is/i, /explain/i, /difference between/i,
-            /is (it|there) (a way|possible)/i, /documentation/i, /example/i,
-            /tutorial/i, /setup help/i, /configur/i,
+            /how (do|can|to)/i,
+            /what is/i,
+            /explain/i,
+            /difference between/i,
+            /is (it|there) (a way|possible)/i,
+            /documentation/i,
+            /example/i,
+            /tutorial/i,
+            /setup help/i,
+            /configur/i,
         ];
         const featurePatterns = [
-            /feature request/i, /would be nice/i, /suggestion/i,
-            /enhancement/i, /new (feature|capability)/i, /please add/i,
+            /feature request/i,
+            /would be nice/i,
+            /suggestion/i,
+            /enhancement/i,
+            /new (feature|capability)/i,
+            /please add/i,
         ];
         if (issuePatterns.some((p) => p.test(content))) {
             type = TicketType.BUG;
@@ -178,7 +207,7 @@ export class TicketClassifier {
             [/auth/i, 'authentication'],
             [/deploy/i, 'deployment'],
             [/performa|slow|latency/i, 'performance'],
-            [/typescript|tsx?/i, 'typescript'],
+            [/typescript|\btsx?\b/i, 'typescript'],
             [/next\.?js|nextjs/i, 'next.js'],
             [/langchain/i, 'langchain'],
             [/langgraph/i, 'langgraph'],
@@ -198,52 +227,5 @@ export class TicketClassifier {
             tags,
             reasoning: `Heuristic classification: ${priority} priority ${type.toLowerCase().replace('_', ' ')}`,
         };
-    }
-
-    private parseClassification(text: string): TicketClassification {
-        try {
-            const cleaned = text.replace(/```json?\s*/g, '').replace(/```\s*/g, '').trim();
-            const parsed = JSON.parse(cleaned) as {
-                priority?: string;
-                type?: string;
-                tags?: string[];
-                reasoning?: string;
-            };
-
-            return {
-                priority: this.parsePriority(parsed.priority),
-                type: this.parseType(parsed.type),
-                tags: Array.isArray(parsed.tags) ? parsed.tags.map(String) : [],
-                reasoning: String(parsed.reasoning ?? 'Classified by AI'),
-            };
-        } catch (error) {
-            console.warn(`[Classifier] Failed to parse classification JSON:`, error);
-            return {
-                priority: TicketPriority.MEDIUM,
-                type: TicketType.OTHER,
-                tags: [],
-                reasoning: 'Failed to parse classification',
-            };
-        }
-    }
-
-    private parsePriority(value: string | undefined): TicketPriority {
-        if (!value) return TicketPriority.MEDIUM;
-        const upper = value.toUpperCase();
-        if (upper === 'CRITICAL') return TicketPriority.CRITICAL;
-        if (upper === 'HIGH') return TicketPriority.HIGH;
-        if (upper === 'LOW') return TicketPriority.LOW;
-        return TicketPriority.MEDIUM;
-    }
-
-    private parseType(value: string | undefined): TicketType {
-        if (!value) return TicketType.OTHER;
-        const upper = value.toUpperCase();
-        if (upper === 'BUG') return TicketType.BUG;
-        if (upper === 'FEATURE_REQUEST') return TicketType.FEATURE_REQUEST;
-        if (upper === 'QUESTION') return TicketType.QUESTION;
-        if (upper === 'INTEGRATION_HELP') return TicketType.INTEGRATION_HELP;
-        if (upper === 'ACCOUNT_ISSUE') return TicketType.ACCOUNT_ISSUE;
-        return TicketType.OTHER;
     }
 }

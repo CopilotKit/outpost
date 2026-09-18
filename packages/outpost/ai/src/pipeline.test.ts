@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('./config.js', () => ({
+import type * as ConfigModule from './config.js';
+
+vi.mock('./config.js', async (importOriginal) => ({
+    ...(await importOriginal<typeof ConfigModule>()),
     config: {
+        responseProvider: 'anthropic',
         anthropicApiKey: 'test-key',
         pathfinderMcpUrl: 'http://localhost:8787',
         responseModel: 'claude-sonnet-4-6',
@@ -250,9 +254,7 @@ describe('AIPipeline', () => {
         });
 
         it('caps the merged list so the prompt cannot silently double', async () => {
-            mockSearchDocs.mockResolvedValue(
-                Array.from({ length: 8 }, (_, i) => docHit(`d${i}`)),
-            );
+            mockSearchDocs.mockResolvedValue(Array.from({ length: 8 }, (_, i) => docHit(`d${i}`)));
             mockSearchCode.mockResolvedValue(
                 Array.from({ length: 8 }, (_, i) => codeHit(`p/c${i}.ts`)),
             );

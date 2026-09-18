@@ -7,6 +7,9 @@
 
 import { AI_CONFIDENCE } from '@copilotkit/outpost/shared';
 
+const auxiliaryDefaultModel =
+    process.env.AI_RESPONSE_PROVIDER === 'anthropic' ? 'claude-haiku-4-5-20251001' : 'gpt-5.6-luna';
+
 export const config = {
     /** Anthropic API key — required for Claude calls */
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
@@ -28,25 +31,25 @@ export const config = {
     legacyResponseModel: process.env.AI_LEGACY_RESPONSE_MODEL || 'claude-sonnet-4-6',
 
     /** Model used for confidence scoring (cheaper, faster) */
-    confidenceModel: process.env.AI_CONFIDENCE_MODEL || 'claude-haiku-4-5-20251001',
+    confidenceModel: process.env.AI_CONFIDENCE_MODEL || auxiliaryDefaultModel,
 
     /** Model used for ticket classification (cheaper, faster) */
-    classifierModel: process.env.AI_CLASSIFIER_MODEL || 'claude-haiku-4-5-20251001',
+    classifierModel: process.env.AI_CLASSIFIER_MODEL || auxiliaryDefaultModel,
 
     /** Maximum tokens for response generation */
     maxResponseTokens: 2048,
 
-    /** Maximum tokens for confidence scoring */
-    maxConfidenceTokens: 256,
+    /** Includes reasoning and the complete-draft confidence judgment. */
+    maxConfidenceTokens: 4096,
 
-    /** Maximum tokens for classification */
-    maxClassifierTokens: 512,
+    /** Includes low-effort reasoning and structured classification output. */
+    maxClassifierTokens: 2048,
 
     /** Model used for sentiment analysis (cheap, fast) */
-    sentimentModel: process.env.AI_SENTIMENT_MODEL || 'claude-haiku-4-5-20251001',
+    sentimentModel: process.env.AI_SENTIMENT_MODEL || auxiliaryDefaultModel,
 
-    /** Maximum tokens for sentiment analysis */
-    maxSentimentTokens: 512,
+    /** Includes low-effort reasoning and structured sentiment output. */
+    maxSentimentTokens: 2048,
 
     /** Temperature for sentiment analysis */
     sentimentTemperature: 0.1,
@@ -117,9 +120,10 @@ export function validateConfig(
     values: Pick<
         AIConfig,
         'anthropicApiKey' | 'openaiApiKey' | 'responseProvider' | 'responseModel' | 'draftLintMode'
-    > = config,
+    > &
+        Partial<Pick<AIConfig, 'confidenceModel' | 'classifierModel' | 'sentimentModel'>> = config,
 ): void {
-    if (!values.anthropicApiKey) {
+    if (values.responseProvider === 'anthropic' && !values.anthropicApiKey) {
         throw new Error(
             '[AI Config] ANTHROPIC_API_KEY is required but not set. ' +
                 'Set the ANTHROPIC_API_KEY environment variable before starting the pipeline.',
@@ -129,11 +133,25 @@ export function validateConfig(
         throw new Error('[AI Config] AI_RESPONSE_PROVIDER must be openai or anthropic');
     if (values.responseProvider === 'openai' && !values.openaiApiKey)
         throw new Error('[AI Config] OPENAI_API_KEY is required for the OpenAI support agent');
-    if (
-        (values.responseProvider === 'openai' && values.responseModel.startsWith('claude-')) ||
-        (values.responseProvider === 'anthropic' && values.responseModel.startsWith('gpt-'))
-    )
-        throw new Error('[AI Config] AI_RESPONSE_MODEL does not match AI_RESPONSE_PROVIDER');
+    for (const [name, model] of [
+        ['AI_RESPONSE_MODEL', values.responseModel],
+        ['AI_CONFIDENCE_MODEL', values.confidenceModel],
+        ['AI_CLASSIFIER_MODEL', values.classifierModel],
+        ['AI_SENTIMENT_MODEL', values.sentimentModel],
+    ] as const) {
+        if (model) validateModelProvider(values.responseProvider, model, name);
+    }
     if (!['report', 'enforce'].includes(values.draftLintMode))
         throw new Error('[AI Config] AI_DRAFT_LINT_MODE must be report or enforce');
+}
+
+/** Reject mismatched overrides instead of silently switching providers. */
+export function validateModelProvider(provider: string, model: string, name: string): void {
+    if (!['openai', 'anthropic'].includes(provider))
+        throw new Error('[AI Config] AI_RESPONSE_PROVIDER must be openai or anthropic');
+    if (
+        (provider === 'openai' && model.startsWith('claude-')) ||
+        (provider === 'anthropic' && model.startsWith('gpt-'))
+    )
+        throw new Error(`[AI Config] ${name} does not match AI_RESPONSE_PROVIDER`);
 }

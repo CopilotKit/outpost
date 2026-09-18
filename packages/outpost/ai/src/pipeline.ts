@@ -85,7 +85,7 @@ function interleaveByRank(first: SearchResult[], second: SearchResult[]): Search
 export class AIPipeline {
     private supportAgent?: Pick<SupportAgent, 'investigate'>;
     private pathfinder: PathfinderClient;
-    private generator: ResponseGenerator;
+    private generator?: ResponseGenerator;
     private confidenceScorer: ConfidenceScorer;
     private classifier: TicketClassifier;
     private formatter: ResponseFormatter;
@@ -105,10 +105,14 @@ export class AIPipeline {
             (config.responseProvider === 'openai'
                 ? new SupportAgent({ pathfinder: this.pathfinder, model: config.responseModel })
                 : undefined);
-        this.generator = options?.generator ?? new ResponseGenerator();
+        this.generator = options?.generator;
         this.confidenceScorer = options?.confidenceScorer ?? new ConfidenceScorer();
         this.classifier = options?.classifier ?? new TicketClassifier();
         this.formatter = options?.formatter ?? new ResponseFormatter();
+    }
+
+    private legacyGenerator(): ResponseGenerator {
+        return (this.generator ??= new ResponseGenerator());
     }
 
     /**
@@ -209,7 +213,7 @@ export class AIPipeline {
             // push the file that actually answers the question off the end.
             searchResults = interleaveByRank(code, docs).slice(0, config.pathfinder.defaultLimit);
 
-            generatedResponse = await this.generator.generate(
+            generatedResponse = await this.legacyGenerator().generate(
                 pipelineContext,
                 searchResults,
                 options.conversationHistory,
@@ -483,7 +487,7 @@ export class AIPipeline {
 
         // Buffer the whole draft — the gate needs the complete text.
         const chunks: string[] = [];
-        for await (const chunk of this.generator.generateStream(
+        for await (const chunk of this.legacyGenerator().generateStream(
             pipelineContext,
             searchResults,
             options.conversationHistory,

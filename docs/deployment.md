@@ -26,7 +26,7 @@ Railway auto-deploys from GitHub and natively supports Docker-based services.
     - **outpost-linear-sync** — `apps/linear-sync/Dockerfile` (web service, needs public URL for Linear webhooks)
     - **outpost-worker** — `apps/worker/Dockerfile` (background job processor — Postgres queue + scheduler, no public URL needed)
 6. Share `DATABASE_URL` across all services using Railway's variable references (`${{Postgres.DATABASE_URL}}`)
-7. Fill in the remaining secret environment variables (`DISCORD_TOKEN`, `ANTHROPIC_API_KEY`, etc. — see Environment Variables below)
+7. Fill in the remaining secret environment variables (`DISCORD_TOKEN`, `OPENAI_API_KEY`, etc. — see Environment Variables below)
 8. Configure custom domains for the web dashboard, GitHub App webhook endpoint, Teams bot messaging endpoint, and Linear sync webhook endpoint
 
 ### What gets deployed
@@ -75,13 +75,16 @@ Copy `.env.example` and fill in all values. Key groups:
 
 - **Database**: `DATABASE_URL`
 - **Auth**: `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`
-- **AI**: `ANTHROPIC_API_KEY`, `PATHFINDER_URL`
+- **AI**: `OPENAI_API_KEY` on the worker and web service, plus `PATHFINDER_URL`
+- **Optional AI rollback**: `AI_RESPONSE_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`; clear any explicit OpenAI model overrides
 - **Discord**: `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `GUILD_ID`, `MONITORED_CHANNEL_IDS`
 - **GitHub App**: `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_TEAM_LOGINS` (optional)
 - **Slack**: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`, `MONITORED_CHANNEL_IDS`, `TEAM_MEMBER_IDS` (optional)
 - **Teams**: `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`, `TEAMS_TENANT_ID` (optional, blank for multi-tenant), `MONITORED_CHANNEL_IDS`
 - **Linear sync**: `LINEAR_API_KEY`, `LINEAR_WEBHOOK_SECRET`, `LINEAR_TEAM_ID`
 - **Monitoring**: `SENTRY_DSN` (optional), `LOG_LEVEL`
+
+All default AI stages use `gpt-5.6-luna`: support investigation, independent confidence verification, ticket classification, and sentiment analysis. Anthropic is needed only for the explicit rollback or direct legacy-generator use. See [Support reply agent](support-agent.md) for model overrides and verification behavior.
 
 ## GitHub App Setup
 
