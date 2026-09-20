@@ -168,6 +168,7 @@ describe('OpenAI publication boundary', () => {
             expect(result.suppressed).toBe(true);
             expect(result.confidenceLevel).toBe('LOW');
             expect(result.confidenceScore).toBeLessThan(0.4);
+            expect(result.tokenUsage).toEqual({ inputTokens: 0, outputTokens: 0 });
             expect(result.response).toBe('');
             expect(result.searchResults).toEqual([]);
             expect(result.formatted.text).toContain(SUPPRESSED_RESPONSE_TEXT);
@@ -254,6 +255,66 @@ describe('OpenAI publication boundary', () => {
         expect(result.handoffReason).toBe(diagnosis);
         expect(result.formatted.text).toContain(SUPPRESSED_RESPONSE_TEXT);
         expect(result.formatted.text).not.toContain(diagnosis);
+    });
+    it('preserves completed investigator usage when local validation routes the draft', async () => {
+        mock().llm.on(
+            {
+                predicate: (req) =>
+                    JSON.stringify(req.messages).includes('confidence scoring system'),
+            },
+            { content: '{"score":0.95,"level":"HIGH","reasoning":"Sources support the answer"}' },
+        );
+        mock().llm.on(
+            { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+            {
+                content: JSON.stringify({
+                    ...reply,
+                    evidence: [
+                        {
+                            sourceUrl: source.sourceUrl,
+                            quote: 'Fabricated evidence that does not exist.',
+                        },
+                    ],
+                }),
+                usage: { input_tokens: 321, output_tokens: 45 },
+            },
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    name: 'search_evidence',
+                    id: 'call_evidence',
+                    arguments: {
+                        query: 'tools',
+                        corpus: 'copilotkit',
+                        kind: 'docs',
+                        version: 'v2',
+                    },
+                },
+            ],
+        });
+        const pipeline = new AIPipeline({
+            supportAgent: new SupportAgent({
+                apiKey: 'test-key',
+                baseURL: mock().url,
+                tracingDisabled: true,
+                pathfinder: {
+                    searchEvidence: vi
+                        .fn<PathfinderClient['searchEvidence']>()
+                        .mockResolvedValue([source]),
+                },
+            }),
+        });
+        const result = await pipeline.generateSupportResponse('Tools?', {
+            source: 'github',
+            confidenceCalibration: 0.15,
+        });
+
+        expect(result.suppressed).toBe(true);
+        expect(result.tokenUsage).toEqual({ inputTokens: 321, outputTokens: 45 });
+        expect(result.formatted.text).toContain(SUPPRESSED_RESPONSE_TEXT);
+        expect(result.formatted.text).not.toContain(reply.summary);
+        expect(result.formatted.details).toBeUndefined();
     });
     it('withholds invented source evidence and forces escalation despite positive feedback', async () => {
         const result = await setup({

@@ -414,6 +414,42 @@ describe('OpenAI support agent', () => {
             setup().agent.investigate({ question: 'Tools?', source: 'github' }),
         ).rejects.toThrow('evidence');
     });
+    it('preserves completed run usage when local validation rejects the final reply', async () => {
+        mock().llm.on(
+            { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+            {
+                content: JSON.stringify({
+                    ...reply,
+                    evidence: [{ sourceUrl: source.sourceUrl, quote: 'Fabricated evidence.' }],
+                }),
+                usage: { input_tokens: 321, output_tokens: 45 },
+            },
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_search',
+                    name: 'search_evidence',
+                    arguments: {
+                        query: 'frontend tools',
+                        corpus: 'copilotkit',
+                        kind: 'docs',
+                        version: 'v2',
+                    },
+                },
+            ],
+        });
+
+        try {
+            await setup().agent.investigate({ question: 'Tools?', source: 'github' });
+            throw new Error('expected investigation to reject');
+        } catch (error) {
+            expect(error).toBeInstanceOf(InvalidSupportReplyError);
+            expect(error).toMatchObject({
+                tokenUsage: { inputTokens: 321, outputTokens: 45 },
+            });
+        }
+    });
     it('rejects unsourced output even when the model skips investigation', async () => {
         mock().llm.onMessage(/./, { content: JSON.stringify(reply) });
         await expect(

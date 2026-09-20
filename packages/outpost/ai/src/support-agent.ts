@@ -68,6 +68,12 @@ async function githubJson(path: string, signal: AbortSignal): Promise<unknown> {
 
 export class InvalidSupportReplyError extends Error {
     override name = 'InvalidSupportReplyError';
+    readonly tokenUsage?: TokenUsage;
+
+    constructor(message?: string, options?: ErrorOptions & { tokenUsage?: TokenUsage }) {
+        super(message, options);
+        this.tokenUsage = options?.tokenUsage;
+    }
 }
 
 export class InvestigationBudgetError extends Error {
@@ -329,6 +335,12 @@ export class SupportAgent {
         } catch (error) {
             throw new InvalidSupportReplyError(
                 error instanceof Error ? error.message : String(error),
+                {
+                    tokenUsage: {
+                        inputTokens: result.runContext.usage.inputTokens,
+                        outputTokens: result.runContext.usage.outputTokens,
+                    },
+                },
             );
         }
         return {

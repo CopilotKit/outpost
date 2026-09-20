@@ -188,6 +188,8 @@ export class AIPipeline {
                     confidenceLevel: ConfidenceLevel.LOW,
                     // Returned only as the bounded private handoff reason, never public copy.
                     reasoning: error.message || 'Investigation failed validation or execution',
+                    tokenUsage:
+                        error instanceof InvalidSupportReplyError ? error.tokenUsage : undefined,
                 };
             }
         } else {
