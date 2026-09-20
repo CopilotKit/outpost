@@ -539,6 +539,43 @@ describe('critical incident context boundaries', () => {
             'We have already seen reports of data loss.',
         ],
         ["Data loss hasn't occurred.", 'Data loss has occurred.'],
+        [
+            'Security vulnerabilities were not found.',
+            'Security vulnerabilities were not only found, they were exploited.',
+        ],
+        ['Data loss did not occur.', 'Data loss was not only confirmed, it affected production.'],
+        [
+            'Production outage was not reported.',
+            'Production outage was not only confirmed, it affected production.',
+        ],
+        [
+            'We did not suffer data loss.',
+            'Not only did we suffer data loss, but customers lost access.',
+        ],
+        [
+            'Customers never experienced a production outage.',
+            'Not only did customers experience a production outage, they lost access.',
+        ],
+        [
+            'We shipped without security vulnerabilities.',
+            'Not only were security vulnerabilities found, they were exploited.',
+        ],
+        [
+            'Not only did we avoid data loss, we avoided a production outage.',
+            'Not only did we suffer data loss, but customers lost access.',
+        ],
+        [
+            'Not only was no data loss reported, no security vulnerability was found.',
+            'Security vulnerabilities were not only found, they were exploited.',
+        ],
+        [
+            'Data loss was not only avoided, production outages were prevented.',
+            'Data loss was not only confirmed, it affected production.',
+        ],
+        [
+            'Data loss was not only not observed, it never occurred.',
+            'Data loss was not only confirmed, it affected production.',
+        ],
     ];
     // Pair each grammar family with the same incident vocabulary and put the
     // affirmative clause on both sides. All three public boundaries share it.

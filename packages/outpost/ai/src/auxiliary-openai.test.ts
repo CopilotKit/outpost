@@ -92,6 +92,27 @@ describe('Luna auxiliary calls', () => {
         ).toMatchObject({ priority: 'CRITICAL', degraded: false });
     });
 
+    it.each([
+        ['Security vulnerabilities were not only found, they were exploited.', 'CRITICAL'],
+        ['Data loss was not only confirmed, it affected production.', 'CRITICAL'],
+        ['Not only did we suffer data loss, but customers lost access.', 'CRITICAL'],
+        ['Data loss did not occur.', 'HIGH'],
+        ['Security vulnerabilities were not found.', 'HIGH'],
+        ['Not only did we avoid data loss, we avoided a production outage.', 'HIGH'],
+        ['Not only was no data loss reported, no security vulnerability was found.', 'HIGH'],
+        ['Data loss was not only avoided, production outages were prevented.', 'HIGH'],
+        ['Data loss was not only not observed, it never occurred.', 'HIGH'],
+    ])(
+        'retains the heuristic floor for not-only incident context: %s',
+        async (content, priority) => {
+            mock().llm.onMessage(/./, { content: JSON.stringify(classification) });
+            expect(await new TicketClassifier(options).classify(content)).toMatchObject({
+                priority,
+                degraded: false,
+            });
+        },
+    );
+
     it.each(['How do I prevent data loss?', 'There was no data loss'])(
         'does not promote a healthy LOW model to CRITICAL for a non-incident: %s',
         async (content) => {

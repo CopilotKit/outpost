@@ -133,6 +133,7 @@ export class TicketClassifier {
             `^${remainingIncidentList}\\s+(?:prevention\\b|(?:(?:(?:is|are|was|were)|(?:has|have|had)\\s+been)\\s+)?(?:avoided|prevented)\\b|(?:${auxiliaries}\\s+)*(?:not|never|\\w+n['’]t)\\b)`,
             'i',
         );
+        const affirmativeNotOnly = /\bnot\s+only\b/gi;
         // Retain punctuation, and separate independent clauses rather than
         // treating a greeting, question, or negation as sentence-wide context.
         // Coordinated noun lists keep their shared question/negation scope;
@@ -183,7 +184,11 @@ export class TicketClassifier {
                 for (const match of clause.matchAll(globalPattern)) {
                     const prefix = clause.slice(0, match.index);
                     const suffix = clause.slice(match.index + match[0].length);
-                    if (!nonIncidentPrefix.test(prefix) && !nonIncidentSuffix.test(suffix)) {
+                    const prefixWithoutNotOnly = prefix.replace(affirmativeNotOnly, ' ');
+                    const suffixWithoutNotOnly = suffix.replace(affirmativeNotOnly, ' ');
+                    const hasNonIncidentPrefix = nonIncidentPrefix.test(prefixWithoutNotOnly);
+                    const hasNonIncidentSuffix = nonIncidentSuffix.test(suffixWithoutNotOnly);
+                    if (!hasNonIncidentPrefix && !hasNonIncidentSuffix) {
                         return true;
                     }
                 }
