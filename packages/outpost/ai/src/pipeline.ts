@@ -172,7 +172,8 @@ export class AIPipeline {
                     sources: [],
                     confidenceScore: 0,
                     confidenceLevel: ConfidenceLevel.LOW,
-                    reasoning: 'Investigation failed validation or execution',
+                    // Returned only as the bounded private handoff reason, never public copy.
+                    reasoning: error.message || 'Investigation failed validation or execution',
                 };
             }
         } else {

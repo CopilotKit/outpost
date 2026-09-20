@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AIPipeline, SUPPRESSED_RESPONSE_TEXT } from './pipeline.js';
-import { SupportAgent } from './support-agent.js';
+import {
+    SupportAgent,
+    InvalidSupportReplyError,
+    InvestigationBudgetError,
+} from './support-agent.js';
+import { ConfidenceScorer } from './confidence.js';
 import { ResponseFormatter } from './formatter.js';
 import { validateSupportReply } from './support-reply.js';
 import { useAimock } from './test-utils/aimock.js';
@@ -43,6 +48,19 @@ const reply: SupportReply = {
     handoffReason: '',
 };
 
+const investigationFailures = [
+    {
+        kind: 'validation',
+        ErrorType: InvalidSupportReplyError,
+        diagnosis: 'Evidence quote does not match the retrieved source at private-diagnostic-url.',
+    },
+    {
+        kind: 'budget',
+        ErrorType: InvestigationBudgetError,
+        diagnosis: 'Support investigation exceeded its six-tool budget while reading source.',
+    },
+];
+
 async function collectText(stream: AsyncIterable<string>): Promise<string> {
     const chunks: string[] = [];
     for await (const chunk of stream) chunks.push(chunk);
@@ -55,7 +73,19 @@ describe('OpenAI publication boundary', () => {
         vi.stubEnv('OPENAI_BASE_URL', mock().url);
         vi.stubEnv('OPENAI_AGENTS_DISABLE_TRACING', '1');
     });
-    afterEach(() => vi.unstubAllEnvs());
+    afterEach(() => {
+        vi.unstubAllEnvs();
+        vi.restoreAllMocks();
+    });
+    function failingInvestigation(error: Error) {
+        return new AIPipeline({
+            supportAgent: {
+                investigate: async () => {
+                    throw error;
+                },
+            },
+        });
+    }
     function setup(
         output: SupportReply = reply,
         confidence = '{"score":0.95,"level":"HIGH","reasoning":"Sources support the answer"}',
@@ -111,17 +141,78 @@ describe('OpenAI publication boundary', () => {
         expect(mock().llm.getLastRequest()?.body?.model).toBe('gpt-5.6-luna');
     });
     it('propagates transport failures for the worker retry policy', async () => {
-        const pipeline = new AIPipeline({
-            supportAgent: {
-                investigate: async () => {
-                    throw new Error('Provider temporarily unavailable');
-                },
-            },
-        });
-        await expect(
-            pipeline.generateSupportResponse('Tools?', { source: 'github' }),
-        ).rejects.toThrow('temporarily unavailable');
+        const error = new Error('Provider temporarily unavailable');
+        const pipeline = failingInvestigation(error);
+        await expect(pipeline.generateSupportResponse('Tools?', { source: 'github' })).rejects.toBe(
+            error,
+        );
     });
+    it.each(
+        investigationFailures.flatMap((failure) =>
+            (['github', 'discord', 'web'] as const).map((platform) => ({ ...failure, platform })),
+        ),
+    )(
+        'keeps the $kind diagnosis private for $platform handoffs',
+        async ({ ErrorType, diagnosis, platform }) => {
+            const score = vi.spyOn(ConfidenceScorer.prototype, 'score');
+            const error = new ErrorType(diagnosis, {
+                cause: { providerBody: 'RAW_PROVIDER_BODY_MUST_NOT_BE_SERIALIZED' },
+            });
+            const pipeline = failingInvestigation(error);
+            const result = await pipeline.generateSupportResponse('Tools?', {
+                source: platform,
+                confidenceCalibration: 0.15,
+            });
+
+            expect(result.handoffReason).toBe(diagnosis);
+            expect(result.suppressed).toBe(true);
+            expect(result.confidenceLevel).toBe('LOW');
+            expect(result.confidenceScore).toBeLessThan(0.4);
+            expect(result.response).toBe('');
+            expect(result.searchResults).toEqual([]);
+            expect(result.formatted.text).toContain(SUPPRESSED_RESPONSE_TEXT);
+            expect(result.formatted.details).toBeUndefined();
+            expect(JSON.stringify(result.formatted)).not.toContain(diagnosis);
+            expect(JSON.stringify(result)).not.toContain(
+                'RAW_PROVIDER_BODY_MUST_NOT_BE_SERIALIZED',
+            );
+
+            const streamed = await collectText(
+                pipeline.generateStreamingResponse('Tools?', { source: platform }),
+            );
+            expect(streamed).toContain(SUPPRESSED_RESPONSE_TEXT);
+            expect(streamed).not.toContain(diagnosis);
+            expect(streamed).not.toContain('RAW_PROVIDER_BODY_MUST_NOT_BE_SERIALIZED');
+            expect(score).not.toHaveBeenCalled();
+            expect(mock().llm.getRequests()).toHaveLength(0);
+        },
+    );
+    it.each(investigationFailures)(
+        'bounds the private $kind diagnosis at 2000 characters',
+        async ({ ErrorType, diagnosis }) => {
+            const longDiagnosis = `${diagnosis} ${'private diagnostic context '.repeat(100)}`;
+            const result = await failingInvestigation(
+                new ErrorType(longDiagnosis),
+            ).generateSupportResponse('Tools?', { source: 'web' });
+
+            expect(result.handoffReason).toBe(longDiagnosis.slice(0, 2000));
+            expect(result.handoffReason).toHaveLength(2000);
+            expect(result.formatted.text).toContain(SUPPRESSED_RESPONSE_TEXT);
+            expect(result.formatted.text).not.toContain(diagnosis);
+            expect(result.formatted.details).toBeUndefined();
+        },
+    );
+    it.each(investigationFailures)(
+        'retains a fallback for an empty $kind diagnosis',
+        async ({ ErrorType }) => {
+            const result = await failingInvestigation(new ErrorType('')).generateSupportResponse(
+                'Tools?',
+                { source: 'web' },
+            );
+            expect(result.handoffReason).toBe('Investigation failed validation or execution');
+            expect(result.suppressed).toBe(true);
+        },
+    );
     it('publishes a verified summary and exactly one GitHub disclosure', async () => {
         const result = await setup().generateSupportResponse('Tools?', { source: 'github' });
         expect(result.suppressed).toBe(false);
