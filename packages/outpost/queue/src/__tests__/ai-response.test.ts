@@ -331,8 +331,27 @@ function trackResponsePersistence() {
             ? [{ ...response, ticket: { source: sampleTicket.source } }]
             : [],
     );
+    mockPrismaMessage.findUnique.mockImplementation(async () =>
+        response ? { ...response } : null,
+    );
     mockPrismaJob.findMany.mockResolvedValue([]);
     return () => response;
+}
+
+function holdPlatformPost() {
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+        signalStarted = resolve;
+    });
+    let rejectPost!: (error: Error) => void;
+    const pendingPost = new Promise<void>((_resolve, reject) => {
+        rejectPost = reject;
+    });
+    mockPostResponse.mockImplementationOnce(() => {
+        signalStarted();
+        return pendingPost;
+    });
+    return { started, rejectPost };
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -1696,7 +1715,7 @@ describe('handleAiResponse', () => {
             const storedResponse = trackResponsePersistence();
             mockGenerateSupportResponse.mockResolvedValue(lowConfidenceResult);
             mockPostResponse.mockRejectedValueOnce(new Error('Discord API 503'));
-            mockPrismaMessage.update.mockRejectedValueOnce(
+            mockPrismaMessage.updateMany.mockRejectedValueOnce(
                 new Error('delivery reason update unavailable'),
             );
             mockPrismaJob.create.mockRejectedValueOnce(new Error('queue unavailable'));
@@ -1712,6 +1731,71 @@ describe('handleAiResponse', () => {
             );
             expect(context.reportProgress).not.toHaveBeenCalledWith(100);
         });
+
+        it.each(['ESCALATED', 'DELIVERED'] as const)(
+            'does not recreate an owed marker when a pending post fails after the row settles %s',
+            async (settledState) => {
+                const storedResponse = trackResponsePersistence();
+                mockGenerateSupportResponse.mockResolvedValue(suppressedResult);
+                const post = holdPlatformPost();
+                const payload = { ticketId: 'tkt-1', source: 'discord' as const };
+                const first = handleAiResponse(
+                    payload,
+                    makeContext({
+                        reportProgress: vi.fn(async (progress: number) => {
+                            // DELIVERED is defensive coverage for another writer:
+                            // an interruption must not strand a newly owed marker.
+                            if (settledState === 'DELIVERED' && progress === 85) {
+                                throw new Error('worker interrupted after delivery bookkeeping');
+                            }
+                        }),
+                    }),
+                );
+                await post.started;
+
+                if (settledState === 'ESCALATED') {
+                    // The real gate processes an owed marker before checking
+                    // owner identity, even while the original post is pending.
+                    const concurrentRetry = await handleAiResponse(
+                        payload,
+                        makeContext({ jobId: 'concurrent-retry' }),
+                    );
+                    expect(concurrentRetry.data).toMatchObject({
+                        escalated: true,
+                        reason: 'escalation_recovered',
+                    });
+                    expect(mockPrismaJob.create).toHaveBeenCalledTimes(1);
+                } else {
+                    await mockPrismaMessage.update({
+                        where: { id: 'msg-new' },
+                        data: { responseState: 'DELIVERED', escalationRequiredReason: null },
+                    });
+                }
+                expect(storedResponse()?.responseState).toBe(settledState);
+                expect(storedResponse()?.escalationRequiredReason).toBeNull();
+
+                post.rejectPost(new Error('Discord API 503'));
+                if (settledState === 'DELIVERED') {
+                    await expect(first).rejects.toThrow('worker interrupted');
+                } else {
+                    expect((await first).data).toMatchObject({
+                        escalated: true,
+                        deliveryFailed: true,
+                    });
+                }
+
+                expect(storedResponse()).toMatchObject({
+                    responseState: settledState,
+                    escalationRequiredReason: null,
+                    responseError: 'Discord API 503',
+                });
+                expect(mockPrismaJob.create).toHaveBeenCalledTimes(
+                    settledState === 'ESCALATED' ? 1 : 0,
+                );
+                expect(mockGenerateSupportResponse).toHaveBeenCalledTimes(1);
+                expect(mockPostResponse).toHaveBeenCalledTimes(1);
+            },
+        );
 
         it('recovers the keyed primary response when an older AI BOT row appears first', async () => {
             mockPrismaTicket.findUnique.mockResolvedValue({

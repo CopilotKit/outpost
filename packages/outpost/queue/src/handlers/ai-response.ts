@@ -1028,15 +1028,30 @@ export async function handleAiResponse(
 
         if (deliveryFailure) {
             try {
-                await prisma.message.update({
-                    where: { id: aiMessage.id },
-                    data: {
-                        responseError: deliveryFailure,
-                        ...(nonDeliveryEscalationReason
-                            ? { escalationRequiredReason: escalationReason }
-                            : {}),
-                    },
-                });
+                // A concurrent retry can complete the handoff while postResponse
+                // is still pending. Only replace an owed reason while the row is
+                // PENDING; never recreate that marker after a terminal transition.
+                const pendingReasonUpdate = nonDeliveryEscalationReason
+                    ? await prisma.message.updateMany({
+                          where: {
+                              id: aiMessage.id,
+                              responseKey: PRIMARY_AI_RESPONSE_KEY,
+                              responseState: 'PENDING',
+                          },
+                          data: {
+                              responseError: deliveryFailure,
+                              escalationRequiredReason: escalationReason,
+                          },
+                      })
+                    : null;
+                if (pendingReasonUpdate?.count !== 1) {
+                    // Settled responses still need the diagnostic for the human
+                    // who owns the thread, without creating another owed handoff.
+                    await prisma.message.update({
+                        where: { id: aiMessage.id },
+                        data: { responseError: deliveryFailure },
+                    });
+                }
             } catch (error) {
                 escalationReasonPersistenceError =
                     error instanceof Error ? error.message : String(error);
