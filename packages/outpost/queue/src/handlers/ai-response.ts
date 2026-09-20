@@ -829,8 +829,9 @@ export async function handleAiResponse(
             };
         }
 
-        // Store the complete publishable response, including the web formatter's
-        // separate details. For sources without adapters, this is the durable sink.
+        // Store the complete publishable response: split parts already include
+        // text as their first part; web replies carry separate details. For
+        // sources without adapters, this is the durable sink.
         //
         // Non-fatal on purpose. The BOT Message row is already committed above,
         // so aborting here would turn the retry into delayed human recovery
@@ -838,13 +839,11 @@ export async function handleAiResponse(
         // delivery. Log it, remember it, and keep going so delivery can happen.
         let suggestedResponseError: string | null = null;
         try {
+            const { text, parts, details } = pipelineResult.formatted;
             await prisma.ticket.update({
                 where: { id: ticket.id },
                 data: {
-                    suggestedResponse: [
-                        pipelineResult.formatted.text,
-                        pipelineResult.formatted.details,
-                    ]
+                    suggestedResponse: [parts?.length ? parts.join('\n\n') : text, details]
                         .filter(Boolean)
                         .join('\n\n'),
                 },

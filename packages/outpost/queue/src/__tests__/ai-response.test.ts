@@ -834,6 +834,35 @@ describe('handleAiResponse', () => {
         });
     });
 
+    it.each([
+        {
+            name: 'all parts once, including the final source and footer',
+            parts: [
+                'Summary',
+                'Details\n\nSources:\n- [Doc](https://example.test/doc)\n\n---\n*Powered by CopilotKit AI*',
+            ],
+            expected:
+                'Summary\n\nDetails\n\nSources:\n- [Doc](https://example.test/doc)\n\n---\n*Powered by CopilotKit AI*',
+        },
+        { name: 'the summary when parts is empty', parts: [], expected: 'Summary' },
+    ])('stores $name in the durable suggestion', async ({ parts, expected }) => {
+        mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
+        mockGenerateSupportResponse.mockResolvedValue({
+            ...highConfidenceResult,
+            response: 'Private investigation draft',
+            handoffReason: 'Private handoff metadata',
+            formatted: { text: 'Summary', parts, truncated: false },
+        });
+
+        const result = await handleAiResponse({ ticketId: 'tkt-1' }, makeContext());
+
+        expect(result.success).toBe(true);
+        expect(mockPrismaTicket.update).toHaveBeenCalledWith({
+            where: { id: 'tkt-1' },
+            data: { suggestedResponse: expected },
+        });
+    });
+
     it.each(['WEB', 'EMAIL', 'LINEAR', 'MANUAL', 'ORCA'])(
         'preserves the complete publishable web response for %s without an adapter',
         async (source) => {
