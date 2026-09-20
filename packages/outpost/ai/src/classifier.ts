@@ -124,13 +124,31 @@ export class TicketClassifier {
             '(?:can|could|should|would|will|is|are|was|were|do|does|did|has|have|had)';
         const questionWords = `(?:how|what|why|when|where|${auxiliaries})`;
         const questionStart = new RegExp(`^\\s*${questionWords}\\b`, 'i');
-        const nonIncidentPrefix =
-            /\b(?:prevent(?:s|ed|ing)?|avoid(?:s|ed|ing)?|hypothetical|no|not|never|without|\w+n['’]t)\b/i;
         const incidentMention = `(?:${criticalPriorityPatterns.map((p) => p.source).join('|')})`;
         const coordination = '(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+)';
         const remainingIncidentList = `(?:${coordination}(?:(?:a|an)\\s+)?${incidentMention})*`;
+        const failedPreventionPrefix =
+            /\b(?:failed\s+to\s+|(?:(?:can|could|should|would|will|is|are|was|were|do|does|did|has|have|had)\s+(?:not|never)|\w+n['’]t)\s+)(?:prevent|avoid)\s+(?:a|an|the)?\s*$/i;
+        const successfulPreventionPrefix =
+            /\b(?:prevent(?:s|ed|ing)?|avoid(?:s|ed|ing)?)\s+(?:a|an|the)?\s*$/i;
+        const withoutIncidentPrefix =
+            /\bwithout(?:\s+(?:any|reported|evidence|of|reports?|customer|customers))*\s+(?:a|an|the)?\s*$/i;
+        const noIncidentPrefix =
+            /\b(?:there\s+(?:was|were)\s+no|no(?:\s+(?:reported|customer|customers|reports?|evidence|of))*)\s+(?:a|an|the)?\s*$/i;
+        const hypotheticalIncidentPrefix = /\bhypothetical\s+(?:a|an|the)?\s*$/i;
+        const negativeObservationPrefix = new RegExp(
+            `\\b(?:(?:(?:has|have|had|do|does|did|was|were|is|are)\\s+(?:not|never)|\\w+n['’]t)\\s+|never\\s+)(?:yet\\s+|already\\s+|any\\s+|customer\\s+|customers\\s+|reports?\\s+|reported\\s+|evidence\\s+|of\\s+)*(?:see|seen|find|found|receive|received|experience|experienced|suffer|suffered|cause|caused|occur|occurred|happen|happened)\\b(?:\\s+(?:yet|already|any|customer|customers|reports?|reported|evidence|of|(?:a|an|the)|${incidentMention})|\\s*[,/]\\s*|\\s+(?:and|or)\\s+)*\\s*$`,
+            'i',
+        );
+        const hasNonIncidentPrefix = (prefix: string): boolean =>
+            !failedPreventionPrefix.test(prefix) &&
+            (successfulPreventionPrefix.test(prefix) ||
+                withoutIncidentPrefix.test(prefix) ||
+                hypotheticalIncidentPrefix.test(prefix) ||
+                noIncidentPrefix.test(prefix) ||
+                negativeObservationPrefix.test(prefix));
         const nonIncidentSuffix = new RegExp(
-            `^${remainingIncidentList}\\s+(?:prevention\\b|(?:(?:(?:is|are|was|were)|(?:has|have|had)\\s+been)\\s+)?(?:avoided|prevented)\\b|(?:${auxiliaries}\\s+)*(?:not|never|\\w+n['’]t)\\b)`,
+            `^${remainingIncidentList}\\s+(?:prevention\\b|(?:(?:(?:is|are|was|were)|(?:has|have|had)\\s+been)\\s+)(?:avoided|prevented)\\b|(?:avoided|prevented)(?:\\s+(?:by|during|before|after|through|with|via)\\b|[.?!,;:]|$)|(?:${auxiliaries}\\s+)*(?:not|never|\\w+n['’]t)\\b)`,
             'i',
         );
         const affirmativeNotOnly = /\bnot\s+only\b/gi;
@@ -186,9 +204,9 @@ export class TicketClassifier {
                     const suffix = clause.slice(match.index + match[0].length);
                     const prefixWithoutNotOnly = prefix.replace(affirmativeNotOnly, ' ');
                     const suffixWithoutNotOnly = suffix.replace(affirmativeNotOnly, ' ');
-                    const hasNonIncidentPrefix = nonIncidentPrefix.test(prefixWithoutNotOnly);
+                    const hasNonIncidentPrefixMatch = hasNonIncidentPrefix(prefixWithoutNotOnly);
                     const hasNonIncidentSuffix = nonIncidentSuffix.test(suffixWithoutNotOnly);
-                    if (!hasNonIncidentPrefix && !hasNonIncidentSuffix) {
+                    if (!hasNonIncidentPrefixMatch && !hasNonIncidentSuffix) {
                         return true;
                     }
                 }

@@ -605,11 +605,37 @@ describe('critical incident context boundaries', () => {
         'No customers report data loss and a production outage has been reported.',
         'A production outage has been reported and no customers report data loss.',
     ];
+    const r6IncidentReports = [
+        'No users could access the app during the production outage.',
+        'Users without backups experienced data loss.',
+        'The migration did not prevent data loss.',
+        'A production outage prevented customers from logging in.',
+        'Data loss avoided detection until Monday.',
+        'We could not prevent data loss for customers.',
+        'We failed to prevent data loss for customers.',
+        'We did not prevent a production outage.',
+        'We could not avoid a security vulnerability.',
+    ];
+    const r6PreservationControls = [
+        {
+            content: 'This is a hypothetical data loss scenario.',
+            priority: TicketPriority.HIGH,
+        },
+        {
+            content: 'We did not see any errors before data loss occurred.',
+            priority: TicketPriority.CRITICAL,
+        },
+    ];
     cases.push(
         ...adjacentReports.map((content) => ({
             content,
             priority: TicketPriority.CRITICAL,
         })),
+        ...r6IncidentReports.map((content) => ({
+            content,
+            priority: TicketPriority.CRITICAL,
+        })),
+        ...r6PreservationControls,
     );
 
     cases.push({
