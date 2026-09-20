@@ -16,6 +16,37 @@ function mockServer(result: unknown) {
 
 afterEach(() => vi.unstubAllGlobals());
 
+describe.each([
+    ['searchDocs', 'search-docs'],
+    ['searchCode', 'search-code'],
+    ['searchAgUiDocs', 'search-ag-ui-docs'],
+    ['searchAgUiCode', 'search-ag-ui-code'],
+] as const)('%s version filtering', (method, tool) => {
+    it.each(['v1', 'v2', undefined] as const)(
+        'preserves the requested version %s in the JSON-RPC arguments',
+        async (version) => {
+            const fetchMock = mockServer({ content: [{ type: 'text', text: '[]' }] });
+            const client = new PathfinderClient('https://mcp.example.test');
+            await client[method]({ query: 'subagents', limit: 3, minScore: 0.6, version });
+
+            const request = JSON.parse(String(fetchMock.mock.calls[2][1]?.body));
+            expect(request).toMatchObject({
+                jsonrpc: '2.0',
+                method: 'tools/call',
+                params: {
+                    name: tool,
+                    arguments: { query: 'subagents', limit: 3, min_score: 0.6 },
+                },
+            });
+            if (version === undefined) {
+                expect(request.params.arguments).not.toHaveProperty('version');
+            } else {
+                expect(request.params.arguments).toHaveProperty('version', version);
+            }
+        },
+    );
+});
+
 describe('agent evidence retrieval', () => {
     it('sends the version filter to the actual MCP tool', async () => {
         const fetchMock = mockServer({ content: [{ type: 'text', text: '[]' }] });

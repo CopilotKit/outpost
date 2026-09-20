@@ -490,6 +490,7 @@ export class PathfinderClient {
                 query: capQuery(query.query, config.pathfinder.maxQueryChars),
                 limit: query.limit ?? config.pathfinder.defaultLimit,
                 min_score: query.minScore ?? config.pathfinder.defaultMinScore,
+                ...(query.version ? { version: query.version } : {}),
             });
             return this.parseSearchResults(result);
         } catch (error) {
@@ -533,6 +534,7 @@ export class PathfinderClient {
                 query: capQuery(query.query, config.pathfinder.maxQueryChars),
                 limit: query.limit ?? config.pathfinder.defaultLimit,
                 min_score: query.minScore ?? config.pathfinder.defaultMinScore,
+                ...(query.version ? { version: query.version } : {}),
             });
             return this.parseSearchResults(result);
         } catch (error) {
