@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { LLMock } from '@copilotkit/aimock';
 import { TicketClassifier } from './classifier.js';
 import { TicketPriority, TicketType } from './types.js';
+import { useAimock } from './test-utils/aimock.js';
 
 // ─── aimock setup ───────────────────────────────────────────────────────────
 
@@ -421,4 +422,151 @@ describe('TicketClassifier', () => {
             expect(result.priority).toBe(TicketPriority.MEDIUM);
         });
     });
+});
+
+describe('critical incident context boundaries', () => {
+    const aimock = useAimock();
+    const incidentContexts = [
+        [
+            'Hi team, did data loss happen during the migration?',
+            'Data loss happened during the migration.',
+        ],
+        ['Context: was any data loss reported?', 'Customers reported data loss.'],
+        [
+            'During the rollout, were security vulnerabilities found?',
+            'Security vulnerabilities were found during the rollout.',
+        ],
+        ['Data loss?', 'Data loss occurred in production.'],
+        ['Production outage?', 'A production outage occurred.'],
+        ['Security vulnerability?', 'A security vulnerability was found.'],
+        ['Production is down?', 'Production is down.'],
+        ['Data loss has not occurred.', 'Data loss has occurred.'],
+        ['A production outage has never been reported.', 'A production outage has been reported.'],
+        [
+            'Security vulnerabilities have not been found.',
+            'Security vulnerabilities have been found.',
+        ],
+        [
+            'We have not seen any customer reports of data loss.',
+            'We have seen customer reports of data loss.',
+        ],
+        [
+            'We did not receive any customer reports of production outages.',
+            'We received customer reports of production outages.',
+        ],
+        [
+            'We have never found any evidence of security vulnerabilities.',
+            'We found evidence of security vulnerabilities.',
+        ],
+        [
+            'Security vulnerabilities were not found in staging.',
+            'Security vulnerabilities were found in production.',
+        ],
+        [
+            'We are preventing data loss during migration.',
+            'Customers report data-loss after upgrading the runtime.',
+        ],
+        [
+            'We avoided production outages during the rollout.',
+            'We experienced production outages during the rollout.',
+        ],
+        [
+            'Without any reported evidence of security vulnerabilities.',
+            'There is evidence of security vulnerabilities.',
+        ],
+        [
+            'Did the migration cause data loss, security vulnerabilities, or a production outage?',
+            'The migration caused data loss, security vulnerabilities, and a production outage.',
+        ],
+        [
+            'We have not seen data loss, security vulnerabilities, or production outages.',
+            'We have seen data loss, security vulnerabilities, and production outages.',
+        ],
+        [
+            'Data loss and production outages have not been reported.',
+            'Data loss and production outages have been reported.',
+        ],
+        [
+            "We haven't seen customer reports of data loss.",
+            'We have seen customer reports of data loss.',
+        ],
+        [
+            'We have not yet seen any reports of data loss.',
+            'We have already seen reports of data loss.',
+        ],
+        ["Data loss hasn't occurred.", 'Data loss has occurred.'],
+    ];
+    // Pair each grammar family with the same incident vocabulary and put the
+    // affirmative clause on both sides. All three public boundaries share it.
+    const cases = incidentContexts.flatMap(([nonIncident, report]) => [
+        { content: nonIncident, priority: TicketPriority.HIGH },
+        { content: report, priority: TicketPriority.CRITICAL },
+        {
+            content: `${nonIncident.replace(/[.?]$/, '')}, but ${report}`,
+            priority: TicketPriority.CRITICAL,
+        },
+        {
+            content: `${report.replace(/\.$/, '')}, but ${nonIncident}`,
+            priority: TicketPriority.CRITICAL,
+        },
+    ]);
+    const adjacentReports = [
+        'Data loss? The update caused data loss.',
+        'Our production service is down and customers cannot connect.',
+        'Data loss occurred, can you help?',
+        'Can you help, data loss occurred.',
+        'Data loss occurred and can you help us restore it?',
+        'Can you help because our production service is down?',
+        'We have not restarted the server and data loss occurred.',
+        'Data loss occurred and we have not restarted the server.',
+        'No users can connect because production is down.',
+        'There was no production outage, yet data loss occurred.',
+        'No customers report data loss and a production outage has been reported.',
+        'A production outage has been reported and no customers report data loss.',
+    ];
+    cases.push(
+        ...adjacentReports.map((content) => ({
+            content,
+            priority: TicketPriority.CRITICAL,
+        })),
+    );
+
+    cases.push({
+        content: 'Did data loss occur in staging, or did data loss occur in production?',
+        priority: TicketPriority.HIGH,
+    });
+
+    describe.each(['heuristic', 'model failure', 'healthy LOW model'] as const)(
+        '%s',
+        (boundary) => {
+            it.each(cases)('$priority: $content', async ({ content, priority }) => {
+                const classifier = new TicketClassifier({
+                    provider: 'anthropic',
+                    apiKey: 'test-key',
+                    baseURL: aimock().url,
+                });
+                if (boundary === 'heuristic') {
+                    expect(classifier.heuristicClassify(content).priority).toBe(priority);
+                    return;
+                }
+                if (boundary === 'model failure') {
+                    aimock().llm.nextRequestError(500, { message: 'API error' });
+                } else {
+                    aimock().llm.onMessage(/./, {
+                        content: JSON.stringify({
+                            priority: TicketPriority.LOW,
+                            type: TicketType.QUESTION,
+                            tags: [],
+                            reasoning:
+                                'A lower model judgment must respect only affirmative incidents.',
+                        }),
+                    });
+                }
+                expect(await classifier.classify(content)).toMatchObject({
+                    priority,
+                    degraded: boundary === 'model failure',
+                });
+            });
+        },
+    );
 });

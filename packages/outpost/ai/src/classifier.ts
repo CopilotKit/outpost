@@ -113,37 +113,83 @@ export class TicketClassifier {
 
         // Critical phrases still need context: a prevention question or negated report
         // must not create a CRITICAL floor. These conservative guards cover common
-        // phrasing, not full language inference, and apply within one sentence only.
+        // phrasing, not full language inference, and apply to each incident clause.
         const criticalPriorityPatterns = [
             /\bsecurity\s+vulnerabilit(?:y|ies)\b/i,
             /\bdata[\s-]+loss\b/i,
             /\bproduction[\s-]+outages?\b/i,
             /\bproduction(?:\s+(?:service|system|environment))?\s+(?:is\s+)?down\b/i,
         ];
-        const nonIncidentPrefixes = [
-            /^\s*(?:how|what|can|could|should|would|will|is|are|was|were|do|does|did|has|have|had)\b/i,
-            /\b(?:prevent(?:ing)?|avoid(?:ing)?|hypothetical)\b[^,;:]*$/i,
-            /\b(?:no|not|never|without)(?:\s+\w+){0,3}\s*$/i,
-        ];
-        const nonIncidentSuffix =
-            /^\s+(?:prevention|(?:did(?:\s+not|n't)|never)\s+(?:occur|happen)|(?:was|were)\s+not\s+(?:found|reported))\b/i;
-        const hasCriticalIncident = content.split(/[.!?\n]+/).some((sentence) =>
-            criticalPriorityPatterns.some((pattern) => {
+        const auxiliaries =
+            '(?:can|could|should|would|will|is|are|was|were|do|does|did|has|have|had)';
+        const questionWords = `(?:how|what|why|when|where|${auxiliaries})`;
+        const questionStart = new RegExp(`^\\s*${questionWords}\\b`, 'i');
+        const nonIncidentPrefix =
+            /\b(?:prevent(?:s|ed|ing)?|avoid(?:s|ed|ing)?|hypothetical|no|not|never|without|\w+n['’]t)\b/i;
+        const incidentMention = `(?:${criticalPriorityPatterns.map((p) => p.source).join('|')})`;
+        const coordination = '(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+)';
+        const remainingIncidentList = `(?:${coordination}(?:(?:a|an)\\s+)?${incidentMention})*`;
+        const nonIncidentSuffix = new RegExp(
+            `^${remainingIncidentList}\\s+(?:prevention\\b|(?:${auxiliaries}\\s+)*(?:not|never|\\w+n['’]t)\\b)`,
+            'i',
+        );
+        // Retain punctuation, and separate independent clauses rather than
+        // treating a greeting, question, or negation as sentence-wide context.
+        // Coordinated noun lists keep their shared question/negation scope;
+        // "and data loss occurred" starts a new assertion, "and data loss" does not.
+        const declarativeVerbs =
+            '(?:is|are|was|were|has|have|had|occur(?:s|red)?|happen(?:s|ed)?|cause[sd]?|finds?|found|report(?:s|ed)?)';
+        const declarativePredicate = new RegExp(`\\b${declarativeVerbs}\\b`, 'i');
+        const incidentSubject =
+            '(?:(?:a|an|our|the)\\s+)?(?:data[\\s-]+loss|production[\\s-]+outages?|security\\s+vulnerabilit(?:y|ies)|production(?:\\s+(?:service|system|environment))?)';
+        const independentClauseStart = `(?:${questionWords}\\b|(?:we|they|i|you|it|there|customers|users)\\s+\\w+|${incidentSubject}\\s+${declarativeVerbs}\\b)`;
+        const clauseBoundary = new RegExp(
+            `(?<=[.!?\\n;])|\\b(?:but|however|because)\\b|(?:[:,]|\\b(?:and|or|yet)\\b)(?=\\s*${independentClauseStart})`,
+            'gi',
+        );
+        const clauses: string[] = [];
+        let clauseStart = 0;
+        for (const boundary of content.matchAll(clauseBoundary)) {
+            const preceding = content.slice(clauseStart, boundary.index);
+            // "Data loss and production outages have not occurred" shares one predicate.
+            // Do not turn the first subject into a standalone affirmative report.
+            if (
+                /^(?:and|or)$/i.test(boundary[0]) &&
+                criticalPriorityPatterns.some((pattern) => pattern.test(preceding)) &&
+                !declarativePredicate.test(preceding) &&
+                !questionStart.test(preceding)
+            )
+                continue;
+            clauses.push(preceding);
+            clauseStart = boundary.index + boundary[0].length;
+        }
+        clauses.push(content.slice(clauseStart));
+        let earlierQuestion = false;
+        const hasCriticalIncident = clauses.some((clause) => {
+            const startsQuestion = questionStart.test(clause);
+            // In "Can you help because production is down?", the final question
+            // mark belongs to the help request; the declarative clause reports
+            // the incident. A bare "Production is down?" remains a question.
+            const hasDeclarativePredicate = declarativePredicate.test(clause);
+            const isQuestion =
+                startsQuestion ||
+                (clause.includes('?') && (!earlierQuestion || !hasDeclarativePredicate));
+            earlierQuestion = /[.!?\n]/.test(clause) ? false : earlierQuestion || startsQuestion;
+            if (isQuestion) return false;
+
+            return criticalPriorityPatterns.some((pattern) => {
                 const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
                 const globalPattern = new RegExp(pattern.source, flags);
-                for (const match of sentence.matchAll(globalPattern)) {
-                    const prefix = sentence.slice(0, match.index);
-                    const suffix = sentence.slice(match.index + match[0].length);
-                    if (
-                        !nonIncidentPrefixes.some((guard) => guard.test(prefix)) &&
-                        !nonIncidentSuffix.test(suffix)
-                    ) {
+                for (const match of clause.matchAll(globalPattern)) {
+                    const prefix = clause.slice(0, match.index);
+                    const suffix = clause.slice(match.index + match[0].length);
+                    if (!nonIncidentPrefix.test(prefix) && !nonIncidentSuffix.test(suffix)) {
                         return true;
                     }
                 }
                 return false;
-            }),
-        );
+            });
+        });
 
         const highPriorityPatterns = [
             /error:/i,
