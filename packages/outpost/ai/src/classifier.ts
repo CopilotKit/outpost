@@ -70,10 +70,12 @@ export class TicketClassifier {
 
             // Heuristics provide an urgency floor, never downgrade CRITICAL.
             const finalPriority =
-                heuristic.priority === TicketPriority.HIGH &&
-                parsed.priority !== TicketPriority.CRITICAL
-                    ? TicketPriority.HIGH
-                    : parsed.priority;
+                heuristic.priority === TicketPriority.CRITICAL
+                    ? TicketPriority.CRITICAL
+                    : heuristic.priority === TicketPriority.HIGH &&
+                        parsed.priority !== TicketPriority.CRITICAL
+                      ? TicketPriority.HIGH
+                      : parsed.priority;
 
             // Merge tags from both sources, deduplicate
             const allTags = [...new Set([...heuristic.tags, ...parsed.tags])];
@@ -109,6 +111,14 @@ export class TicketClassifier {
         // Priority detection
         let priority = TicketPriority.MEDIUM;
 
+        // Explicit incidents are critical; general security/production mentions stay HIGH.
+        const criticalPriorityPatterns = [
+            /\bsecurity\s+vulnerabilit(?:y|ies)\b/i,
+            /\bdata[\s-]+loss\b/i,
+            /\bproduction[\s-]+outages?\b/i,
+            /\bproduction(?:\s+(?:service|system|environment))?\s+(?:is\s+)?down\b/i,
+        ];
+
         const highPriorityPatterns = [
             /error:/i,
             /exception/i,
@@ -122,7 +132,6 @@ export class TicketClassifier {
             /urgent/i,
             /critical/i,
             /security/i,
-            /data loss/i,
             /typeerror/i,
             /referenceerror/i,
             /syntaxerror/i,
@@ -146,7 +155,9 @@ export class TicketClassifier {
             /difference between/i,
         ];
 
-        if (highPriorityPatterns.some((p) => p.test(content))) {
+        if (criticalPriorityPatterns.some((p) => p.test(content))) {
+            priority = TicketPriority.CRITICAL;
+        } else if (highPriorityPatterns.some((p) => p.test(content))) {
             priority = TicketPriority.HIGH;
         } else if (lowPriorityPatterns.some((p) => p.test(content))) {
             priority = TicketPriority.LOW;

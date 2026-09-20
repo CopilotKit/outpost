@@ -74,8 +74,33 @@ describe('Luna auxiliary calls', () => {
             content: JSON.stringify({ ...classification, priority: 'CRITICAL' }),
         });
         expect(
-            (await new TicketClassifier(options).classify('Production data loss')).priority,
+            (await new TicketClassifier(options).classify('Error: LangGraph hook fails')).priority,
         ).toBe('CRITICAL');
+    });
+
+    it('retains heuristic CRITICAL when Luna underestimates an incident', async () => {
+        mock().llm.onMessage(/./, { content: JSON.stringify(classification) });
+        expect(
+            await new TicketClassifier(options).classify(
+                'Security vulnerability in authentication',
+            ),
+        ).toMatchObject({ priority: 'CRITICAL', degraded: false });
+    });
+
+    it.each([
+        'Security vulnerability exposes customer conversations',
+        'Data loss after the runtime update',
+        'Production outage: customers cannot connect',
+    ])('preserves critical fallback after invalid Luna output: %s', async (content) => {
+        mock().llm.onMessage(/./, {
+            content: 'not json',
+            usage: { input_tokens: 70, output_tokens: 15 },
+        });
+        expect(await new TicketClassifier(options).classify(content)).toMatchObject({
+            priority: 'CRITICAL',
+            degraded: true,
+            tokenUsage: { inputTokens: 70, outputTokens: 15 },
+        });
     });
 
     it('measures sentiment with Luna and accounts for usage', async () => {

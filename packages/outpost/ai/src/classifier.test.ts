@@ -217,9 +217,64 @@ describe('TicketClassifier', () => {
             expect(result.type).toBe(TicketType.BUG);
             expect(result.tokenUsage.inputTokens).toBe(0);
         });
+
+        it.each([
+            'Security vulnerability: unauthenticated users can read private conversations.',
+            'The latest runtime update caused data loss for our customers.',
+            'Production outage: all customers are unable to reach the runtime.',
+            'Our production service is down and customers cannot connect.',
+        ])('preserves CRITICAL incidents when the model fails: %s', async (content) => {
+            mock.nextRequestError(500, { message: 'API error' });
+
+            expect(await classifier.classify(content)).toMatchObject({
+                priority: TicketPriority.CRITICAL,
+                degraded: true,
+                tokenUsage: { inputTokens: 0, outputTokens: 0 },
+            });
+        });
+
+        it.each([TicketPriority.LOW, TicketPriority.MEDIUM, TicketPriority.HIGH])(
+            'keeps heuristic CRITICAL above model %s',
+            async (priority) => {
+                mock.onMessage(/./, {
+                    content: JSON.stringify({
+                        priority,
+                        type: 'BUG',
+                        tags: ['cloud'],
+                        reasoning: 'Model underestimated the incident',
+                    }),
+                });
+
+                expect(
+                    await classifier.classify('Production outage: all requests fail'),
+                ).toMatchObject({
+                    priority: TicketPriority.CRITICAL,
+                    degraded: false,
+                });
+            },
+        );
     });
 
     describe('heuristicClassify', () => {
+        it.each([
+            'We found security vulnerabilities exposing private conversations.',
+            'Customers report data-loss after upgrading the runtime.',
+            'PRODUCTION OUTAGE: every request times out.',
+        ])('detects explicit critical incidents: %s', (content) => {
+            expect(classifier.heuristicClassify(content).priority).toBe(TicketPriority.CRITICAL);
+        });
+
+        it.each([
+            'Error: CopilotChat crashes when opening a conversation.',
+            'Production requests are slow but still succeeding.',
+            'Security concern: review the authentication configuration.',
+            'How do I configure security headers?',
+            'What is the recommended security setup for production?',
+            'Is there a way to set the critical logging level?',
+        ])('keeps ordinary errors and general security questions at HIGH: %s', (content) => {
+            expect(classifier.heuristicClassify(content).priority).toBe(TicketPriority.HIGH);
+        });
+
         it('should detect error messages as HIGH priority', () => {
             const result = classifier.heuristicClassify(
                 'TypeError: Cannot read property of undefined',
