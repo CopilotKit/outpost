@@ -252,7 +252,7 @@ export function validateSupportReply(reply: unknown, sources: SearchResult[]): S
             return canonical ? [canonical] : [];
         }),
     );
-    for (const text of [parsed.summary, parsed.details, parsed.appliesTo, parsed.handoffReason]) {
+    for (const text of [parsed.summary, parsed.details, parsed.appliesTo]) {
         validateProse(text, knownUrls);
     }
     return parsed;

@@ -287,14 +287,47 @@ describe('support reply contract', () => {
         ).toThrow(/fence/i);
     });
 
-    it.each(['summary', 'appliesTo', 'handoffReason'] as const)(
-        'also checks %s for HTML injection',
-        (field) => {
-            expect(() =>
-                validateSupportReply(reply({ [field]: '<details>Injected</details>' }), sources),
-            ).toThrow(/html|summary/i);
+    it.each(['summary', 'appliesTo'] as const)('also checks %s for HTML injection', (field) => {
+        expect(() =>
+            validateSupportReply(reply({ [field]: '<details>Injected</details>' }), sources),
+        ).toThrow(/html|summary/i);
+    });
+
+    it.each([
+        'Needs review for https://github.com/CopilotKit/CopilotKit/issues/1.',
+        'Validator rejected model output containing literal <details> markup.',
+    ])('preserves private handoff diagnostics without public prose validation %#', (reason) => {
+        const value = route({ handoffReason: reason });
+
+        expect(validateSupportReply(value, [])).toEqual(value);
+        expect(supportReplyText(value)).not.toContain(reason);
+        expect(supportReplyDetails(value)).not.toContain(reason);
+    });
+
+    it.each([
+        {
+            field: 'summary',
+            value: 'Needs review for https://github.com/CopilotKit/CopilotKit/issues/1.',
+            error: /link|url/i,
         },
-    );
+        {
+            field: 'details',
+            value: 'Needs review for https://github.com/CopilotKit/CopilotKit/issues/1.',
+            error: /link|url/i,
+        },
+        {
+            field: 'appliesTo',
+            value: 'Needs review for https://github.com/CopilotKit/CopilotKit/issues/1.',
+            error: /link|url/i,
+        },
+        { field: 'summary', value: '<details>Injected</details>', error: /html|summary/i },
+        { field: 'details', value: '<details>Injected</details>', error: /html/i },
+        { field: 'appliesTo', value: '<details>Injected</details>', error: /html/i },
+    ] as const)('keeps public prose validation strict for $field diagnostics', (testCase) => {
+        expect(() =>
+            validateSupportReply(reply({ [testCase.field]: testCase.value }), sources),
+        ).toThrow(testCase.error);
+    });
 });
 
 describe('support reply rendering helpers', () => {
