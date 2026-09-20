@@ -1,5 +1,5 @@
 # ── Stage 1: prune the monorepo to only what @copilotkit/outpost-worker needs ──────
-FROM node:20-alpine AS pruner
+FROM node:24-alpine AS pruner
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
@@ -10,7 +10,7 @@ COPY . .
 RUN turbo prune @copilotkit/outpost-worker --docker
 
 # ── Stage 2: install dependencies and build ──────────────────────────────────
-FROM node:20-alpine AS installer
+FROM node:24-alpine AS installer
 RUN apk add --no-cache libc6-compat openssl
 WORKDIR /app
 
@@ -24,7 +24,7 @@ COPY --from=pruner /app/tsconfig.json ./tsconfig.json
 RUN pnpm turbo run build --filter=@copilotkit/outpost-worker
 
 # ── Stage 3: production image ────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 RUN apk add --no-cache libc6-compat openssl
 
 RUN addgroup --system --gid 1001 outpost && \

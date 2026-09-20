@@ -24,7 +24,7 @@ AI-powered support operations platform by CopilotKit. Outpost unifies customer s
 
 ### Prerequisites
 
-- Node.js >= 20
+- Node.js >= 24
 - pnpm >= 9
 - Docker (for local PostgreSQL)
 

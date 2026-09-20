@@ -4,7 +4,7 @@ Outpost consists of seven services (web dashboard, Discord bot, GitHub app, Slac
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 24+
 - PostgreSQL 16 with pgvector extension
 - Docker (for containerized deployment)
 - Railway account (recommended) or equivalent PaaS
@@ -151,7 +151,7 @@ All images:
 - Use multi-stage builds (prune -> install -> run)
 - Run as non-root user (`outpost`, uid 1001)
 - Include Docker HEALTHCHECK instructions
-- Base on `node:20-alpine` for minimal size
+- Base on `node:24-alpine` for minimal size
 
 ## CI/CD Pipeline
 
