@@ -787,7 +787,8 @@ export async function handleAiResponse(
             };
         }
 
-        // Store the formatted response on the ticket for bots to pick up.
+        // Store the complete publishable response, including the web formatter's
+        // separate details. For sources without adapters, this is the durable sink.
         //
         // Non-fatal on purpose. The BOT Message row is already committed above,
         // so aborting here would turn the retry into delayed human recovery
@@ -798,7 +799,12 @@ export async function handleAiResponse(
             await prisma.ticket.update({
                 where: { id: ticket.id },
                 data: {
-                    suggestedResponse: pipelineResult.formatted.text,
+                    suggestedResponse: [
+                        pipelineResult.formatted.text,
+                        pipelineResult.formatted.details,
+                    ]
+                        .filter(Boolean)
+                        .join('\n\n'),
                 },
             });
         } catch (error) {

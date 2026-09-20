@@ -712,7 +712,45 @@ describe('handleAiResponse', () => {
 
         expect(result.success).toBe(true);
         expect(mockPostResponse).not.toHaveBeenCalled();
+        expect(mockPrismaTicket.update).toHaveBeenCalledWith({
+            where: { id: 'tkt-1' },
+            data: { suggestedResponse: highConfidenceResult.formatted.text },
+        });
     });
+
+    it.each(['WEB', 'EMAIL', 'LINEAR', 'MANUAL', 'ORCA'])(
+        'preserves the complete publishable web response for %s without an adapter',
+        async (source) => {
+            mockPrismaTicket.findUnique.mockResolvedValue({ ...sampleTicket, source });
+            mockHasAdapter.mockReturnValue(false);
+            mockGenerateSupportResponse.mockResolvedValue({
+                ...highConfidenceResult,
+                response: 'Private investigation draft',
+                handoffReason: 'Private handoff metadata',
+                formatted: {
+                    text: 'Summary',
+                    details: 'Details\n\nSources:\n- [Doc](https://example.test/doc)',
+                    truncated: false,
+                },
+            });
+
+            const result = await handleAiResponse({ ticketId: 'tkt-1' }, makeContext());
+
+            expect(result.success).toBe(true);
+            expect(mockGenerateSupportResponse).toHaveBeenCalledWith(
+                sampleTicket.messages[0].content,
+                expect.objectContaining({ source: 'web' }),
+            );
+            expect(mockPrismaTicket.update).toHaveBeenCalledWith({
+                where: { id: 'tkt-1' },
+                data: {
+                    suggestedResponse:
+                        'Summary\n\nDetails\n\nSources:\n- [Doc](https://example.test/doc)',
+                },
+            });
+            expect(mockPostResponse).not.toHaveBeenCalled();
+        },
+    );
 
     it('skips post-back in shadow mode', async () => {
         const originalShadow = process.env.SHADOW_MODE;
