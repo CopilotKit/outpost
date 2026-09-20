@@ -265,6 +265,45 @@ describe('TicketClassifier', () => {
         });
 
         it.each([
+            ['Did a production outage occur?', 'A production outage occurred.'],
+            ['Did data loss happen?', 'Data loss happened.'],
+            ['Did you find a security vulnerability?', 'We found a security vulnerability.'],
+            ['Has a production outage occurred?', 'A production outage has occurred.'],
+            ['Has there been data loss?', 'There has been data loss.'],
+            ['Has a security vulnerability been found?', 'A security vulnerability was found.'],
+            ['Was there a production outage?', 'There was a production outage.'],
+            ['Was any data loss reported?', 'Customers reported data loss.'],
+            ['Was a security vulnerability found?', 'A security vulnerability was found.'],
+            [
+                'Were customers affected by a production outage?',
+                'Customers were affected by a production outage.',
+            ],
+            ['Were there reports of data loss?', 'There were reports of data loss.'],
+            ['Were any security vulnerabilities found?', 'Security vulnerabilities were found.'],
+            ['Have there been production outages?', 'There have been production outages.'],
+            ['Have we experienced data loss?', 'We have experienced data loss.'],
+            ['Have security vulnerabilities been found?', 'Security vulnerabilities were found.'],
+            ['Had there been a production outage?', 'There had been a production outage.'],
+            ['Had data loss occurred?', 'Data loss had occurred.'],
+            ['Had a security vulnerability been found?', 'A security vulnerability was found.'],
+            ['Will this cause a production outage?', 'This caused a production outage.'],
+            ['Will this cause data loss?', 'This caused data loss.'],
+            [
+                'Will this introduce a security vulnerability?',
+                'This introduced a security vulnerability.',
+            ],
+        ])(
+            'distinguishes an incident question from an affirmative report: %s',
+            (question, report) => {
+                expect(classifier.heuristicClassify(question).priority).toBe(TicketPriority.HIGH);
+                expect(classifier.heuristicClassify(report).priority).toBe(TicketPriority.CRITICAL);
+                expect(classifier.heuristicClassify(`${question} ${report}`).priority).toBe(
+                    TicketPriority.CRITICAL,
+                );
+            },
+        );
+
+        it.each([
             'How do I prevent data loss?',
             'How can we avoid production outages?',
             'How do I prevent security vulnerabilities?',

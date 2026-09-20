@@ -121,7 +121,7 @@ export class TicketClassifier {
             /\bproduction(?:\s+(?:service|system|environment))?\s+(?:is\s+)?down\b/i,
         ];
         const nonIncidentPrefixes = [
-            /^\s*(?:how|what|can|could|should|would|is|are|do|does)\b/i,
+            /^\s*(?:how|what|can|could|should|would|will|is|are|was|were|do|does|did|has|have|had)\b/i,
             /\b(?:prevent(?:ing)?|avoid(?:ing)?|hypothetical)\b[^,;:]*$/i,
             /\b(?:no|not|never|without)(?:\s+\w+){0,3}\s*$/i,
         ];

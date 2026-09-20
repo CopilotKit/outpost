@@ -103,14 +103,57 @@ describe('Luna auxiliary calls', () => {
         },
     );
 
-    it('preserves model CRITICAL even when conservative heuristics do not escalate', async () => {
-        mock().llm.onMessage(/./, {
-            content: JSON.stringify({ ...classification, priority: 'CRITICAL' }),
-        });
-        expect(
-            await new TicketClassifier(options).classify('How do I prevent data loss?'),
-        ).toMatchObject({ priority: 'CRITICAL', degraded: false });
-    });
+    it.each([
+        ['LOW', 'Did a production outage occur?'],
+        ['LOW', 'Has there been data loss?'],
+        ['LOW', 'Was a security vulnerability found?'],
+        ['LOW', 'Were customers affected by a production outage?'],
+        ['LOW', 'Have we experienced data loss?'],
+        ['LOW', 'Had there been a production outage?'],
+        ['LOW', 'Will this introduce a security vulnerability?'],
+        ['MEDIUM', 'Did a production outage occur?'],
+        ['MEDIUM', 'Has there been data loss?'],
+        ['MEDIUM', 'Was a security vulnerability found?'],
+        ['MEDIUM', 'Were customers affected by a production outage?'],
+        ['MEDIUM', 'Have we experienced data loss?'],
+        ['MEDIUM', 'Had there been a production outage?'],
+        ['MEDIUM', 'Will this introduce a security vulnerability?'],
+    ])(
+        'keeps the existing HIGH floor for a healthy %s model answering %s',
+        async (priority, content) => {
+            mock().llm.onMessage(/./, {
+                content: JSON.stringify({ ...classification, priority }),
+                usage: { input_tokens: 90, output_tokens: 20 },
+            });
+            expect(await new TicketClassifier(options).classify(content)).toMatchObject({
+                priority: 'HIGH',
+                degraded: false,
+                tokenUsage: { inputTokens: 90, outputTokens: 20 },
+            });
+        },
+    );
+
+    it.each([
+        'How do I prevent data loss?',
+        'Did a production outage occur?',
+        'Has there been data loss?',
+        'Was a security vulnerability found?',
+        'Were customers affected by a production outage?',
+        'Have we experienced data loss?',
+        'Had there been a production outage?',
+        'Will this introduce a security vulnerability?',
+    ])(
+        'preserves model CRITICAL even when conservative heuristics do not escalate: %s',
+        async (content) => {
+            mock().llm.onMessage(/./, {
+                content: JSON.stringify({ ...classification, priority: 'CRITICAL' }),
+            });
+            expect(await new TicketClassifier(options).classify(content)).toMatchObject({
+                priority: 'CRITICAL',
+                degraded: false,
+            });
+        },
+    );
 
     it.each([
         'Security vulnerability exposes customer conversations',
