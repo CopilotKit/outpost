@@ -265,6 +265,29 @@ describe('TicketClassifier', () => {
         });
 
         it.each([
+            'How do I prevent data loss?',
+            'How can we avoid production outages?',
+            'How do I prevent security vulnerabilities?',
+            'What is a security vulnerability?',
+            'There was no data loss',
+            'We have not experienced data loss.',
+            'Data loss did not occur.',
+            'No security vulnerabilities were found.',
+            'There was no production outage.',
+        ])('keeps preventive or negated incidents at the existing HIGH baseline: %s', (content) => {
+            expect(classifier.heuristicClassify(content).priority).toBe(TicketPriority.HIGH);
+        });
+
+        it.each([
+            'How do I prevent data loss? We found a security vulnerability exposing conversations.',
+            'There was no data loss. Our production service is down.',
+            'No security vulnerabilities were found. The update caused data loss.',
+            'Production outage: all requests fail. There was no data loss.',
+        ])('retains an affirmative critical incident in a separate sentence: %s', (content) => {
+            expect(classifier.heuristicClassify(content).priority).toBe(TicketPriority.CRITICAL);
+        });
+
+        it.each([
             'Error: CopilotChat crashes when opening a conversation.',
             'Production requests are slow but still succeeding.',
             'Security concern: review the authentication configuration.',

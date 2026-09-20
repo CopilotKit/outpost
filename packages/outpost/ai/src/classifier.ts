@@ -111,13 +111,34 @@ export class TicketClassifier {
         // Priority detection
         let priority = TicketPriority.MEDIUM;
 
-        // Explicit incidents are critical; general security/production mentions stay HIGH.
+        // Critical phrases still need context: a prevention question or negated report
+        // must not create a CRITICAL floor. These conservative guards cover common
+        // phrasing, not full language inference, and apply within one sentence only.
         const criticalPriorityPatterns = [
             /\bsecurity\s+vulnerabilit(?:y|ies)\b/i,
             /\bdata[\s-]+loss\b/i,
             /\bproduction[\s-]+outages?\b/i,
             /\bproduction(?:\s+(?:service|system|environment))?\s+(?:is\s+)?down\b/i,
         ];
+        const nonIncidentPrefixes = [
+            /^\s*(?:how|what|can|could|should|would|is|are|do|does)\b/i,
+            /\b(?:prevent(?:ing)?|avoid(?:ing)?|hypothetical)\b[^,;:]*$/i,
+            /\b(?:no|not|never|without)(?:\s+\w+){0,3}\s*$/i,
+        ];
+        const nonIncidentSuffix =
+            /^\s+(?:prevention|(?:did(?:\s+not|n't)|never)\s+(?:occur|happen))\b/i;
+        const hasCriticalIncident = content.split(/[.!?\n]+/).some((sentence) =>
+            criticalPriorityPatterns.some((pattern) => {
+                const match = pattern.exec(sentence);
+                if (!match) return false;
+                const prefix = sentence.slice(0, match.index);
+                const suffix = sentence.slice(match.index + match[0].length);
+                return (
+                    !nonIncidentPrefixes.some((guard) => guard.test(prefix)) &&
+                    !nonIncidentSuffix.test(suffix)
+                );
+            }),
+        );
 
         const highPriorityPatterns = [
             /error:/i,
@@ -132,6 +153,7 @@ export class TicketClassifier {
             /urgent/i,
             /critical/i,
             /security/i,
+            /data loss/i,
             /typeerror/i,
             /referenceerror/i,
             /syntaxerror/i,
@@ -155,7 +177,7 @@ export class TicketClassifier {
             /difference between/i,
         ];
 
-        if (criticalPriorityPatterns.some((p) => p.test(content))) {
+        if (hasCriticalIncident) {
             priority = TicketPriority.CRITICAL;
         } else if (highPriorityPatterns.some((p) => p.test(content))) {
             priority = TicketPriority.HIGH;

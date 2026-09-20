@@ -87,6 +87,26 @@ describe('Luna auxiliary calls', () => {
         ).toMatchObject({ priority: 'CRITICAL', degraded: false });
     });
 
+    it.each(['How do I prevent data loss?', 'There was no data loss'])(
+        'does not promote a healthy LOW model to CRITICAL for a non-incident: %s',
+        async (content) => {
+            mock().llm.onMessage(/./, { content: JSON.stringify(classification) });
+            expect(await new TicketClassifier(options).classify(content)).toMatchObject({
+                priority: 'HIGH',
+                degraded: false,
+            });
+        },
+    );
+
+    it('preserves model CRITICAL even when conservative heuristics do not escalate', async () => {
+        mock().llm.onMessage(/./, {
+            content: JSON.stringify({ ...classification, priority: 'CRITICAL' }),
+        });
+        expect(
+            await new TicketClassifier(options).classify('How do I prevent data loss?'),
+        ).toMatchObject({ priority: 'CRITICAL', degraded: false });
+    });
+
     it.each([
         'Security vulnerability exposes customer conversations',
         'Data loss after the runtime update',
