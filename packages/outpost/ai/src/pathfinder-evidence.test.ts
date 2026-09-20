@@ -113,6 +113,61 @@ describe('agent evidence retrieval', () => {
         ]);
     });
 
+    it.each(['search-code', 'search-ag-ui-code'] as const)(
+        'rejects legacy JSON %s evidence without a usable citation URL',
+        async (tool) => {
+            mockServer({
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify([
+                            {
+                                title: 'packages/foo.ts',
+                                content: 'export const x = 1;',
+                                score: 0.9,
+                            },
+                        ]),
+                    },
+                ],
+            });
+
+            await expect(
+                new PathfinderClient('https://mcp.example.test').searchEvidence(tool, {
+                    query: 'subagents',
+                }),
+            ).rejects.toThrow('malformed uncitable code evidence');
+        },
+    );
+
+    it('keeps legacy JSON docs evidence accepted when it has usable content and score', async () => {
+        mockServer({
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify([
+                        {
+                            title: 'Actions',
+                            content: 'useCopilotAction registers frontend actions.',
+                            score: 0.9,
+                        },
+                    ]),
+                },
+            ],
+        });
+
+        await expect(
+            new PathfinderClient('https://mcp.example.test').searchEvidence('search-docs', {
+                query: 'actions',
+            }),
+        ).resolves.toMatchObject([
+            {
+                title: 'Actions',
+                content: 'useCopilotAction registers frontend actions.',
+                score: 0.9,
+            },
+        ]);
+    });
+
     it('normalizes .git/ repository suffixes before strict code evidence validation', async () => {
         const gitSlashCodeSnippet = validCodeSnippet.replace(
             'https://github.com/CopilotKit/CopilotKit.git',

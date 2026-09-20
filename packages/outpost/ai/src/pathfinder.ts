@@ -68,6 +68,10 @@ export function capQuery(query: string, maxChars: number): string {
  */
 export type SearchTool = 'search-docs' | 'search-code' | 'search-ag-ui-docs' | 'search-ag-ui-code';
 
+function isCodeSearchTool(tool: SearchTool): boolean {
+    return tool === 'search-code' || tool === 'search-ag-ui-code';
+}
+
 /**
  * Pathfinder MCP client for CopilotKit + AG-UI retrieval, over docs AND source.
  *
@@ -341,7 +345,13 @@ export class PathfinderClient {
         ) {
             throw new Error(`Pathfinder ${tool} returned malformed search evidence`);
         }
-        if (results.some((entry) => entry.kind === 'code' && !entry.sourceUrl?.trim())) {
+        const requiresCodeCitation = isCodeSearchTool(tool);
+        if (
+            results.some(
+                (entry) =>
+                    (requiresCodeCitation || entry.kind === 'code') && !entry.sourceUrl?.trim(),
+            )
+        ) {
             throw new Error(`Pathfinder ${tool} returned malformed uncitable code evidence`);
         }
         return results;

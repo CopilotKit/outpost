@@ -258,6 +258,39 @@ describe('PathfinderClient', () => {
             expect(body.params.arguments.query).toBe('subagent');
         });
 
+        it('keeps the public wrapper tolerant for legacy JSON-array code results without URLs', async () => {
+            mockConnect();
+            mockFetch.mockResolvedValueOnce(
+                mkResp({
+                    body: jsonRpc({
+                        content: [
+                            {
+                                text: JSON.stringify([
+                                    {
+                                        title: 'packages/foo.ts',
+                                        content: 'export const x = 1;',
+                                        score: 0.9,
+                                    },
+                                ]),
+                            },
+                        ],
+                    }),
+                }),
+            );
+
+            const results = await client.searchCode({ query: 'x' });
+
+            expect(results).toEqual([
+                {
+                    title: 'packages/foo.ts',
+                    content: 'export const x = 1;',
+                    score: 0.9,
+                    sourceUrl: undefined,
+                    category: undefined,
+                },
+            ]);
+        });
+
         it('returns [] rather than throwing when the tool errors', async () => {
             mockConnect();
             mockFetch.mockResolvedValueOnce(
