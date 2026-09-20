@@ -6,7 +6,8 @@
  * All external dependencies (Prisma, AIPipeline, etc.) are mocked.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { JobHandlerContext } from '../types.js';
+import type { Message } from '@prisma/client';
+import type { EscalationPayload, JobHandlerContext } from '../types.js';
 
 // ─── Mock Setup ─────────────────────────────────────────────────────────────
 
@@ -20,10 +21,12 @@ const mockPrismaMessage = {
     update: vi.fn(),
     updateMany: vi.fn(),
     findUnique: vi.fn(),
+    findMany: vi.fn(),
 };
 
 const mockPrismaJob = {
     create: vi.fn(),
+    findMany: vi.fn(),
 };
 
 const mockPrismaQueryRaw = vi.fn();
@@ -93,6 +96,7 @@ vi.mock('@copilotkit/outpost/shared/platforms', () => ({
 
 // Import after mocks
 const { handleAiResponse } = await import('../handlers/ai-response.js');
+const { handlePendingResponseSweep } = await import('../handlers/pending-response-sweep.js');
 
 // ─── Test Helpers ──────────────────────────────────────────────────────────
 
@@ -241,6 +245,96 @@ const sampleClassification = {
     tokenUsage: { inputTokens: 50, outputTokens: 30 },
 };
 
+type PersistedResponse = Pick<
+    Message,
+    | 'id'
+    | 'ticketId'
+    | 'type'
+    | 'content'
+    | 'isAiGenerated'
+    | 'responseKey'
+    | 'responseState'
+    | 'responseJobId'
+    | 'responseError'
+    | 'escalationRequiredReason'
+    | 'deliveryConfirmed'
+>;
+
+/** Retry/sweep snapshots come from actual writes, with transaction rollback on failure. */
+function trackResponsePersistence() {
+    let response: PersistedResponse | undefined;
+    mockPrismaTicket.findUnique.mockImplementation(async () => ({
+        ...sampleTicket,
+        messages: [...sampleTicket.messages, ...(response ? [{ ...response }] : [])],
+    }));
+    mockPrismaMessage.create.mockImplementation(
+        async ({
+            data,
+        }: {
+            data: Omit<PersistedResponse, 'id' | 'deliveryConfirmed' | 'escalationRequiredReason'> &
+                Partial<Pick<PersistedResponse, 'deliveryConfirmed' | 'escalationRequiredReason'>>;
+        }) => {
+            response = {
+                id: 'msg-new',
+                deliveryConfirmed: false,
+                escalationRequiredReason: null,
+                ...data,
+            };
+            return { ...response };
+        },
+    );
+    mockPrismaMessage.update.mockImplementation(
+        async ({ data }: { data: Partial<PersistedResponse> }) => {
+            if (data.escalationRequiredReason && data.responseError === undefined) {
+                throw new Error('owed-reason update unavailable');
+            }
+            if (!response) throw new Error('response row missing');
+            Object.assign(response, data);
+            return response;
+        },
+    );
+    mockPrismaMessage.updateMany.mockImplementation(
+        async ({
+            where,
+            data,
+        }: {
+            where: Partial<PersistedResponse>;
+            data: Partial<PersistedResponse>;
+        }) => {
+            if (
+                !response ||
+                response.id !== where.id ||
+                response.responseState !== where.responseState ||
+                (where.responseKey !== undefined && response.responseKey !== where.responseKey) ||
+                (where.responseJobId !== undefined &&
+                    response.responseJobId !== where.responseJobId)
+            ) {
+                return { count: 0 };
+            }
+            Object.assign(response, data);
+            return { count: 1 };
+        },
+    );
+    mockPrismaTransaction.mockImplementation(
+        async (callback: (tx: typeof mockPrisma) => Promise<unknown>) => {
+            const snapshot = response ? { ...response } : undefined;
+            try {
+                return await callback(mockPrisma);
+            } catch (error) {
+                response = snapshot;
+                throw error;
+            }
+        },
+    );
+    mockPrismaMessage.findMany.mockImplementation(async () =>
+        response?.responseState === 'PENDING'
+            ? [{ ...response, ticket: { source: sampleTicket.source } }]
+            : [],
+    );
+    mockPrismaJob.findMany.mockResolvedValue([]);
+    return () => response;
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 describe('handleAiResponse', () => {
@@ -253,7 +347,9 @@ describe('handleAiResponse', () => {
         // Only read when an escalation compare-and-set reports no rows changed;
         // "row is gone" is the least forgiving default for that path.
         mockPrismaMessage.findUnique.mockResolvedValue(null);
+        mockPrismaMessage.findMany.mockResolvedValue([]);
         mockPrismaJob.create.mockResolvedValue({ id: 'job-esc-1' });
+        mockPrismaJob.findMany.mockResolvedValue([]);
         mockPrismaQueryRaw.mockResolvedValue([{ now: new Date('2026-08-11T20:00:00.000Z') }]);
         mockPrismaTransaction.mockImplementation(
             async (callback: (tx: typeof mockPrisma) => Promise<unknown>) => callback(mockPrisma),
@@ -535,6 +631,7 @@ describe('handleAiResponse', () => {
                 responseState: 'PENDING',
                 responseJobId: 'test-job-1',
                 responseError: null,
+                escalationRequiredReason: null,
             },
         });
     });
@@ -834,12 +931,12 @@ describe('handleAiResponse', () => {
         }
 
         /** The single ESCALATION job payload, asserting exactly one was created. */
-        function escalationPayload(): Record<string, unknown> {
+        function escalationPayload(): EscalationPayload {
             const calls = mockPrismaJob.create.mock.calls.filter(
                 (call: Array<{ data: { type: string } }>) => call[0].data.type === 'ESCALATION',
             );
             expect(calls).toHaveLength(1);
-            return calls[0][0].data.payload as Record<string, unknown>;
+            return calls[0][0].data.payload;
         }
 
         it('enqueues an ESCALATION job when post-back throws', async () => {
@@ -1352,13 +1449,12 @@ describe('handleAiResponse', () => {
                 handoffReason: 'Reporter version cannot be matched to a release',
             });
             await handleAiResponse({ ticketId: 'tkt-1', source: 'discord' }, makeContext());
-            expect(mockPrismaMessage.update).toHaveBeenCalledWith({
-                where: { id: 'msg-new' },
-                data: {
+            expect(mockPrismaMessage.create).toHaveBeenCalledWith({
+                data: expect.objectContaining({
                     escalationRequiredReason: expect.stringContaining(
                         'Reporter version cannot be matched to a release',
                     ),
-                },
+                }),
             });
             expect(JSON.stringify(mockPostResponse.mock.calls)).not.toContain(
                 'Reporter version cannot be matched to a release',
@@ -1383,11 +1479,10 @@ describe('handleAiResponse', () => {
                 expect(mockPostResponse).toHaveBeenCalledTimes(1);
                 expect(result.success).toBe(false);
                 expect(result.error).toContain('queue unavailable');
-                expect(mockPrismaMessage.update).toHaveBeenCalledWith({
-                    where: { id: 'msg-new' },
-                    data: {
+                expect(mockPrismaMessage.create).toHaveBeenCalledWith({
+                    data: expect.objectContaining({
                         escalationRequiredReason: expect.stringContaining(reasonFragment),
-                    },
+                    }),
                 });
                 expect(mockPrismaMessage.update).not.toHaveBeenCalledWith({
                     where: { id: 'msg-new' },
@@ -1463,6 +1558,159 @@ describe('handleAiResponse', () => {
                     escalationRequiredReason: null,
                 },
             });
+        });
+
+        it.each([
+            [
+                'low-confidence',
+                lowConfidenceResult,
+                'Low AI confidence (25%) — automated escalation',
+            ],
+            [
+                'suppressed',
+                {
+                    ...suppressedResult,
+                    handoffReason: 'Reporter version cannot be matched to a release',
+                },
+                'AI response withheld (Reporter version cannot be matched to a release) — needs a human answer',
+            ],
+        ])(
+            'retains the exact %s reason on retry when post-publication marker writes and enqueue fail',
+            async (_label, pipelineResult, reason) => {
+                const storedResponse = trackResponsePersistence();
+                mockGenerateSupportResponse.mockResolvedValue(pipelineResult);
+                mockPrismaJob.create.mockRejectedValueOnce(new Error('queue unavailable'));
+                let reasonAtPublication: string | null | undefined;
+                mockPostResponse.mockImplementation(async () => {
+                    reasonAtPublication = storedResponse()?.escalationRequiredReason;
+                });
+                const payload = { ticketId: 'tkt-1', source: 'discord' as const };
+                const context = makeContext();
+
+                const first = await handleAiResponse(payload, context);
+                expect(first.success).toBe(false);
+                expect(first.error).toContain(reason);
+                expect(first.error).toContain('queue unavailable');
+                expect(context.reportProgress).not.toHaveBeenCalledWith(100);
+                const persistedReason = storedResponse()?.escalationRequiredReason;
+
+                const retry = await handleAiResponse(payload, makeContext());
+                expect(retry.data).toMatchObject({
+                    escalated: true,
+                    reason: 'escalation_recovered',
+                });
+                expect(reasonAtPublication).toBe(reason);
+                expect(persistedReason).toBe(reason);
+                expect(mockPrismaJob.create).toHaveBeenLastCalledWith({
+                    data: expect.objectContaining({
+                        type: 'ESCALATION',
+                        payload: { ticketId: 'tkt-1', reason },
+                    }),
+                });
+                const settledRetry = await handleAiResponse(payload, makeContext());
+                expect(settledRetry.data?.reason).toBe('already_answered');
+                expect(mockPrismaJob.create).toHaveBeenCalledTimes(2);
+                expect(mockGenerateSupportResponse).toHaveBeenCalledTimes(1);
+                expect(mockPostResponse).toHaveBeenCalledTimes(1);
+            },
+        );
+
+        it('preserves the original suppression reason for the sweep after publication is interrupted', async () => {
+            const storedResponse = trackResponsePersistence();
+            const reason =
+                'AI response withheld (Reporter version is unknown) — needs a human answer';
+            mockGenerateSupportResponse.mockResolvedValue({
+                ...suppressedResult,
+                handoffReason: 'Reporter version is unknown',
+            });
+            const context = makeContext({
+                reportProgress: vi.fn(async (progress: number) => {
+                    if (progress === 85) throw new Error('worker interrupted before enqueue');
+                }),
+            });
+
+            await expect(handleAiResponse({ ticketId: 'tkt-1' }, context)).rejects.toThrow(
+                'worker interrupted',
+            );
+            const persistedReason = storedResponse()?.escalationRequiredReason;
+            expect(mockPrismaJob.create).not.toHaveBeenCalled();
+
+            const sweep = await handlePendingResponseSweep({}, makeContext({ jobId: 'sweep-1' }));
+            expect(sweep.success).toBe(true);
+            expect(sweep.data?.escalated).toBe(1);
+            expect(escalationPayload()).toEqual({ ticketId: 'tkt-1', reason });
+            expect(persistedReason).toBe(reason);
+            expect(mockGenerateSupportResponse).toHaveBeenCalledTimes(1);
+            expect(mockPostResponse).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not publish when the primary response and owed reason cannot be persisted', async () => {
+            mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
+            mockGenerateSupportResponse.mockResolvedValue(suppressedResult);
+            mockPrismaMessage.create.mockRejectedValueOnce(
+                new Error('primary response insert failed'),
+            );
+            const context = makeContext();
+
+            await expect(handleAiResponse({ ticketId: 'tkt-1' }, context)).rejects.toThrow(
+                'primary response insert failed',
+            );
+            expect(mockPostResponse).not.toHaveBeenCalled();
+            expect(mockPrismaJob.create).not.toHaveBeenCalled();
+            expect(context.reportProgress).not.toHaveBeenCalledWith(100);
+            expect(mockDestroy).toHaveBeenCalledOnce();
+        });
+
+        it.each(['retry', 'sweep'])(
+            'keeps delivery failure ahead of suppression during %s recovery',
+            async (recovery) => {
+                const storedResponse = trackResponsePersistence();
+                mockGenerateSupportResponse.mockResolvedValue(suppressedResult);
+                mockPostResponse.mockRejectedValueOnce(new Error('Discord API 503'));
+                mockPrismaJob.create.mockRejectedValueOnce(new Error('queue unavailable'));
+                const reason =
+                    'AI response generated but not delivered to DISCORD (Discord API 503) — needs a human to answer the reporter';
+
+                const first = await handleAiResponse({ ticketId: 'tkt-1' }, makeContext());
+                expect(first.success).toBe(false);
+                expect(first.error).toContain(reason);
+                expect(storedResponse()?.escalationRequiredReason).toBe(reason);
+                if (recovery === 'retry') {
+                    const retry = await handleAiResponse({ ticketId: 'tkt-1' }, makeContext());
+                    expect(retry.data).toMatchObject({ escalated: true, deliveryFailed: true });
+                } else {
+                    await handlePendingResponseSweep({}, makeContext({ jobId: 'sweep-1' }));
+                }
+                expect(mockPrismaJob.create).toHaveBeenLastCalledWith({
+                    data: expect.objectContaining({
+                        type: 'ESCALATION',
+                        payload: { ticketId: 'tkt-1', reason },
+                    }),
+                });
+                expect(mockGenerateSupportResponse).toHaveBeenCalledTimes(1);
+                expect(mockPostResponse).toHaveBeenCalledTimes(1);
+            },
+        );
+
+        it('reports a failed delivery-reason replacement when the escalation also cannot enqueue', async () => {
+            const storedResponse = trackResponsePersistence();
+            mockGenerateSupportResponse.mockResolvedValue(lowConfidenceResult);
+            mockPostResponse.mockRejectedValueOnce(new Error('Discord API 503'));
+            mockPrismaMessage.update.mockRejectedValueOnce(
+                new Error('delivery reason update unavailable'),
+            );
+            mockPrismaJob.create.mockRejectedValueOnce(new Error('queue unavailable'));
+            const context = makeContext();
+
+            const result = await handleAiResponse({ ticketId: 'tkt-1' }, context);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Discord API 503');
+            expect(result.error).toContain('delivery reason update unavailable');
+            expect(result.error).toContain('queue unavailable');
+            expect(storedResponse()?.escalationRequiredReason).toBe(
+                'Low AI confidence (25%) — automated escalation',
+            );
+            expect(context.reportProgress).not.toHaveBeenCalledWith(100);
         });
 
         it('recovers the keyed primary response when an older AI BOT row appears first', async () => {
@@ -1826,11 +2074,11 @@ describe('handleAiResponse', () => {
             );
 
             expect(result.success).toBe(false);
-            expect(mockPrismaMessage.update).toHaveBeenCalledWith({
-                where: { id: 'msg-new' },
-                data: {
+            expect(mockPrismaMessage.create).toHaveBeenCalledWith({
+                data: expect.objectContaining({
                     escalationRequiredReason: 'Low AI confidence (25%) — automated escalation',
-                },
+                    responseError: null,
+                }),
             });
             // The reason is not an error, so it must not reach responseError —
             // delivery succeeded here, only the handoff is outstanding.
@@ -2703,14 +2951,18 @@ describe('handleAiResponse', () => {
                 where: { id: 'msg-new' },
                 data: { escalationRequiredReason: null },
             });
-            // The marker was written first, then cleared — in that order.
+            // The marker was inserted with the response, then cleared.
+            expect(mockPrismaMessage.create).toHaveBeenCalledWith({
+                data: expect.objectContaining({
+                    escalationRequiredReason: expect.stringContaining('Low AI confidence'),
+                }),
+            });
             const markerWrites = mockPrismaMessage.update.mock.calls.filter(
-                (call: Array<{ data: Record<string, unknown> }>) =>
+                (call: Array<{ data: Partial<PersistedResponse> }>) =>
                     'escalationRequiredReason' in call[0].data,
             );
-            expect(markerWrites).toHaveLength(2);
-            expect(markerWrites[0][0].data.escalationRequiredReason).toContain('Low AI confidence');
-            expect(markerWrites[1][0].data.escalationRequiredReason).toBeNull();
+            expect(markerWrites).toHaveLength(1);
+            expect(markerWrites[0][0].data.escalationRequiredReason).toBeNull();
         });
 
         it('fails the job when the orphaned escalation marker cannot be cleared', async () => {
