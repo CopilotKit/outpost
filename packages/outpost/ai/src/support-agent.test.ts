@@ -14,6 +14,17 @@ const source = {
     sourceUrl: 'https://docs.copilotkit.ai/tools',
     score: 0.9,
 };
+const deprecatedSource = {
+    ...source,
+    title: 'Legacy tools',
+    content: 'Register frontend actions with useCopilotAction.',
+    sourceUrl: 'https://docs.copilotkit.ai/v1-deprecated/tools',
+};
+const deprecatedTitleSource = {
+    ...deprecatedSource,
+    title: 'V1-DEPRECATED tools',
+    sourceUrl: 'https://docs.copilotkit.ai/legacy/tools',
+};
 const reply: SupportReply = {
     decision: 'answer',
     summary: 'Register this action with `useFrontendTool`.',
@@ -39,7 +50,7 @@ describe('OpenAI support agent', () => {
         });
         return { agent, searchEvidence };
     }
-    function toolRoundtrip(output: unknown = reply) {
+    function toolRoundtrip(output: unknown = reply, version: SupportReply['apiVersion'] = 'v2') {
         mock().llm.on(
             { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
             { content: JSON.stringify(output) },
@@ -53,7 +64,7 @@ describe('OpenAI support agent', () => {
                         query: 'frontend tools',
                         corpus: 'copilotkit',
                         kind: 'docs',
-                        version: 'v2',
+                        version,
                     },
                 },
             ],
@@ -243,15 +254,90 @@ describe('OpenAI support agent', () => {
             setup().agent.investigate({ question: 'Tools?', source: 'github' }),
         ).rejects.toBeInstanceOf(InvalidSupportReplyError);
     });
-    it('explicitly broadens an empty version index and labels the fallback scope', async () => {
+    it.each([
+        { description: 'empty', initialResults: [] },
+        { description: 'deprecated-only', initialResults: [deprecatedSource] },
+        { description: 'uppercase deprecated-only', initialResults: [deprecatedTitleSource] },
+    ])(
+        'broadens $description version results and labels the usable fallback evidence',
+        async ({ initialResults }) => {
+            toolRoundtrip();
+            const { agent, searchEvidence } = setup();
+            searchEvidence
+                .mockResolvedValueOnce(initialResults)
+                .mockResolvedValueOnce([deprecatedSource, deprecatedTitleSource, source]);
+            const result = await agent.investigate({ question: 'Tools in v2?', source: 'github' });
+            expect(searchEvidence).toHaveBeenCalledTimes(2);
+            expect(searchEvidence).toHaveBeenNthCalledWith(
+                1,
+                'search-docs',
+                { query: 'frontend tools', limit: 4, version: 'v2' },
+                expect.any(AbortSignal),
+            );
+            expect(searchEvidence).toHaveBeenNthCalledWith(
+                2,
+                'search-docs',
+                { query: 'frontend tools', limit: 4 },
+                searchEvidence.mock.calls[0][2],
+            );
+            expect(result.reply).toEqual(reply);
+            expect(result.sources).toEqual([source]);
+            const modelInput = JSON.stringify(mock().llm.getLastRequest()?.body);
+            expect(modelInput).toContain('unfiltered_fallback');
+            expect(modelInput).not.toContain(deprecatedSource.sourceUrl);
+            expect(modelInput).not.toContain(deprecatedTitleSource.sourceUrl);
+            expect(mock().llm.getRequests()).toHaveLength(2);
+        },
+    );
+    it('keeps the requested scope when mixed version results include usable evidence', async () => {
         toolRoundtrip();
         const { agent, searchEvidence } = setup();
-        searchEvidence.mockResolvedValueOnce([]).mockResolvedValueOnce([source]);
+        searchEvidence.mockResolvedValueOnce([deprecatedSource, source]);
         const result = await agent.investigate({ question: 'Tools in v2?', source: 'github' });
-        expect(searchEvidence).toHaveBeenCalledTimes(2);
-        expect(searchEvidence.mock.calls[1][1].version).toBeUndefined();
+        expect(searchEvidence).toHaveBeenCalledTimes(1);
         expect(result.sources).toEqual([source]);
-        expect(JSON.stringify(mock().llm.getLastRequest()?.body)).toContain('unfiltered_fallback');
+        const modelInput = JSON.stringify(mock().llm.getLastRequest()?.body);
+        expect(modelInput).toContain('requested_version');
+        expect(modelInput).not.toContain(deprecatedSource.sourceUrl);
+    });
+    it.each(['v1', 'unknown'] as const)(
+        'preserves deprecated evidence for a %s search without broadening',
+        async (version) => {
+            toolRoundtrip(
+                {
+                    ...reply,
+                    apiVersion: version,
+                    evidence: [
+                        { sourceUrl: deprecatedSource.sourceUrl, quote: deprecatedSource.content },
+                    ],
+                },
+                version,
+            );
+            const { agent, searchEvidence } = setup();
+            searchEvidence.mockResolvedValueOnce([deprecatedSource]);
+            const result = await agent.investigate({ question: 'Legacy tools?', source: 'github' });
+            expect(searchEvidence).toHaveBeenCalledTimes(1);
+            expect(searchEvidence.mock.calls[0][1]).toEqual({
+                query: 'frontend tools',
+                limit: 4,
+                ...(version === 'unknown' ? {} : { version }),
+            });
+            expect(result.sources).toEqual([deprecatedSource]);
+            expect(JSON.stringify(mock().llm.getLastRequest()?.body)).toContain(
+                version === 'unknown' ? 'unfiltered' : 'requested_version',
+            );
+        },
+    );
+    it('propagates a fallback retrieval failure after filtering deprecated evidence', async () => {
+        toolRoundtrip();
+        const { agent, searchEvidence } = setup();
+        searchEvidence
+            .mockResolvedValueOnce([deprecatedSource])
+            .mockRejectedValueOnce(new Error('Pathfinder fallback unavailable'));
+        await expect(
+            agent.investigate({ question: 'Tools in v2?', source: 'github' }),
+        ).rejects.toThrow('Pathfinder fallback unavailable');
+        expect(searchEvidence).toHaveBeenCalledTimes(2);
     });
     it('rejects a fabricated evidence quote', async () => {
         toolRoundtrip({

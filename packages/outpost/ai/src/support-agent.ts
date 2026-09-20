@@ -159,32 +159,29 @@ export class SupportAgent {
                         : kind === 'docs'
                           ? 'search-docs'
                           : 'search-code';
-                let results = await this.pathfinder.searchEvidence(
-                    name,
-                    { query, limit: 4, ...(version === 'unknown' ? {} : { version }) },
-                    signal,
-                );
+                const isUsableEvidence = (result: SearchResult) =>
+                    version !== 'v2' ||
+                    !/v1-deprecated/i.test(`${result.sourceUrl} ${result.title}`);
+                let results = (
+                    await this.pathfinder.searchEvidence(
+                        name,
+                        { query, limit: 4, ...(version === 'unknown' ? {} : { version }) },
+                        signal,
+                    )
+                ).filter(isUsableEvidence);
                 let scope = version === 'unknown' ? 'unfiltered' : 'requested_version';
                 if (!results.length && version !== 'unknown') {
                     // Index labels are not guaranteed to match API generations. Broaden explicitly,
                     // without treating a missing filter match as product absence or version proof.
-                    results = await this.pathfinder.searchEvidence(
-                        name,
-                        { query, limit: 4 },
-                        signal,
-                    );
+                    results = (
+                        await this.pathfinder.searchEvidence(name, { query, limit: 4 }, signal)
+                    ).filter(isUsableEvidence);
                     scope = 'unfiltered_fallback';
                 }
                 return {
                     scope,
                     requestedVersion: version,
-                    results: remember(
-                        results.filter(
-                            (result) =>
-                                version !== 'v2' ||
-                                !/v1-deprecated/.test(`${result.sourceUrl} ${result.title}`),
-                        ),
-                    ),
+                    results: remember(results),
                 };
             },
         });
