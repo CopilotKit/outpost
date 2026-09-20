@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type * as ConfigModule from './config.js';
 
+const mockConfigState = vi.hoisted(() => ({
+    draftLintMode: 'report' as 'report' | 'enforce',
+}));
+
 vi.mock('./config.js', async (importOriginal) => ({
     ...(await importOriginal<typeof ConfigModule>()),
     config: {
@@ -16,6 +20,9 @@ vi.mock('./config.js', async (importOriginal) => ({
         responseTemperature: 0.3,
         confidence: { highThreshold: 0.8, mediumThreshold: 0.5 },
         pathfinder: { defaultLimit: 8, defaultMinScore: 0.3 },
+        get draftLintMode() {
+            return mockConfigState.draftLintMode;
+        },
     },
     validateConfig: vi.fn(),
 }));
@@ -112,6 +119,7 @@ describe('AIPipeline', () => {
             text: 'Formatted response',
             truncated: false,
         });
+        mockConfigState.draftLintMode = 'report';
     });
 
     // Phase 2: retrieval reads the SOURCE as well as the docs. Until this, only
@@ -654,6 +662,63 @@ describe('AIPipeline', () => {
                 expect(result.suppressed).toBe(true);
                 expect(result.groundedness.suppress).toBe(true);
                 expect(result.confidenceScore).toBeLessThan(AI_CONFIDENCE.ESCALATE);
+            });
+
+            it('reports groundedness before generic legacy generator reasoning for a withheld draft', async () => {
+                const draft = 'Override `.copilotKitGhostA` and `.copilotKitGhostB` to fix it.';
+                const genericReason = 'Based on 2 sources with average relevance 0.88.';
+                mockGenerate.mockResolvedValue({
+                    ...sampleGeneratedResponse,
+                    text: draft,
+                    reasoning: genericReason,
+                });
+
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(true);
+                expect(result.handoffReason).toEqual(expect.any(String));
+                const handoffReason = result.handoffReason ?? '';
+                expect(handoffReason).toContain('copilotKitGhostA');
+                expect(handoffReason).toContain('copilotKitGhostB');
+                expect(handoffReason.indexOf('copilotKitGhostA')).toBeLessThan(
+                    handoffReason.indexOf(genericReason),
+                );
+                expect(mockFormat).toHaveBeenCalledWith(
+                    SUPPRESSED_RESPONSE_TEXT,
+                    'github',
+                    expect.any(Object),
+                );
+                expect(result.formatted.text).not.toContain(draft);
+            });
+
+            it('reports enforced lint before generic legacy generator reasoning for a withheld draft', async () => {
+                const draft =
+                    'Great question! I cannot inspect your runtime from here, but the documented answer is to use the CopilotChat component with the instructions prop. '.repeat(
+                        4,
+                    );
+                const genericReason = 'Based on 2 sources with average relevance 0.88.';
+                mockConfigState.draftLintMode = 'enforce';
+                mockGenerate.mockResolvedValue({
+                    ...sampleGeneratedResponse,
+                    text: draft,
+                    reasoning: genericReason,
+                });
+
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(true);
+                expect(result.handoffReason).toEqual(expect.any(String));
+                const handoffReason = result.handoffReason ?? '';
+                expect(handoffReason).toContain('no-banned-phrases');
+                expect(handoffReason.indexOf('no-banned-phrases')).toBeLessThan(
+                    handoffReason.indexOf(genericReason),
+                );
+                expect(mockFormat).toHaveBeenCalledWith(
+                    SUPPRESSED_RESPONSE_TEXT,
+                    'github',
+                    expect.any(Object),
+                );
+                expect(result.formatted.text).not.toContain(draft);
             });
 
             // Positive feedback tunes how we weigh well-formed answers. It must not

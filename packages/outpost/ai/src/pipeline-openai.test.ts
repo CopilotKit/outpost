@@ -239,6 +239,22 @@ describe('OpenAI publication boundary', () => {
         expect(result.formatted.text).not.toContain(reply.details);
         expect(result.formatted.details).toContain(reply.details);
     });
+    it('preserves explicit route diagnostics as the private handoff reason', async () => {
+        const diagnosis = 'The retrieved sources do not cover the requested release.';
+        const result = await setup({
+            ...reply,
+            decision: 'route',
+            summary: 'This needs maintainer review.',
+            details: '',
+            evidence: [],
+            handoffReason: diagnosis,
+        }).generateSupportResponse('Tools?', { source: 'github' });
+
+        expect(result.suppressed).toBe(true);
+        expect(result.handoffReason).toBe(diagnosis);
+        expect(result.formatted.text).toContain(SUPPRESSED_RESPONSE_TEXT);
+        expect(result.formatted.text).not.toContain(diagnosis);
+    });
     it('withholds invented source evidence and forces escalation despite positive feedback', async () => {
         const result = await setup({
             ...reply,

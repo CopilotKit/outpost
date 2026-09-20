@@ -390,6 +390,26 @@ export class AIPipeline {
                 `[Pipeline] Response withheld from public post — ${groundedness.reasons.join('; ')}`,
             );
         }
+        const deterministicSuppressionReason = [
+            ...(groundedness.suppress ? groundedness.reasons : []),
+            ...(!lint.publish ? lint.reasons : []),
+        ].join('; ');
+        const explicitHandoffReason = this.supportAgent ? generatedResponse.reasoning : undefined;
+        const legacySuppressionReason = [
+            deterministicSuppressionReason,
+            generatedResponse.reasoning,
+        ]
+            .filter(Boolean)
+            .join('; ');
+        const handoffReason = suppressed
+            ? (
+                  explicitHandoffReason ||
+                  legacySuppressionReason ||
+                  (confidenceAssessment.degraded
+                      ? 'Independent verification was unavailable or malformed'
+                      : 'Independent verification found insufficient support')
+              ).slice(0, 2000)
+            : undefined;
 
         return {
             // The ORIGINAL draft, even when suppressed — the human picking up the
@@ -403,17 +423,7 @@ export class AIPipeline {
             latencyMs,
             groundedness,
             suppressed,
-            handoffReason: suppressed
-                ? (
-                      generatedResponse.reasoning ||
-                      [...groundedness.reasons, ...(!lint.publish ? lint.reasons : [])].join(
-                          '; ',
-                      ) ||
-                      (confidenceAssessment.degraded
-                          ? 'Independent verification was unavailable or malformed'
-                          : 'Independent verification found insufficient support')
-                  ).slice(0, 2000)
-                : undefined,
+            handoffReason,
         };
     }
 
