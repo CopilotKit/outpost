@@ -161,15 +161,26 @@ describe('agent evidence retrieval', () => {
 
     it('stops connection setup when cancellation happens during initialize', async () => {
         const controller = new AbortController();
-        const fetchMock = vi
-            .fn<typeof fetch>()
-            .mockImplementationOnce(async () => {
-                controller.abort(new Error('Run cancelled during initialize'));
+        const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+            const method = JSON.parse(String(init?.body)).method;
+            if (method === 'initialize') {
+                if (fetchMock.mock.calls.length === 1) {
+                    controller.abort(new Error('Run cancelled during initialize'));
+                    return new Response(JSON.stringify({ result: {} }), {
+                        headers: { 'mcp-session-id': 'abandoned-session' },
+                    });
+                }
                 return new Response(JSON.stringify({ result: {} }), {
-                    headers: { 'mcp-session-id': 'session' },
+                    headers: { 'mcp-session-id': 'fresh-session' },
                 });
-            })
-            .mockResolvedValue(new Response(''));
+            }
+            if (method === 'notifications/initialized') {
+                return new Response('');
+            }
+            return new Response(
+                JSON.stringify({ result: { content: [{ type: 'text', text: '[]' }] } }),
+            );
+        });
         vi.stubGlobal('fetch', fetchMock);
         const client = new PathfinderClient('https://mcp.example.test');
         await expect(
@@ -177,6 +188,55 @@ describe('agent evidence retrieval', () => {
         ).rejects.toThrow('Run cancelled during initialize');
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+
+        await expect(client.searchEvidence('search-docs', { query: 'tools' })).resolves.toEqual([]);
+
+        const requests = fetchMock.mock.calls.map(([, init]) => ({
+            headers: init?.headers as Record<string, string>,
+            method: JSON.parse(String(init?.body)).method as string,
+        }));
+        expect(requests.map((request) => request.method)).toEqual([
+            'initialize',
+            'initialize',
+            'notifications/initialized',
+            'tools/call',
+        ]);
+        expect(requests[1].headers).not.toHaveProperty('Mcp-Session-Id');
+        expect(requests[3].headers).toHaveProperty('Mcp-Session-Id', 'fresh-session');
+    });
+
+    it('reuses a completed session for sequential strict evidence searches', async () => {
+        const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+            const method = JSON.parse(String(init?.body)).method;
+            if (method === 'initialize') {
+                return new Response(JSON.stringify({ result: {} }), {
+                    headers: { 'mcp-session-id': 'test-session' },
+                });
+            }
+            if (method === 'notifications/initialized') {
+                return new Response('');
+            }
+            return new Response(
+                JSON.stringify({ result: { content: [{ type: 'text', text: '[]' }] } }),
+            );
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        const client = new PathfinderClient('https://mcp.example.test');
+
+        await expect(client.searchEvidence('search-docs', { query: 'tools' })).resolves.toEqual([]);
+        await expect(client.searchEvidence('search-docs', { query: 'tools' })).resolves.toEqual([]);
+
+        const requests = fetchMock.mock.calls.map(([, init]) => ({
+            headers: init?.headers as Record<string, string>,
+            method: JSON.parse(String(init?.body)).method as string,
+        }));
+        expect(requests.map((request) => request.method)).toEqual([
+            'initialize',
+            'notifications/initialized',
+            'tools/call',
+            'tools/call',
+        ]);
+        expect(requests[3].headers).toHaveProperty('Mcp-Session-Id', 'test-session');
     });
 
     it('rejects a cancelled run before starting another network request', async () => {

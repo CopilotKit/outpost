@@ -163,6 +163,9 @@ export class PathfinderClient {
                 signal,
             );
         } catch {
+            if (signal?.aborted) {
+                this.reset();
+            }
             signal?.throwIfAborted();
             // Non-cancellation notification failures remain best-effort.
         }
