@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AIPipeline, SUPPRESSED_RESPONSE_TEXT } from './pipeline.js';
 import { SupportAgent } from './support-agent.js';
+import { ResponseFormatter } from './formatter.js';
+import { validateSupportReply } from './support-reply.js';
 import { useAimock } from './test-utils/aimock.js';
 import type { PathfinderClient } from './pathfinder.js';
 import type { SupportReply } from './support-reply.js';
@@ -35,6 +37,12 @@ const reply: SupportReply = {
     evidence: [{ sourceUrl: source.sourceUrl, quote: source.content }],
     handoffReason: '',
 };
+
+async function collectText(stream: AsyncIterable<string>): Promise<string> {
+    const chunks: string[] = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return chunks.join('');
+}
 
 describe('OpenAI publication boundary', () => {
     const mock = useAimock();
@@ -160,28 +168,61 @@ describe('OpenAI publication boundary', () => {
             expect(result.formatted.details).toBeUndefined();
         },
     );
-    it('preserves validated details and sources in the string-stream API', async () => {
-        const chunks: string[] = [];
-        for await (const chunk of setup().generateStreamingResponse('Tools?', { source: 'web' }))
-            chunks.push(chunk);
-        expect(chunks.join('')).toContain(reply.summary);
-        expect(chunks.join('')).toContain(reply.details);
-        expect(chunks.join('')).toContain(source.sourceUrl);
+    it.each(['discord', 'github', 'slack', 'teams', 'web'] as const)(
+        'preserves validated details and sources exactly once in the %s string stream',
+        async (platform) => {
+            const text = await collectText(
+                setup().generateStreamingResponse('Tools?', { source: platform }),
+            );
+            expect(text.split(reply.summary)).toHaveLength(2);
+            expect(text.split(reply.details)).toHaveLength(2);
+            expect(text.split(source.sourceUrl)).toHaveLength(2);
+            if (platform === 'github') expect(text.match(/<details>/g)).toHaveLength(1);
+        },
+    );
+    it('preserves every Discord continuation in the collected string stream', async () => {
+        const longReply = validateSupportReply(
+            {
+                ...reply,
+                details: Array.from(
+                    { length: 24 },
+                    (_, index) =>
+                        `Step ${index + 1}: Place the tool registration in your client component. ` +
+                        'Keep the registration near the interface that exposes the action so it is available when the user needs it.',
+                ).join('\n\n'),
+            },
+            [source],
+        );
+        const formatted = new ResponseFormatter().formatStructured(longReply, 'discord');
+        const parts = formatted.parts ?? [];
+        expect(parts.length).toBeGreaterThan(1);
+        expect(parts.every((part) => part.length <= 2000)).toBe(true);
+        expect(parts[0]).not.toContain('Step 24:');
+
+        const text = await collectText(
+            setup(longReply).generateStreamingResponse('Tools?', { source: 'discord' }),
+        );
+        expect(text).toBe(parts.join('\n\n'));
+        expect(text).toContain('Step 24:');
+        expect(text.split(reply.summary)).toHaveLength(2);
+        expect(text.split(source.sourceUrl)).toHaveLength(2);
+        expect(text.split('Powered by CopilotKit AI')).toHaveLength(2);
     });
-    it('does not leak routed drafts, handoff reasons, or details through streaming', async () => {
-        const pipeline = setup({
-            ...reply,
-            decision: 'route',
-            summary: 'Internal draft for review.',
-            handoffReason: 'Internal handoff reason',
-            details: 'Internal investigation',
-        });
-        const chunks: string[] = [];
-        for await (const chunk of pipeline.generateStreamingResponse('Tools?', {
-            source: 'github',
-        }))
-            chunks.push(chunk);
-        expect(chunks.join('')).toContain(SUPPRESSED_RESPONSE_TEXT);
-        expect(chunks.join('')).not.toContain('Internal');
-    });
+    it.each(['discord', 'github', 'web'] as const)(
+        'does not leak routed drafts, handoff reasons, or details through %s streaming',
+        async (platform) => {
+            const pipeline = setup({
+                ...reply,
+                decision: 'route',
+                summary: 'Internal draft for review.',
+                handoffReason: 'Internal handoff reason',
+                details: 'Internal investigation',
+            });
+            const text = await collectText(
+                pipeline.generateStreamingResponse('Tools?', { source: platform }),
+            );
+            expect(text).toContain(SUPPRESSED_RESPONSE_TEXT);
+            expect(text).not.toContain('Internal');
+        },
+    );
 });

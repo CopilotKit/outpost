@@ -441,9 +441,10 @@ export class AIPipeline {
      * NOT incremental. The groundedness gate is a property of the WHOLE response
      * — you cannot know a draft invents an identifier until you have read it to
      * the end — so this method drains the model stream into a buffer, assesses it,
-     * and only then yields. Consumers get the same chunk boundaries the model
-     * produced, but they get them after generation completes: time-to-first-token
-     * equals total latency.
+     * and only then yields. Legacy model streams preserve their chunk boundaries;
+     * structured support replies yield the complete formatted output, including
+     * platform continuations and separate web details. In both cases,
+     * time-to-first-token equals total latency.
      *
      * That is the deliberate tradeoff. The alternative — yielding chunks as they
      * arrive — cannot be gated at all: text already written to the wire cannot be
@@ -461,8 +462,12 @@ export class AIPipeline {
         options: PipelineOptions,
     ): AsyncIterable<string> {
         if (this.supportAgent) {
-            const result = await this.generateSupportResponse(question, options);
-            yield [result.formatted.text, result.formatted.details].filter(Boolean).join('\n\n');
+            const { formatted } = await this.generateSupportResponse(question, options);
+            // Split formats store the first part in text too; publish the parts once.
+            const text = formatted.parts?.length ? formatted.parts.join('\n\n') : formatted.text;
+            yield [text, options.source === 'web' ? formatted.details : undefined]
+                .filter(Boolean)
+                .join('\n\n');
             return;
         }
 
