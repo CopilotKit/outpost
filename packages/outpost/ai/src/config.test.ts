@@ -54,6 +54,50 @@ describe('validateConfig', () => {
             ).toThrow('does not match');
         },
     );
+    describe.each([
+        ['responseModel', 'AI_RESPONSE_MODEL'],
+        ['confidenceModel', 'AI_CONFIDENCE_MODEL'],
+        ['classifierModel', 'AI_CLASSIFIER_MODEL'],
+        ['sentimentModel', 'AI_SENTIMENT_MODEL'],
+    ] as const)('%s provider validation', (key, name) => {
+        it.each([
+            'gpt-5.6-luna',
+            'o1',
+            'o1-preview',
+            'o3',
+            'o3-pro',
+            'o3-2025-04-16',
+            'o4-mini',
+            'o4-mini-2025-04-16',
+        ])('rejects known OpenAI model %s under Anthropic', (model) => {
+            expect(() =>
+                validateConfig({
+                    ...defaults,
+                    responseProvider: 'anthropic',
+                    responseModel: 'claude-sonnet-4-6',
+                    [key]: model,
+                }),
+            ).toThrow(`[AI Config] ${name} does not match AI_RESPONSE_PROVIDER`);
+        });
+
+        it.each(['claude-sonnet-4-6', 'custom-anthropic-deployment', 'o3custom-deployment'])(
+            'accepts Anthropic or custom model %s',
+            (model) => {
+                expect(() =>
+                    validateConfig({
+                        ...defaults,
+                        responseProvider: 'anthropic',
+                        responseModel: 'claude-sonnet-4-6',
+                        [key]: model,
+                    }),
+                ).not.toThrow();
+            },
+        );
+
+        it.each(['o1', 'o3', 'o4-mini'])('accepts known OpenAI model %s under OpenAI', (model) => {
+            expect(() => validateConfig({ ...defaults, [key]: model })).not.toThrow();
+        });
+    });
     it('rejects provider typos', () =>
         expect(() => validateConfig({ ...defaults, responseProvider: 'opeani' })).toThrow(
             'AI_RESPONSE_PROVIDER',

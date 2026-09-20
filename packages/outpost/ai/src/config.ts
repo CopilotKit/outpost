@@ -158,7 +158,12 @@ export function validateModelProvider(provider: string, model: string, name: str
         throw new Error('[AI Config] AI_RESPONSE_PROVIDER must be openai or anthropic');
     if (
         (provider === 'openai' && model.startsWith('claude-')) ||
-        (provider === 'anthropic' && model.startsWith('gpt-'))
+        (provider === 'anthropic' && isKnownOpenAIModel(model))
     )
         throw new Error(`[AI Config] ${name} does not match AI_RESPONSE_PROVIDER`);
+}
+
+/** Recognize known families without rejecting custom provider deployment names. */
+function isKnownOpenAIModel(model: string): boolean {
+    return model.startsWith('gpt-') || /^o[134](?:-|$)/.test(model);
 }
