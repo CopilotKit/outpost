@@ -10,15 +10,20 @@ import type * as ConfigModule from './config.js';
 
 vi.mock('./config.js', async (importOriginal) => {
     const original = await importOriginal<typeof ConfigModule>();
+    const config: ConfigModule.AIConfig = {
+        ...original.config,
+        anthropicApiKey: '',
+        openaiApiKey: 'test-key',
+        responseProvider: 'openai',
+        responseModel: 'gpt-5.6-luna',
+        confidenceModel: 'gpt-5.6-luna',
+        classifierModel: 'gpt-5.6-luna',
+        sentimentModel: 'gpt-5.6-luna',
+    };
     return {
         ...original,
-        validateConfig: () =>
-            original.validateConfig({
-                ...original.config,
-                anthropicApiKey: '',
-                openaiApiKey: 'test-key',
-            }),
-        config: { ...original.config, anthropicApiKey: '', openaiApiKey: 'test-key' },
+        validateConfig: () => original.validateConfig(config),
+        config,
     };
 });
 

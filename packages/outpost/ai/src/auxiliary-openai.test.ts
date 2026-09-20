@@ -3,6 +3,7 @@ import { ConfidenceScorer } from './confidence.js';
 import { TicketClassifier } from './classifier.js';
 import { analyzeSentiment } from './sentiment.js';
 import { useAimock } from './test-utils/aimock.js';
+import type { AuxiliaryModelOptions } from './auxiliary-model.js';
 
 const assessment = { score: 0.9, level: 'HIGH', reasoning: 'Evidence supports the draft' };
 const classification = { priority: 'LOW', type: 'QUESTION', tags: ['hooks'], reasoning: 'How-to' };
@@ -22,7 +23,11 @@ describe('Luna auxiliary calls', () => {
         vi.unstubAllGlobals();
         vi.restoreAllMocks();
     });
-    const options = { apiKey: 'test-openai' };
+    const options = {
+        apiKey: 'test-openai',
+        provider: 'openai',
+        model: 'gpt-5.6-luna',
+    } satisfies AuxiliaryModelOptions;
 
     it('independently verifies the full conversation, draft and evidence using Luna', async () => {
         mock().llm.onMessage(/./, {
