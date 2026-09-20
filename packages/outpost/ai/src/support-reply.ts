@@ -57,6 +57,37 @@ function canonicalSourceUrl(value: string): string | undefined {
     return url.href;
 }
 
+function unescapeMarkdownDestination(value: string): string {
+    return value.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g, '$1');
+}
+
+function inlineDestinationEnd(destination: string): number {
+    if (destination.startsWith('<')) {
+        for (let index = 1; index < destination.length; index++) {
+            if (destination[index] === '\\') {
+                index++;
+                continue;
+            }
+            if (destination[index] === '>') return index + 1;
+            if (destination[index] === '\n') break;
+        }
+        return destination.length;
+    }
+
+    let depth = 0;
+    for (let index = 0; index < destination.length; index++) {
+        const character = destination[index];
+        if (character === '\\') {
+            index++;
+            continue;
+        }
+        if (/\s/.test(character) || (character === ')' && depth === 0)) return index;
+        if (character === '(') depth++;
+        if (character === ')') depth--;
+    }
+    return destination.length;
+}
+
 /** Preserve code verbatim for rendering, but do not interpret example URLs as citations. */
 function proseOutsideFences(text: string): string {
     let fence: string | undefined;
@@ -109,13 +140,10 @@ function proseOutsideInlineCode(line: string): string {
             continue;
         }
         if (line.startsWith('](', cursor)) {
-            let depth = 1;
             cursor += 2;
-            while (cursor < line.length && depth) {
-                if (line[cursor] === '(') depth++;
-                if (line[cursor] === ')') depth--;
-                cursor++;
-            }
+            const destination = line.slice(cursor);
+            const end = inlineDestinationEnd(destination);
+            cursor += end + (destination[end] === ')' ? 1 : 0);
             continue;
         }
         if (line[cursor] !== '`') {
@@ -149,8 +177,16 @@ function proseOutsideInlineCode(line: string): string {
 
 function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     const prose = proseOutsideFences(text).split('\n').map(proseOutsideInlineCode).join('\n');
-    const checkUrl = (raw: string, allowProsePunctuation = false): void => {
-        let candidate = raw;
+    const proseWithoutMarkdownDestinations = prose.split('');
+    const maskMarkdownDestination = (start: number, end: number): void => {
+        for (let index = start; index < end; index++) proseWithoutMarkdownDestinations[index] = ' ';
+    };
+    const checkUrl = (
+        raw: string,
+        allowProsePunctuation = false,
+        markdownDestination = false,
+    ): void => {
+        let candidate = markdownDestination ? unescapeMarkdownDestination(raw) : raw;
         // Prose punctuation and Markdown closing delimiters are not URL content.
         // Try the full URL first, so a retrieved URL ending in ')' still works.
         while (candidate) {
@@ -167,28 +203,27 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     // Validate destinations separately so relative, protocol-relative, and
     // non-HTTP links cannot bypass the checks for raw URLs below.
     for (const match of prose.matchAll(/\]\(\s*/g)) {
-        const destination = prose.slice(match.index + match[0].length);
+        const destinationStart = match.index + match[0].length;
+        const destination = prose.slice(destinationStart);
         if (destination.startsWith('<')) {
-            checkUrl(destination.slice(1, destination.indexOf('>')));
+            const end = inlineDestinationEnd(destination);
+            checkUrl(destination.slice(1, end > 0 ? end - 1 : end), false, true);
+            maskMarkdownDestination(destinationStart, destinationStart + end);
             continue;
         }
-        let depth = 0;
-        let end = 0;
-        for (; end < destination.length; end++) {
-            const character = destination[end];
-            if (/\s/.test(character) || (character === ')' && depth === 0)) break;
-            if (character === '(') depth++;
-            if (character === ')') depth--;
-        }
-        checkUrl(destination.slice(0, end));
+        const end = inlineDestinationEnd(destination);
+        checkUrl(destination.slice(0, end), false, true);
+        maskMarkdownDestination(destinationStart, destinationStart + end);
     }
     for (const match of prose.matchAll(/^ {0,3}\[[^\]\n]+\]:\s*(?:<([^>\n]*)>|(\S+))/gm)) {
-        checkUrl(match[1] ?? match[2]);
+        checkUrl(match[1] ?? match[2], false, true);
+        maskMarkdownDestination(match.index, match.index + match[0].length);
     }
-    for (const match of prose.matchAll(/<(https?:\/\/[^\s<>]+)>/gi)) {
+    const proseRawUrlView = proseWithoutMarkdownDestinations.join('');
+    for (const match of proseRawUrlView.matchAll(/<(https?:\/\/[^\s<>]+)>/gi)) {
         checkUrl(match[1]);
     }
-    for (const match of prose.matchAll(/\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi)) {
+    for (const match of proseRawUrlView.matchAll(/\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi)) {
         checkUrl(match[0], true);
     }
 

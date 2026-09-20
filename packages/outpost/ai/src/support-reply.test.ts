@@ -281,6 +281,68 @@ describe('support reply contract', () => {
         expect(validateSupportReply(value, parenthesizedSources)).toEqual(value);
     });
 
+    it('accepts CommonMark-equivalent destinations for retrieved URLs ending in a parenthesis', () => {
+        const parenthesizedUrl = 'https://docs.copilotkit.ai/reference/setup)';
+        const parenthesizedSources = sources.map((source) => ({
+            ...source,
+            sourceUrl: parenthesizedUrl,
+        }));
+        const base = reply({
+            evidence: [{ sourceUrl: parenthesizedUrl, quote }],
+        });
+
+        for (const details of [
+            'Read [Doc](https://docs.copilotkit.ai/reference/setup\\)).',
+            'Read [Doc](<https://docs.copilotkit.ai/reference/setup)>).',
+            'Read [Doc](<https://docs.copilotkit.ai/reference/setup\\)>).',
+            'Read [Doc][setup].\n\n[setup]: https://docs.copilotkit.ai/reference/setup\\)',
+            'Read <https://docs.copilotkit.ai/reference/setup)>.',
+            'Read https://docs.copilotkit.ai/reference/setup).',
+        ]) {
+            expect(validateSupportReply({ ...base, details }, parenthesizedSources).details).toBe(
+                details,
+            );
+        }
+
+        for (const details of [
+            'Read [Doc](https://docs.copilotkit.ai/reference/invented\\)).',
+            'Read [Doc](javascript:alert\\(1\\)).',
+            'Read [Doc](https://user:pass@docs.copilotkit.ai/reference/setup\\)).',
+            'Read [Doc](https://docs.copilotkit.ai/reference/bad path\\)).',
+            'Read <details>hidden</details>.',
+        ]) {
+            expect(() => validateSupportReply({ ...base, details }, parenthesizedSources)).toThrow(
+                /html|link|url/i,
+            );
+        }
+    });
+
+    it('keeps raw URL validation aligned after non-BMP characters before Markdown links', () => {
+        const parenthesizedUrl = 'https://docs.copilotkit.ai/reference/setup)';
+        const parenthesizedSources = sources.map((source) => ({
+            ...source,
+            sourceUrl: parenthesizedUrl,
+        }));
+        const base = reply({
+            evidence: [{ sourceUrl: parenthesizedUrl, quote }],
+        });
+
+        const details = '🔎🔎🔎🔎🔎🔎🔎🔎 [Doc](https://docs.copilotkit.ai/reference/setup\\)).';
+        expect(validateSupportReply({ ...base, details }, parenthesizedSources).details).toBe(
+            details,
+        );
+
+        expect(() =>
+            validateSupportReply(
+                {
+                    ...base,
+                    details: `${details} https://docs.copilotkit.ai/reference/invented.`,
+                },
+                parenthesizedSources,
+            ),
+        ).toThrow(/link|url/i);
+    });
+
     it('accepts segment-encoded GitHub blob source paths without allowing raw whitespace URLs', () => {
         const encodedBlobUrl =
             'https://github.com/CopilotKit/CopilotKit/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/docs/My%20Guide.md';
