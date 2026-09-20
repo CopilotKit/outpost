@@ -117,6 +117,20 @@ describe('Luna auxiliary calls', () => {
         expect(mock().llm.getLastRequest()?.body?.model).toBe('gpt-5.6-luna');
     });
 
+    it('derives the sentiment label from the rounded Luna score', async () => {
+        mock().llm.onMessage(/./, {
+            content: JSON.stringify({ score: 45.6, label: 'NEUTRAL' }),
+            usage: { input_tokens: 80, output_tokens: 18 },
+        });
+
+        expect(await analyzeSentiment(['Customer feedback'], options)).toEqual({
+            score: 46,
+            label: 'NEGATIVE',
+            degraded: false,
+            tokenUsage: { inputTokens: 80, outputTokens: 18 },
+        });
+    });
+
     it.each([
         'not json',
         '{}',
@@ -126,6 +140,8 @@ describe('Luna auxiliary calls', () => {
     ])('marks unusable sentiment degraded and retains billed usage: %s', async (content) => {
         mock().llm.onMessage(/./, { content, usage: { input_tokens: 70, output_tokens: 15 } });
         expect(await analyzeSentiment(['test'], options)).toMatchObject({
+            score: 25,
+            label: 'NEUTRAL',
             degraded: true,
             tokenUsage: { inputTokens: 70, outputTokens: 15 },
         });

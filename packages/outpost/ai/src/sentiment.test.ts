@@ -34,10 +34,45 @@ describe('analyzeSentiment', () => {
     it('should return NEUTRAL for empty message list', async () => {
         const result = await analyzeSentiment([]);
 
-        expect(result.score).toBe(25);
-        expect(result.label).toBe(SentimentLabel.NEUTRAL);
-        expect(result.tokenUsage.inputTokens).toBe(0);
+        expect(result).toEqual({
+            score: 25,
+            label: SentimentLabel.NEUTRAL,
+            tokenUsage: { inputTokens: 0, outputTokens: 0 },
+            degraded: false,
+        });
+        expect(mock.getRequests()).toHaveLength(0);
     });
+
+    it.each([
+        [0, 'NEGATIVE', 0, SentimentLabel.POSITIVE],
+        [20.4, 'NEUTRAL', 20, SentimentLabel.POSITIVE],
+        [20.5, 'POSITIVE', 21, SentimentLabel.NEUTRAL],
+        [45.4, 'NEGATIVE', 45, SentimentLabel.NEUTRAL],
+        [45.6, 'NEUTRAL', 46, SentimentLabel.NEGATIVE],
+        [70.4, 'CRITICAL', 70, SentimentLabel.NEGATIVE],
+        [70.5, 'NEGATIVE', 71, SentimentLabel.CRITICAL],
+        [100, 'POSITIVE', 100, SentimentLabel.CRITICAL],
+    ] as const)(
+        'normalizes model score %s/%s to %s/%s using the rounded score thresholds',
+        async (score, label, expectedScore, expectedLabel) => {
+            mock.onMessage(/./, {
+                content: JSON.stringify({ score, label }),
+                usage: { input_tokens: 80, output_tokens: 18 },
+            });
+
+            expect(
+                await analyzeSentiment(['Customer feedback'], {
+                    provider: 'anthropic',
+                    apiKey: 'test-key',
+                }),
+            ).toEqual({
+                score: expectedScore,
+                label: expectedLabel,
+                tokenUsage: { inputTokens: 80, outputTokens: 18 },
+                degraded: false,
+            });
+        },
+    );
 
     it('should classify positive messages correctly', async () => {
         mock.onMessage(/./, {
@@ -152,9 +187,10 @@ describe('analyzeSentiment', () => {
             apiKey: 'test-key',
         });
 
-        expect(result.score).toBe(50);
+        expect(result.score).toBe(25);
         expect(result.label).toBe(SentimentLabel.NEUTRAL);
         expect(result.tokenUsage.inputTokens).toBe(0);
+        expect(result.degraded).toBe(true);
     });
 
     it('rejects out-of-range scores as degraded', async () => {
@@ -168,7 +204,8 @@ describe('analyzeSentiment', () => {
             apiKey: 'test-key',
         });
 
-        expect(result.score).toBe(50);
+        expect(result.score).toBe(25);
+        expect(result.label).toBe(SentimentLabel.NEUTRAL);
         expect(result.degraded).toBe(true);
     });
 
@@ -183,7 +220,7 @@ describe('analyzeSentiment', () => {
             apiKey: 'test-key',
         });
 
-        expect(result.score).toBe(50);
+        expect(result.score).toBe(25);
         expect(result.label).toBe(SentimentLabel.NEUTRAL);
         expect(result.degraded).toBe(true);
     });
@@ -199,7 +236,7 @@ describe('analyzeSentiment', () => {
             apiKey: 'test-key',
         });
 
-        expect(result.score).toBe(50);
+        expect(result.score).toBe(25);
         expect(result.label).toBe(SentimentLabel.NEUTRAL);
         expect(result.degraded).toBe(true);
         // Token usage still tracked even with parse failure

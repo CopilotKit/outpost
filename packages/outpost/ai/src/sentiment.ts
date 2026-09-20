@@ -32,6 +32,14 @@ Label thresholds:
 - NEGATIVE: score 46-70 (frustrated, unhappy, complaining)
 - CRITICAL: score 71-100 (angry, threatening to churn, hostile, escalation-worthy)`;
 
+/** Apply the documented thresholds to the final rounded score. */
+function sentimentLabelForScore(score: number): SentimentLabel {
+    if (score <= 20) return SentimentLabel.POSITIVE;
+    if (score <= 45) return SentimentLabel.NEUTRAL;
+    if (score <= 70) return SentimentLabel.NEGATIVE;
+    return SentimentLabel.CRITICAL;
+}
+
 /**
  * Analyze sentiment across a batch of messages.
  *
@@ -68,9 +76,10 @@ export async function analyzeSentiment(
             temperature: config.sentimentTemperature,
         });
 
+        const score = Math.round(parsed.score);
         return {
-            ...parsed,
-            score: Math.round(parsed.score),
+            score,
+            label: sentimentLabelForScore(score),
             tokenUsage,
             degraded: false,
         };
@@ -81,7 +90,7 @@ export async function analyzeSentiment(
         );
         // Fallback: return neutral on failure
         return {
-            score: 50,
+            score: 25,
             label: SentimentLabel.NEUTRAL,
             tokenUsage: auxiliaryErrorUsage(error),
             degraded: true,
