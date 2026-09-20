@@ -129,14 +129,19 @@ export class TicketClassifier {
             /^\s+(?:prevention|(?:did(?:\s+not|n't)|never)\s+(?:occur|happen)|(?:was|were)\s+not\s+(?:found|reported))\b/i;
         const hasCriticalIncident = content.split(/[.!?\n]+/).some((sentence) =>
             criticalPriorityPatterns.some((pattern) => {
-                const match = pattern.exec(sentence);
-                if (!match) return false;
-                const prefix = sentence.slice(0, match.index);
-                const suffix = sentence.slice(match.index + match[0].length);
-                return (
-                    !nonIncidentPrefixes.some((guard) => guard.test(prefix)) &&
-                    !nonIncidentSuffix.test(suffix)
-                );
+                const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+                const globalPattern = new RegExp(pattern.source, flags);
+                for (const match of sentence.matchAll(globalPattern)) {
+                    const prefix = sentence.slice(0, match.index);
+                    const suffix = sentence.slice(match.index + match[0].length);
+                    if (
+                        !nonIncidentPrefixes.some((guard) => guard.test(prefix)) &&
+                        !nonIncidentSuffix.test(suffix)
+                    ) {
+                        return true;
+                    }
+                }
+                return false;
             }),
         );
 

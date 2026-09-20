@@ -349,6 +349,13 @@ describe('TicketClassifier', () => {
         });
 
         it.each([
+            'Security vulnerabilities were not found in staging, but security vulnerabilities were found in production.',
+            'Data loss was not found in staging, but data loss was found in production.',
+        ])('retains a later affirmative critical incident in the same sentence: %s', (content) => {
+            expect(classifier.heuristicClassify(content).priority).toBe(TicketPriority.CRITICAL);
+        });
+
+        it.each([
             'Error: CopilotChat crashes when opening a conversation.',
             'Production requests are slow but still succeeding.',
             'Security concern: review the authentication configuration.',
