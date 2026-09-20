@@ -29,6 +29,8 @@ vi.mock('./config.js', async (importOriginal) => ({
 
 import { AI_CONFIDENCE } from '@copilotkit/outpost/shared';
 import { AIPipeline, SUPPRESSED_RESPONSE_TEXT } from './pipeline.js';
+import { assessGroundedness } from './groundedness.js';
+import { describeVerdict, lintDraft } from './eval/linter.js';
 import { AI_DISCLAIMER, AI_DISCLAIMER_ESCALATED, AI_DISCLAIMER_REVIEWED } from './formatter.js';
 import { ConfidenceLevel, TicketPriority, TicketType } from './types.js';
 import type { SearchResult, GeneratedResponse } from './types.js';
@@ -102,6 +104,11 @@ const sampleConfidence: ConfidenceAssessment = {
     tokenUsage: { inputTokens: 200, outputTokens: 30 },
     degraded: false,
 };
+
+const lintBlockedDraft =
+    'Great question! I cannot inspect your runtime from here, but the documented answer is to use the CopilotChat component with the instructions prop. '.repeat(
+        4,
+    );
 
 describe('AIPipeline', () => {
     let pipeline: AIPipeline;
@@ -692,10 +699,7 @@ describe('AIPipeline', () => {
             });
 
             it('reports enforced lint before generic legacy generator reasoning for a withheld draft', async () => {
-                const draft =
-                    'Great question! I cannot inspect your runtime from here, but the documented answer is to use the CopilotChat component with the instructions prop. '.repeat(
-                        4,
-                    );
+                const draft = lintBlockedDraft;
                 const genericReason = 'Based on 2 sources with average relevance 0.88.';
                 mockConfigState.draftLintMode = 'enforce';
                 mockGenerate.mockResolvedValue({
@@ -948,6 +952,89 @@ describe('AIPipeline', () => {
             for await (const chunk of stream) out.push(chunk);
             return out;
         }
+
+        describe.each(['buffered', 'streaming'] as const)('%s draft lint delivery', (delivery) => {
+            const citedDraft =
+                'Use the CopilotChat component with the instructions prop to tell the assistant how to help with your application. ' +
+                'This prop supplies additional context for the assistant while the chat component displays its response. ' +
+                'Keep the instructions specific to the task and provide the application context the assistant needs to answer. ' +
+                'See the retrieved documentation for the component setup and the complete list of supported properties: https://docs.copilotkit.ai/actions.';
+
+            it.each([
+                { name: 'enforce blocks', mode: 'enforce', draft: lintBlockedDraft, blocked: true },
+                { name: 'enforce passes', mode: 'enforce', draft: citedDraft, blocked: false },
+                {
+                    name: 'report records failures',
+                    mode: 'report',
+                    draft: lintBlockedDraft,
+                    blocked: false,
+                },
+            ] as const)(
+                '$name with nonsuppressing groundedness',
+                async ({ mode, draft, blocked }) => {
+                    mockConfigState.draftLintMode = mode;
+                    const groundedness = assessGroundedness(draft, sampleSearchResults);
+                    expect(groundedness.suppress).toBe(false);
+                    expect(groundedness.forcesEscalation).toBe(false);
+                    const verdict = lintDraft(draft, sampleSearchResults, mode);
+                    expect(verdict.publish).toBe(!blocked);
+                    expect(verdict.wouldCollapse).toBe(draft === lintBlockedDraft);
+                    if (draft === citedDraft) {
+                        // This answer needs the actual retrieved citation to pass enforcement.
+                        expect(lintDraft(draft, [], 'enforce').publish).toBe(false);
+                    } else {
+                        expect(lintDraft(draft, sampleSearchResults, 'enforce').publish).toBe(
+                            false,
+                        );
+                        expect(verdict.failed).toContain('no-banned-phrases');
+                    }
+
+                    const originalChunks = [draft.slice(0, 3), draft.slice(3, 22), draft.slice(22)];
+                    mockGenerate.mockResolvedValue({ ...sampleGeneratedResponse, text: draft });
+                    mockGenerateStream.mockReturnValue(streamOf(...originalChunks));
+                    mockFormat.mockImplementation((text: string) => ({ text, truncated: false }));
+                    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+                    try {
+                        let emitted: string[];
+                        if (delivery === 'buffered') {
+                            const result = await pipeline.generateSupportResponse('q', {
+                                source: 'web',
+                            });
+                            expect(result.suppressed).toBe(blocked);
+                            expect(result.response).toBe(draft);
+                            emitted = [result.formatted.text];
+                        } else {
+                            emitted = await collect(
+                                pipeline.generateStreamingResponse('q', { source: 'web' }),
+                            );
+                        }
+
+                        expect(emitted).toEqual(
+                            blocked
+                                ? [SUPPRESSED_RESPONSE_TEXT]
+                                : delivery === 'buffered'
+                                  ? [draft]
+                                  : originalChunks,
+                        );
+                        if (blocked) {
+                            for (const chunk of emitted) {
+                                expect(chunk).not.toContain('CopilotChat');
+                                expect(chunk).not.toContain('Great question');
+                            }
+                        }
+                        if (verdict.wouldCollapse) {
+                            expect(warn).toHaveBeenCalledExactlyOnceWith(
+                                describeVerdict(verdict, 'web'),
+                            );
+                        } else {
+                            expect(warn).not.toHaveBeenCalled();
+                        }
+                    } finally {
+                        warn.mockRestore();
+                    }
+                },
+            );
+        });
 
         it('yields the model chunks unchanged when the draft is grounded', async () => {
             mockGenerateStream.mockReturnValue(

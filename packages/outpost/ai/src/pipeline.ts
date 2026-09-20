@@ -74,7 +74,7 @@ function interleaveByRank(first: SearchResult[], second: SearchResult[]): Search
  * Invalid drafts become handoffs; provider/transport failures propagate so workers retry.
  * An explicit Anthropic provider retains the legacy retrieval/generation path.
  *
- * The groundedness gate is enforced HERE, not by consumers. Both entry points
+ * Groundedness and configured draft lint are enforced HERE, not by consumers. Both entry points
  * withhold an ungrounded draft themselves: `generateSupportResponse` swaps
  * SUPPRESSED_RESPONSE_TEXT into `formatted`, and `generateStreamingResponse`
  * buffers before yielding so it can do the same. Publishing what the pipeline
@@ -113,6 +113,20 @@ export class AIPipeline {
 
     private legacyGenerator(): ResponseGenerator {
         return (this.generator ??= new ResponseGenerator());
+    }
+
+    private checkDraftLint(
+        text: string,
+        sources: SearchResult[],
+        source: PipelineOptions['source'],
+    ) {
+        const lint = lintDraft(
+            text,
+            sources,
+            config.draftLintMode === 'enforce' ? 'enforce' : 'report',
+        );
+        if (lint.wouldCollapse) console.warn(describeVerdict(lint, source));
+        return lint;
     }
 
     /**
@@ -220,12 +234,7 @@ export class AIPipeline {
                 options.conversationHistory,
             );
         }
-        const lint = lintDraft(
-            generatedResponse.text,
-            searchResults,
-            config.draftLintMode === 'enforce' ? 'enforce' : 'report',
-        );
-        if (lint.wouldCollapse) console.warn(describeVerdict(lint, options.source));
+        const lint = this.checkDraftLint(generatedResponse.text, searchResults, options.source);
         mustRoute ||= !lint.publish;
 
         // Step 3: Score confidence against the ACTUAL generated response
@@ -447,7 +456,7 @@ export class AIPipeline {
     }
 
     /**
-     * Generate a response as a chunk stream, gated on groundedness.
+     * Generate a response as a chunk stream, gated on groundedness and configured draft lint.
      *
      * NOT incremental. The groundedness gate is a property of the WHOLE response
      * — you cannot know a draft invents an identifier until you have read it to
@@ -511,11 +520,15 @@ export class AIPipeline {
             chunks.push(chunk);
         }
 
-        const groundedness = assessGroundedness(chunks.join(''), searchResults);
+        const text = chunks.join('');
+        const lint = this.checkDraftLint(text, searchResults, options.source);
+        const groundedness = assessGroundedness(text, searchResults);
         if (groundedness.suppress) {
             console.warn(
                 `[Pipeline] Streamed response withheld from public post — ${groundedness.reasons.join('; ')}`,
             );
+        }
+        if (!lint.publish || groundedness.suppress) {
             yield SUPPRESSED_RESPONSE_TEXT;
             return;
         }
