@@ -130,7 +130,7 @@ export class TicketClassifier {
         const coordination = '(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+)';
         const remainingIncidentList = `(?:${coordination}(?:(?:a|an)\\s+)?${incidentMention})*`;
         const nonIncidentSuffix = new RegExp(
-            `^${remainingIncidentList}\\s+(?:prevention\\b|(?:${auxiliaries}\\s+)*(?:not|never|\\w+n['’]t)\\b)`,
+            `^${remainingIncidentList}\\s+(?:prevention\\b|(?:(?:(?:is|are|was|were)|(?:has|have|had)\\s+been)\\s+)?(?:avoided|prevented)\\b|(?:${auxiliaries}\\s+)*(?:not|never|\\w+n['’]t)\\b)`,
             'i',
         );
         // Retain punctuation, and separate independent clauses rather than

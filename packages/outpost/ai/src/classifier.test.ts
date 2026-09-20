@@ -470,6 +470,50 @@ describe('critical incident context boundaries', () => {
             'We avoided production outages during the rollout.',
             'We experienced production outages during the rollout.',
         ],
+        ['Data loss was avoided during the rollout.', 'Data loss occurred in production.'],
+        ['Data loss is prevented by backups.', 'Data loss occurred in production.'],
+        ['Data loss was prevented by backups.', 'Data loss occurred in production.'],
+        ['Data loss avoided during the rollout.', 'Data loss occurred in production.'],
+        ['Data loss has been avoided during the rollout.', 'Data loss occurred in production.'],
+        ['Data loss has been prevented by backups.', 'Data loss occurred in production.'],
+        ['Production outages were prevented.', 'Production outages occurred in production.'],
+        ['Production outages were avoided.', 'Production outages occurred in production.'],
+        [
+            'Production outages prevented by safeguards.',
+            'Production outages occurred in production.',
+        ],
+        [
+            'Production outages are avoided by safeguards.',
+            'Production outages occurred in production.',
+        ],
+        [
+            'Production outages have been avoided during the rollout.',
+            'Production outages occurred in production.',
+        ],
+        [
+            'Production outages have been prevented by safeguards.',
+            'Production outages occurred in production.',
+        ],
+        [
+            'A security vulnerability was avoided.',
+            'A security vulnerability was found in production.',
+        ],
+        [
+            'A security vulnerability was prevented.',
+            'A security vulnerability was found in production.',
+        ],
+        [
+            'Security vulnerabilities are prevented by review.',
+            'Security vulnerabilities were found in production.',
+        ],
+        [
+            'A security vulnerability had been avoided before release.',
+            'A security vulnerability was found in production.',
+        ],
+        [
+            'A security vulnerability had been prevented before release.',
+            'A security vulnerability was found in production.',
+        ],
         [
             'Without any reported evidence of security vulnerabilities.',
             'There is evidence of security vulnerabilities.',
