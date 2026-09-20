@@ -7,6 +7,12 @@
 
 import { AI_CONFIDENCE } from '@copilotkit/outpost/shared';
 
+// Validate during config loading so direct Pathfinder clients are protected too.
+const maxQueryChars = Number(process.env.PATHFINDER_MAX_QUERY_CHARS ?? '1000');
+if (!Number.isSafeInteger(maxQueryChars) || maxQueryChars <= 0) {
+    throw new Error('[AI Config] PATHFINDER_MAX_QUERY_CHARS must be a positive safe integer');
+}
+
 const auxiliaryDefaultModel =
     process.env.AI_RESPONSE_PROVIDER === 'anthropic' ? 'claude-haiku-4-5-20251001' : 'gpt-5.6-luna';
 
@@ -85,6 +91,7 @@ export const config = {
         refreshBeforeExpiryMs: 5 * 60 * 1000,
         /**
          * Hard cap on the characters sent as an MCP search `query`.
+         * Overrides must be positive safe integers; malformed values fail startup.
          *
          * A retrieval query is an embedding input, not a transcript: the issue
          * body still reaches the generator in full, only the SEARCH string is
@@ -94,7 +101,7 @@ export const config = {
          * scored a feeble 0.33-0.43 cosine for it, so the long tail was buying
          * nothing. 1000 leaves ~5x headroom over every observed human query.
          */
-        maxQueryChars: parseInt(process.env.PATHFINDER_MAX_QUERY_CHARS ?? '1000', 10),
+        maxQueryChars,
         /**
          * Value sent as `X-Pathfinder-Source` on the MCP `initialize` request.
          *

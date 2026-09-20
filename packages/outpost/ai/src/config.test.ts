@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { validateConfig } from './config.js';
+
+const { loadConfig } = vi.hoisted(() => ({ loadConfig: () => import('./config.js') }));
 
 describe('validateConfig', () => {
     const defaults = {
@@ -89,4 +91,41 @@ describe('provider model defaults', () => {
             expect(values.sentimentModel).toBe(expected);
         },
     );
+});
+
+describe('Pathfinder query cap configuration', () => {
+    beforeEach(() => vi.resetModules());
+    afterEach(() => {
+        vi.unstubAllEnvs();
+        vi.resetModules();
+    });
+
+    it('defaults to 1000 characters when unset', async () => {
+        vi.stubEnv('PATHFINDER_MAX_QUERY_CHARS', undefined);
+        expect((await loadConfig()).config.pathfinder.maxQueryChars).toBe(1000);
+    });
+
+    it.each(['1', '250', String(Number.MAX_SAFE_INTEGER)])(
+        'accepts a positive safe integer cap of %s',
+        async (value) => {
+            vi.stubEnv('PATHFINDER_MAX_QUERY_CHARS', value);
+            expect((await loadConfig()).config.pathfinder.maxQueryChars).toBe(Number(value));
+        },
+    );
+
+    it.each([
+        'invalid',
+        '',
+        ' ',
+        'NaN',
+        'Infinity',
+        '0',
+        '-1',
+        '1.5',
+        '1000chars',
+        String(Number.MAX_SAFE_INTEGER + 1),
+    ])('rejects invalid cap %j before Pathfinder can load', async (value) => {
+        vi.stubEnv('PATHFINDER_MAX_QUERY_CHARS', value);
+        await expect(loadConfig()).rejects.toThrow('PATHFINDER_MAX_QUERY_CHARS');
+    });
 });
