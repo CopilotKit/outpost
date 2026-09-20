@@ -354,6 +354,13 @@ function holdPlatformPost() {
     return { started, rejectPost };
 }
 
+function findShadowMessageCreateCall() {
+    return mockPrismaMessage.create.mock.calls.find(
+        (call: Array<Record<string, Record<string, unknown>>>) =>
+            call[0].data.author === 'outpost-shadow',
+    );
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 describe('handleAiResponse', () => {
@@ -911,11 +918,84 @@ describe('handleAiResponse', () => {
             expect(result.success).toBe(true);
             expect(mockPostResponse).not.toHaveBeenCalled();
             // Shadow response should be logged as a SYSTEM message
-            const shadowMessageCall = mockPrismaMessage.create.mock.calls.find(
-                (call: Array<Record<string, Record<string, unknown>>>) =>
-                    call[0].data.author === 'outpost-shadow',
-            );
+            const shadowMessageCall = findShadowMessageCreateCall();
             expect(shadowMessageCall).toBeDefined();
+        } finally {
+            restoreShadowMode(originalShadow);
+        }
+    });
+
+    it('preserves web details and source links in the shadow SYSTEM message', async () => {
+        const originalShadow = process.env.SHADOW_MODE;
+        try {
+            process.env.SHADOW_MODE = 'true';
+            mockPrismaTicket.findUnique.mockResolvedValue({ ...sampleTicket, source: 'WEB' });
+            mockGenerateSupportResponse.mockResolvedValue({
+                ...highConfidenceResult,
+                response: 'Private investigation draft',
+                handoffReason: 'Private handoff metadata',
+                formatted: {
+                    text: 'Summary',
+                    details: 'Details\n\nSources:\n- [Doc](https://example.test/doc)',
+                    truncated: false,
+                },
+            });
+
+            const result = await handleAiResponse(
+                { ticketId: 'tkt-1', source: 'web' },
+                makeContext(),
+            );
+
+            expect(result.success).toBe(true);
+            expect(mockPostResponse).not.toHaveBeenCalled();
+            const shadowMessageCall = findShadowMessageCreateCall();
+            expect(shadowMessageCall).toBeDefined();
+            expect(shadowMessageCall![0].data.content).toBe(
+                'Summary\n\nDetails\n\nSources:\n- [Doc](https://example.test/doc)',
+            );
+            expect(shadowMessageCall![0].data.content).not.toContain('Private investigation draft');
+            expect(shadowMessageCall![0].data.content).not.toContain('Private handoff metadata');
+        } finally {
+            restoreShadowMode(originalShadow);
+        }
+    });
+
+    it('preserves multipart Discord output once in the shadow SYSTEM message', async () => {
+        const originalShadow = process.env.SHADOW_MODE;
+        try {
+            process.env.SHADOW_MODE = 'true';
+            mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
+            mockGenerateSupportResponse.mockResolvedValue({
+                ...highConfidenceResult,
+                response: 'Private investigation draft',
+                handoffReason: 'Private handoff metadata',
+                formatted: {
+                    text: 'Summary',
+                    parts: [
+                        'Summary',
+                        'Details\n\nSources:\n- [Doc](https://example.test/doc)\n\n---\n*Powered by CopilotKit AI*',
+                    ],
+                    truncated: true,
+                },
+            });
+
+            const result = await handleAiResponse(
+                { ticketId: 'tkt-1', source: 'discord' },
+                makeContext(),
+            );
+
+            expect(result.success).toBe(true);
+            expect(mockPostResponse).not.toHaveBeenCalled();
+            const shadowMessageCall = findShadowMessageCreateCall();
+            expect(shadowMessageCall).toBeDefined();
+            expect(shadowMessageCall![0].data.content).toBe(
+                'Summary\n\nDetails\n\nSources:\n- [Doc](https://example.test/doc)\n\n---\n*Powered by CopilotKit AI*',
+            );
+            expect(shadowMessageCall![0].data.content).not.toBe(
+                'Summary\n\nSummary\n\nDetails\n\nSources:\n- [Doc](https://example.test/doc)\n\n---\n*Powered by CopilotKit AI*',
+            );
+            expect(shadowMessageCall![0].data.content).not.toContain('Private investigation draft');
+            expect(shadowMessageCall![0].data.content).not.toContain('Private handoff metadata');
         } finally {
             restoreShadowMode(originalShadow);
         }

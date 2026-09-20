@@ -477,6 +477,19 @@ function toPlatformTarget(source: string): PlatformTarget {
     return mapping[source] ?? 'web';
 }
 
+function completePublishableResponse(formatted: {
+    text: string;
+    parts?: string[];
+    details?: string;
+}): string {
+    return [
+        formatted.parts?.length ? formatted.parts.join('\n\n') : formatted.text,
+        formatted.details,
+    ]
+        .filter(Boolean)
+        .join('\n\n');
+}
+
 export async function handleAiResponse(
     payload: AiResponsePayload,
     context: JobHandlerContext,
@@ -837,15 +850,13 @@ export async function handleAiResponse(
         // so aborting here would turn the retry into delayed human recovery
         // rather than giving this attempt the chance to complete its intended
         // delivery. Log it, remember it, and keep going so delivery can happen.
+        const publishableResponse = completePublishableResponse(pipelineResult.formatted);
         let suggestedResponseError: string | null = null;
         try {
-            const { text, parts, details } = pipelineResult.formatted;
             await prisma.ticket.update({
                 where: { id: ticket.id },
                 data: {
-                    suggestedResponse: [parts?.length ? parts.join('\n\n') : text, details]
-                        .filter(Boolean)
-                        .join('\n\n'),
+                    suggestedResponse: publishableResponse,
                 },
             });
         } catch (error) {
@@ -884,7 +895,7 @@ export async function handleAiResponse(
                     data: {
                         ticketId: ticket.id,
                         author: 'outpost-shadow',
-                        content: pipelineResult.formatted.text,
+                        content: publishableResponse,
                         type: 'SYSTEM',
                         isAiGenerated: true,
                         attachments: {
