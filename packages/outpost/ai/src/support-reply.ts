@@ -34,8 +34,12 @@ function normalizeQuote(text: string): string {
         .trim();
 }
 
-/** Source citations must be absolute HTTP(S) URLs without embedded credentials. */
-function parseSourceUrl(value: string): URL | undefined {
+/**
+ * @internal Shared citation contract for strict retrieval and reply validation;
+ * intentionally omitted from the public AI barrel. Citations must be absolute
+ * HTTP(S) URLs without embedded credentials or invalid raw whitespace.
+ */
+export function parseSourceUrl(value: string): URL | undefined {
     try {
         if (!/^https?:\/\//i.test(value) || /[\s<>"\\]/.test(value)) return undefined;
         const url = new URL(value);

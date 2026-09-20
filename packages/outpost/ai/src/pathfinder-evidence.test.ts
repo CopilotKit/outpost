@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PathfinderClient } from './pathfinder.js';
+import { validateSupportReply } from './support-reply.js';
 
 function mockServer(result: unknown) {
     const fetchMock = vi.fn<typeof fetch>();
@@ -323,5 +324,157 @@ describe('agent evidence retrieval', () => {
             client.searchEvidence('search-docs', { query: 'tools' }, controller.signal),
         ).rejects.toThrow('Run cancelled');
         expect(fetchMock).not.toHaveBeenCalled();
+    });
+});
+
+describe.each(['search-code', 'search-ag-ui-code'] as const)('%s citation contract', (tool) => {
+    const repository = 'https://github.com/CopilotKit/CopilotKit';
+    const path = 'packages/core/src/core/run-handler.ts';
+    const blob = `${repository}/blob/main/${path}`;
+    const quote = 'const agent = this._internal.getAgent(resolvedAgentId);';
+    const cases: Array<{
+        name: string;
+        url?: string;
+        repository?: string;
+        path?: string;
+        expectedBlob?: string;
+    }> = [
+        { name: 'missing citation' },
+        { name: 'blank citation', url: ' ', repository: ' ' },
+        { name: 'malformed citation', url: 'not-a-url', repository: 'not-a-url' },
+        { name: 'relative citation', url: '/file.ts', repository: '/CopilotKit/CopilotKit' },
+        { name: 'missing host', url: 'https://', repository: 'https://' },
+        {
+            name: 'FTP citation',
+            url: 'ftp://example.com/file.ts',
+            repository: 'ftp://github.com/CopilotKit/CopilotKit',
+        },
+        {
+            name: 'embedded credentials',
+            url: 'https://user:pass@example.com/file.ts',
+            repository: 'https://user:pass@github.com/CopilotKit/CopilotKit',
+        },
+        {
+            name: 'raw space in path',
+            url: `${repository}/blob/main/My File.ts`,
+            repository,
+            path: 'My File.ts',
+        },
+        {
+            name: 'raw tab in path',
+            url: `${repository}/blob/main/My\tFile.ts`,
+            repository,
+            path: 'My\tFile.ts',
+        },
+        {
+            name: 'invalid URL delimiter',
+            url: 'https://example.com/"file.ts',
+            repository: `${repository}/"invalid`,
+        },
+        {
+            name: 'HTTP citation',
+            url: 'http://source.example.test/file.ts',
+            repository: repository.replace('https:', 'http:'),
+            expectedBlob: blob.replace('https:', 'http:'),
+        },
+        {
+            name: 'HTTPS citation',
+            url: 'https://source.example.test/file.ts',
+            repository,
+            expectedBlob: blob,
+        },
+        {
+            name: 'normalized repository and path metadata',
+            url: blob,
+            repository: `${repository}.git/`,
+            path: `/${path}`,
+            expectedBlob: blob,
+        },
+        {
+            name: 'encoded path',
+            url: `${repository}/blob/main/My%20File.ts`,
+            repository,
+            path: 'My%20File.ts',
+            expectedBlob: `${repository}/blob/main/My%20File.ts`,
+        },
+    ];
+
+    describe.each(['legacy sourceUrl', 'legacy url', 'SNIPPET repository/path', 'SNIPPET SOURCE'])(
+        '%s representation',
+        (format) => {
+            it.each(cases)('$name', async (citation) => {
+                const citationPath = citation.path ?? path;
+                const text = format.startsWith('legacy')
+                    ? JSON.stringify([
+                          {
+                              title: citationPath,
+                              content: quote,
+                              score: 0.9,
+                              [format === 'legacy url' ? 'url' : 'sourceUrl']: citation.url,
+                              // Legacy results deliberately omit kind.
+                          },
+                      ])
+                    : [
+                          'SNIPPET 1',
+                          ...(format === 'SNIPPET SOURCE'
+                              ? [
+                                    `TITLE: ${citationPath}`,
+                                    ...(citation.url === undefined
+                                        ? []
+                                        : [`SOURCE: ${citation.url}`]),
+                                ]
+                              : citation.repository === undefined
+                                ? []
+                                : [`REPOSITORY: ${citation.repository}`]),
+                          `PATH: ${citationPath}`,
+                          'CONTENT:',
+                          `1114 | ${quote}`,
+                      ].join('\n');
+                const fetchMock = mockServer({ content: [{ type: 'text', text }] });
+                const retrieval = new PathfinderClient('https://mcp.example.test').searchEvidence(
+                    tool,
+                    { query: 'subagents' },
+                );
+
+                if (!citation.expectedBlob) {
+                    await expect(retrieval).rejects.toThrow(
+                        `Pathfinder ${tool} returned malformed uncitable code evidence`,
+                    );
+                } else {
+                    const results = await retrieval;
+                    const expectedUrl =
+                        format === 'SNIPPET repository/path' ? citation.expectedBlob : citation.url;
+                    expect(results).toHaveLength(1);
+                    expect(results[0].sourceUrl).toBe(expectedUrl);
+                    const reply = {
+                        decision: 'answer',
+                        summary: 'The handler retrieves the configured agent.',
+                        details: `[Source](<${expectedUrl}>)`,
+                        apiVersion: 'unknown',
+                        appliesTo: '',
+                        evidence: [{ sourceUrl: results[0].sourceUrl, quote }],
+                        handoffReason: '',
+                    };
+                    expect(validateSupportReply(reply, results)).toEqual(reply);
+                }
+                expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toMatchObject({
+                    method: 'tools/call',
+                    params: { name: tool },
+                });
+            });
+        },
+    );
+
+    it('preserves explicit no_results success', async () => {
+        mockServer({
+            content: [
+                { type: 'text', text: JSON.stringify({ results: [], reason: 'no_results' }) },
+            ],
+        });
+        await expect(
+            new PathfinderClient('https://mcp.example.test').searchEvidence(tool, {
+                query: 'tools',
+            }),
+        ).resolves.toEqual([]);
     });
 });

@@ -1,6 +1,7 @@
 import type { SearchResult, PathfinderQuery } from './types.js';
 import { z } from 'zod';
 import { config } from './config.js';
+import { parseSourceUrl } from './support-reply.js';
 
 /**
  * Turn a code hit's REPOSITORY + PATH into a link a reader can open.
@@ -349,7 +350,8 @@ export class PathfinderClient {
         if (
             results.some(
                 (entry) =>
-                    (requiresCodeCitation || entry.kind === 'code') && !entry.sourceUrl?.trim(),
+                    (requiresCodeCitation || entry.kind === 'code') &&
+                    (!entry.sourceUrl || !parseSourceUrl(entry.sourceUrl)),
             )
         ) {
             throw new Error(`Pathfinder ${tool} returned malformed uncitable code evidence`);
