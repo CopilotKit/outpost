@@ -318,10 +318,32 @@ describe('TicketClassifier', () => {
         });
 
         it.each([
+            'Security vulnerabilities were not found.',
+            'A security vulnerability was not found.',
+            'Production outage was not reported.',
+            'Data loss was not found.',
+            'No production outages were reported.',
+            'No reports of data loss were found.',
+        ])('keeps passive absence reports at the existing HIGH baseline: %s', (content) => {
+            expect(classifier.heuristicClassify(content).priority).toBe(TicketPriority.HIGH);
+        });
+
+        it.each([
+            'Security vulnerabilities were found.',
+            'A security vulnerability was found.',
+            'Production outage was reported.',
+            'Customers reported data loss.',
+        ])('keeps passive or reported critical incidents at CRITICAL: %s', (content) => {
+            expect(classifier.heuristicClassify(content).priority).toBe(TicketPriority.CRITICAL);
+        });
+
+        it.each([
             'How do I prevent data loss? We found a security vulnerability exposing conversations.',
             'There was no data loss. Our production service is down.',
             'No security vulnerabilities were found. The update caused data loss.',
             'Production outage: all requests fail. There was no data loss.',
+            'Security vulnerabilities were not found. Customers reported data loss.',
+            'Production outage was not reported. A security vulnerability was found.',
         ])('retains an affirmative critical incident in a separate sentence: %s', (content) => {
             expect(classifier.heuristicClassify(content).priority).toBe(TicketPriority.CRITICAL);
         });

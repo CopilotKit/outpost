@@ -126,7 +126,7 @@ export class TicketClassifier {
             /\b(?:no|not|never|without)(?:\s+\w+){0,3}\s*$/i,
         ];
         const nonIncidentSuffix =
-            /^\s+(?:prevention|(?:did(?:\s+not|n't)|never)\s+(?:occur|happen))\b/i;
+            /^\s+(?:prevention|(?:did(?:\s+not|n't)|never)\s+(?:occur|happen)|(?:was|were)\s+not\s+(?:found|reported))\b/i;
         const hasCriticalIncident = content.split(/[.!?\n]+/).some((sentence) =>
             criticalPriorityPatterns.some((pattern) => {
                 const match = pattern.exec(sentence);
