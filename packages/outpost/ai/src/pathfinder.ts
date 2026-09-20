@@ -24,7 +24,7 @@ function blobUrl(repository: string | undefined, path: string | undefined): stri
     // collapse a correct code-grounded answer into a two-sentence handoff. That is
     // the same silent-degradation shape this whole change exists to remove, so it
     // has to leave a trace.
-    const repo = repository?.replace(/\.git$/, '').replace(/\/$/, '');
+    const repo = repository?.replace(/\/$/, '').replace(/\.git$/, '');
     if (!repo || !/^https?:\/\/github\.com\//i.test(repo)) {
         console.warn(
             `[Pathfinder] code hit for "${path}" has no usable REPOSITORY ` +

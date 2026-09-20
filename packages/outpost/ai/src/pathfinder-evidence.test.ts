@@ -113,6 +113,26 @@ describe('agent evidence retrieval', () => {
         ]);
     });
 
+    it('normalizes .git/ repository suffixes before strict code evidence validation', async () => {
+        const gitSlashCodeSnippet = validCodeSnippet.replace(
+            'https://github.com/CopilotKit/CopilotKit.git',
+            'https://github.com/CopilotKit/CopilotKit.git/',
+        );
+        mockServer({ content: [{ type: 'text', text: gitSlashCodeSnippet }] });
+
+        await expect(
+            new PathfinderClient('https://mcp.example.test').searchEvidence('search-code', {
+                query: 'subagents',
+            }),
+        ).resolves.toMatchObject([
+            {
+                kind: 'code',
+                sourceUrl:
+                    'https://github.com/CopilotKit/CopilotKit/blob/main/packages/core/src/core/run-handler.ts',
+            },
+        ]);
+    });
+
     it.each([
         [
             'missing repository',
