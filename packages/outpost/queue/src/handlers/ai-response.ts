@@ -1008,12 +1008,24 @@ export async function handleAiResponse(
                             },
                         });
                     } catch (markerError) {
-                        console.error(
-                            `[AI Response] Failed to record delivery confirmation for ticket ${ticketId}:`,
+                        const markerMessage =
                             markerError instanceof Error
                                 ? markerError.message
-                                : String(markerError),
+                                : String(markerError);
+                        console.error(
+                            `[AI Response] Failed to record delivery confirmation for ticket ${ticketId}:`,
+                            markerMessage,
                         );
+                        // Neither write preserved proof of delivery. Fail visibly
+                        // so the queue can retry; the primary-response gate still
+                        // prevents another post while scheduling human recovery.
+                        return {
+                            success: false,
+                            error:
+                                `Ticket ${ticketId}: delivery succeeded but the DELIVERED state write ` +
+                                `failed (${message}) and delivery confirmation could not be recorded ` +
+                                `(${markerMessage}) — needs manual attention`,
+                        };
                     }
                 }
             }
