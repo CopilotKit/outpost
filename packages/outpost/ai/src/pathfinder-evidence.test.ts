@@ -48,6 +48,14 @@ describe.each([
 });
 
 describe('agent evidence retrieval', () => {
+    const validCodeSnippet = [
+        'SNIPPET 1',
+        'REPOSITORY: https://github.com/CopilotKit/CopilotKit.git',
+        'PATH: packages/core/src/core/run-handler.ts',
+        'CONTENT:',
+        '1114 |     const agent = this._internal.getAgent(resolvedAgentId);',
+    ].join('\n');
+
     it('sends the version filter to the actual MCP tool', async () => {
         const fetchMock = mockServer({ content: [{ type: 'text', text: '[]' }] });
         const client = new PathfinderClient('https://mcp.example.test');
@@ -71,6 +79,64 @@ describe('agent evidence retrieval', () => {
                 query: 'tools',
             }),
         ).resolves.toEqual([]);
+    });
+
+    it('recognizes Pathfinder explicit no_results envelopes for code evidence', async () => {
+        mockServer({
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({ results: [], reason: 'no_results', domain: 'code' }),
+                },
+            ],
+        });
+        await expect(
+            new PathfinderClient('https://mcp.example.test').searchEvidence('search-code', {
+                query: 'tools',
+            }),
+        ).resolves.toEqual([]);
+    });
+
+    it('returns strict code evidence when the hit has a usable citation URL', async () => {
+        mockServer({ content: [{ type: 'text', text: validCodeSnippet }] });
+        await expect(
+            new PathfinderClient('https://mcp.example.test').searchEvidence('search-code', {
+                query: 'subagents',
+            }),
+        ).resolves.toMatchObject([
+            {
+                kind: 'code',
+                title: 'packages/core/src/core/run-handler.ts',
+                sourceUrl:
+                    'https://github.com/CopilotKit/CopilotKit/blob/main/packages/core/src/core/run-handler.ts',
+            },
+        ]);
+    });
+
+    it.each([
+        [
+            'missing repository',
+            ['SNIPPET 1', 'PATH: packages/core/src/core/run-handler.ts', 'CONTENT:', 'run();'].join(
+                '\n',
+            ),
+        ],
+        [
+            'unusable repository',
+            [
+                'SNIPPET 1',
+                'REPOSITORY: git@github.com:CopilotKit/CopilotKit.git',
+                'PATH: packages/core/src/core/run-handler.ts',
+                'CONTENT:',
+                'run();',
+            ].join('\n'),
+        ],
+    ])('rejects strict code evidence with %s', async (_name, text) => {
+        mockServer({ content: [{ type: 'text', text }] });
+        await expect(
+            new PathfinderClient('https://mcp.example.test').searchEvidence('search-code', {
+                query: 'subagents',
+            }),
+        ).rejects.toThrow('malformed uncitable code evidence');
     });
 
     it('distinguishes an MCP tool error from no results', async () => {

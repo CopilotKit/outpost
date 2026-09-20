@@ -338,6 +338,9 @@ export class PathfinderClient {
         ) {
             throw new Error(`Pathfinder ${tool} returned malformed search evidence`);
         }
+        if (results.some((entry) => entry.kind === 'code' && !entry.sourceUrl?.trim())) {
+            throw new Error(`Pathfinder ${tool} returned malformed uncitable code evidence`);
+        }
         return results;
     }
 
