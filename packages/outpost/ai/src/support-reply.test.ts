@@ -281,6 +281,28 @@ describe('support reply contract', () => {
         expect(validateSupportReply(value, parenthesizedSources)).toEqual(value);
     });
 
+    it('accepts segment-encoded GitHub blob source paths without allowing raw whitespace URLs', () => {
+        const encodedBlobUrl =
+            'https://github.com/CopilotKit/CopilotKit/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/docs/My%20Guide.md';
+        const encodedSources = sources.map((source) => ({
+            ...source,
+            sourceUrl: encodedBlobUrl,
+        }));
+        const value = reply({
+            details: `[Guide](${encodedBlobUrl})`,
+            evidence: [{ sourceUrl: encodedBlobUrl, quote }],
+        });
+        expect(validateSupportReply(value, encodedSources)).toEqual(value);
+
+        const rawSpaceUrl = encodedBlobUrl.replace('My%20Guide.md', 'My Guide.md');
+        expect(() =>
+            validateSupportReply(
+                reply({ evidence: [{ sourceUrl: rawSpaceUrl, quote }] }),
+                encodedSources.map((source) => ({ ...source, sourceUrl: rawSpaceUrl })),
+            ),
+        ).toThrow(/evidence|source/i);
+    });
+
     it('rejects an unclosed code fence that would swallow the generated footer', () => {
         expect(() =>
             validateSupportReply(reply({ details: '```tsx\n<Provider />' }), sources),

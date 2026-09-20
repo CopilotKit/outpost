@@ -36,6 +36,10 @@ const sourceParams = z.object({
     ref: refSchema,
 });
 
+function encodeSourcePath(path: string): string {
+    return path.split('/').map(encodeURIComponent).join('/');
+}
+
 /** Shared by the investigator and verifier so follow-ups affect both judgments. */
 export function supportConversation(
     context: PipelineContext,
@@ -225,8 +229,9 @@ export class SupportAgent {
                 const commit = z
                     .object({ sha: z.string().regex(/^[a-f0-9]{40}$/) })
                     .parse(commitData);
+                const encodedPath = encodeSourcePath(path);
                 const fileData = await githubJson(
-                    `${repository}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${commit.sha}`,
+                    `${repository}/contents/${encodedPath}?ref=${commit.sha}`,
                     signal,
                 );
                 if (fileData === undefined)
@@ -248,7 +253,7 @@ export class SupportAgent {
                     {
                         title: `${repository}/${path} at ${ref}`,
                         content: Buffer.from(file.content, 'base64').toString('utf8'),
-                        sourceUrl: `https://github.com/${repository}/blob/${commit.sha}/${path}`,
+                        sourceUrl: `https://github.com/${repository}/blob/${commit.sha}/${encodedPath}`,
                         score: 1,
                         kind: 'code',
                     },

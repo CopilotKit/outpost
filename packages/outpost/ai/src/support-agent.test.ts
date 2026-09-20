@@ -5,7 +5,7 @@ import {
     InvalidSupportReplyError,
     InvestigationBudgetError,
 } from './support-agent.js';
-import type { SupportReply } from './support-reply.js';
+import { validateSupportReply, type SupportReply } from './support-reply.js';
 import type { PathfinderClient } from './pathfinder.js';
 
 const source = {
@@ -152,6 +152,72 @@ describe('OpenAI support agent', () => {
             `https://api.github.com/repos/CopilotKit/CopilotKit/contents/packages/tools.ts?ref=${sha}`,
         ]);
     });
+    it.each([
+        {
+            path: 'docs/My Guide.md',
+            encodedPath: 'docs/My%20Guide.md',
+        },
+        {
+            path: 'docs/100% ready (setup).md',
+            encodedPath: 'docs/100%25%20ready%20(setup).md',
+        },
+    ])(
+        'encodes read_source path segments for contents fetches and remembered blob citations: $path',
+        async ({ path, encodedPath }) => {
+            const sha = 'a'.repeat(40);
+            const url = `https://github.com/CopilotKit/CopilotKit/blob/${sha}/${encodedPath}`;
+            const output = { ...reply, evidence: [{ sourceUrl: url, quote: source.content }] };
+            const realFetch = globalThis.fetch;
+            const githubRequests: string[] = [];
+            vi.stubGlobal(
+                'fetch',
+                vi.fn<typeof fetch>(async (input, init) => {
+                    const requestUrl = input instanceof Request ? input.url : String(input);
+                    if (!requestUrl.startsWith('https://api.github.com/'))
+                        return realFetch(input, init);
+                    githubRequests.push(requestUrl);
+                    return new Response(
+                        JSON.stringify(
+                            requestUrl.includes('/commits/')
+                                ? { sha }
+                                : {
+                                      encoding: 'base64',
+                                      content: Buffer.from(source.content).toString('base64'),
+                                      size: source.content.length,
+                                  },
+                        ),
+                    );
+                }),
+            );
+            mock().llm.on(
+                { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+                { content: JSON.stringify(output) },
+            );
+            mock().llm.onMessage(/./, {
+                toolCalls: [
+                    {
+                        id: 'call_source',
+                        name: 'read_source',
+                        arguments: {
+                            repository: 'CopilotKit/CopilotKit',
+                            path,
+                            ref: 'v2.0.0',
+                        },
+                    },
+                ],
+            });
+            const result = await setup().agent.investigate({
+                question: 'Tools?',
+                source: 'github',
+            });
+            expect(result.sources[0].sourceUrl).toBe(url);
+            expect(result.reply).toEqual(validateSupportReply(output, result.sources));
+            expect(githubRequests).toEqual([
+                'https://api.github.com/repos/CopilotKit/CopilotKit/commits/v2.0.0',
+                `https://api.github.com/repos/CopilotKit/CopilotKit/contents/${encodedPath}?ref=${sha}`,
+            ]);
+        },
+    );
     it('reads explicit release evidence without inferring a release from main', async () => {
         const url = 'https://github.com/CopilotKit/CopilotKit/releases/tag/v2.0.0';
         const realFetch = globalThis.fetch;
