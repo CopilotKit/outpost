@@ -84,9 +84,14 @@ const fakeMessage = {
         for (const row of matched) Object.assign(row, args.data);
         return { count: matched.length };
     }),
-    findUnique: vi.fn(async (args: any) => {
+    findUnique: vi.fn(async (args: { where: { id: string } }) => {
         const row = messages.find((m) => m.id === args.where.id);
-        return row ? { responseState: row.responseState } : null;
+        return row
+            ? {
+                  responseState: row.responseState,
+                  escalationRequiredReason: row.escalationRequiredReason,
+              }
+            : null;
     }),
 };
 
@@ -176,6 +181,30 @@ function addMessage(overrides: Partial<FakeMessage> = {}): FakeMessage {
 
 function escalationJobs() {
     return createdJobs.filter((j) => j.type === 'ESCALATION');
+}
+
+/** Move the stored row after the sweep reads its PENDING snapshot. */
+function settleAfterRead(
+    row: FakeMessage,
+    responseState: 'DELIVERED' | 'ESCALATED',
+    escalationRequiredReason: string | null = null,
+): void {
+    fakeMessage.findMany.mockImplementationOnce(async () => {
+        const snapshot = [
+            {
+                id: row.id,
+                ticketId: row.ticketId,
+                responseJobId: row.responseJobId,
+                responseError: row.responseError,
+                escalationRequiredReason: row.escalationRequiredReason,
+                deliveryConfirmed: row.deliveryConfirmed,
+                ticket: { source: row.ticketSource },
+            },
+        ];
+        row.responseState = responseState;
+        row.escalationRequiredReason = escalationRequiredReason;
+        return snapshot;
+    });
 }
 
 beforeEach(() => {
@@ -335,21 +364,38 @@ describe('handlePendingResponseSweep', () => {
         const row = addMessage();
         // Another actor escalates after this sweep has already read the row —
         // the compare-and-set must find the row outside PENDING and no-op.
-        fakeMessage.findMany.mockImplementationOnce(async () => {
-            const snapshot = [
-                {
-                    id: row.id,
-                    ticketId: row.ticketId,
-                    responseJobId: row.responseJobId,
-                    responseError: row.responseError,
-                    escalationRequiredReason: row.escalationRequiredReason,
-                    deliveryConfirmed: row.deliveryConfirmed,
-                    ticket: { source: row.ticketSource },
-                },
-            ];
-            row.responseState = 'ESCALATED';
-            return snapshot;
+        settleAfterRead(row, 'ESCALATED');
+
+        const result = await handlePendingResponseSweep({}, makeContext());
+
+        expect(result.success).toBe(true);
+        expect(result.data).toMatchObject({ escalated: 0, alreadySettled: 1, failed: 0 });
+        expect(escalationJobs()).toHaveLength(0);
+    });
+
+    it('fails when a no-op escalation finds DELIVERED with an owed-escalation marker', async () => {
+        const reason = 'Low AI confidence (12%) — automated escalation';
+        const row = addMessage({ escalationRequiredReason: reason });
+        settleAfterRead(row, 'DELIVERED', reason);
+
+        const result = await handlePendingResponseSweep({}, makeContext());
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('could not be settled');
+        expect(result.data).toBeUndefined();
+        expect(escalationJobs()).toHaveLength(0);
+        expect(row.escalationRequiredReason).toBe(reason);
+        expect(fakeMessage.findUnique).toHaveBeenCalledWith({
+            where: { id: row.id },
+            select: { responseState: true, escalationRequiredReason: true },
         });
+    });
+
+    it('accepts a no-op escalation when DELIVERED has no owed-escalation marker', async () => {
+        const row = addMessage({
+            escalationRequiredReason: 'Low AI confidence (12%) — automated escalation',
+        });
+        settleAfterRead(row, 'DELIVERED');
 
         const result = await handlePendingResponseSweep({}, makeContext());
 

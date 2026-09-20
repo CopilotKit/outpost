@@ -110,10 +110,11 @@ async function findLiveOwnerJobIds(responses: StrandedResponse[]): Promise<Set<s
  * — the compare-and-set legitimately reports no-op when the row left PENDING
  * between the sweep's read and its write, which is exactly what makes a second
  * sweep over the same response harmless. But it is only benign if the row
- * actually settled: DELIVERED or ESCALATED means someone got there first, while
- * a row still PENDING (or unreadable, or gone) means the handoff this sweep
- * promised was never made. Discarding that distinction would recreate the bug
- * this handler exists to fix, one level up.
+ * actually settled: DELIVERED with no owed-escalation marker or ESCALATED means
+ * someone got there first. A retained marker on DELIVERED, a row still PENDING,
+ * or an unreadable/missing row leaves this sweep's handoff unaccounted for.
+ * Discarding that distinction would recreate the bug this handler exists to
+ * fix, one level up.
  */
 async function settleStrandedResponse(
     response: StrandedResponse,
@@ -143,15 +144,21 @@ async function settleStrandedResponse(
 
     const settled = await prisma.message.findUnique({
         where: { id: response.id },
-        select: { responseState: true },
+        select: { responseState: true, escalationRequiredReason: true },
     });
-    if (settled?.responseState === 'DELIVERED' || settled?.responseState === 'ESCALATED') {
+    if (
+        (settled?.responseState === 'DELIVERED' && settled.escalationRequiredReason === null) ||
+        settled?.responseState === 'ESCALATED'
+    ) {
         return 'alreadySettled';
     }
 
     console.error(
         `[PendingResponseSweep] Response ${response.id} on ticket ${response.ticketId} could not ` +
-            `be escalated and did not settle — state is ${settled?.responseState ?? 'missing'}`,
+            `be escalated and did not settle — state is ${settled?.responseState ?? 'missing'}` +
+            (settled?.escalationRequiredReason != null
+                ? `; owed-escalation marker remains (${settled.escalationRequiredReason}) — needs manual attention`
+                : ''),
     );
     return 'failed';
 }

@@ -190,16 +190,19 @@ function requiredEscalationReason(response: StoredAiResponse): string | null {
  * `enqueueEscalationAtomically` returns false — it does not throw — when the CAS
  * matched no rows, which means NO escalation job was created. Reporting the raw
  * boolean as `escalated` and still returning success drops the owed human
- * handoff silently, so the row's own responseState decides instead, exactly as
- * the main enqueue site does:
+ * handoff silently, so inspect the row's settled lifecycle fields instead:
  *
- *   - DELIVERED — the reporter has a durable answer and no handoff was owed.
+ *   - DELIVERED with no owed-escalation marker — the reporter has a durable
+ *     answer and no handoff is owed.
  *     Honest success, and the premise of both recovery paths (a response stuck
  *     PENDING) no longer holds, so neither `escalated` nor `deliveryFailed` may
  *     be asserted and the outcome is reported as an ordinary already-answered
  *     skip.
  *   - ESCALATED — another actor already summoned the human. Success with
  *     `escalated: true`; the recovery reason still describes what was repaired.
+ *   - DELIVERED with an owed-escalation marker — delivery does not prove the
+ *     promised human handoff happened. Fail loudly and retain its reason for
+ *     manual attention, because PENDING recovery cannot act on this row.
  *   - anything else (still PENDING, row gone, state unreadable) — a reporter was
  *     promised a human who was never summoned. Fail loudly.
  *
@@ -223,13 +226,15 @@ async function reportSkippedRecoveryEscalation(options: {
     const { ticketId, response, reason, recoveredReason, deliveryFailed, context } = options;
 
     let settledState: string | null = null;
+    let settledEscalationRequiredReason: string | null = null;
     let stateReadError: string | null = null;
     try {
         const settled = await prisma.message.findUnique({
             where: { id: response.id },
-            select: { responseState: true },
+            select: { responseState: true, escalationRequiredReason: true },
         });
         settledState = settled?.responseState ?? null;
+        settledEscalationRequiredReason = settled?.escalationRequiredReason ?? null;
     } catch (error) {
         stateReadError = error instanceof Error ? error.message : String(error);
     }
@@ -249,6 +254,15 @@ async function reportSkippedRecoveryEscalation(options: {
             error:
                 `Ticket ${ticketId}: required escalation (${reason}) was not queued — ` +
                 `response state is ${observed} — needs manual attention`,
+        };
+    }
+
+    if (settledState === 'DELIVERED' && settledEscalationRequiredReason !== null) {
+        return {
+            success: false,
+            error:
+                `Ticket ${ticketId}: response is DELIVERED but its owed-escalation marker remains ` +
+                `(${settledEscalationRequiredReason}) — needs manual attention`,
         };
     }
 
@@ -526,6 +540,21 @@ export async function handleAiResponse(
         generatedResponses.find((m) => m.responseKey === PRIMARY_AI_RESPONSE_KEY) ??
         generatedResponses[0];
     if (priorAiResponse) {
+        // A retry may load the contradiction detected by recovery's no-op
+        // re-read. Keep failing until a human resolves the owed handoff; the
+        // already-answered gate must not turn its next attempt into success.
+        if (
+            priorAiResponse.responseState === 'DELIVERED' &&
+            priorAiResponse.escalationRequiredReason != null
+        ) {
+            return {
+                success: false,
+                error:
+                    `Ticket ${ticketId}: response is DELIVERED but its owed-escalation marker remains ` +
+                    `(${priorAiResponse.escalationRequiredReason}) — needs manual attention`,
+            };
+        }
+
         // Order matters. The two PENDING sub-states now live in independent
         // columns, so nothing at the type level stops a row carrying both. An
         // owed human handoff is checked first because dropping it is the worse

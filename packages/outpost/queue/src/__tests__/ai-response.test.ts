@@ -1496,7 +1496,7 @@ describe('handleAiResponse', () => {
             createdAt: new Date('2026-04-23T10:00:20Z'),
         };
 
-        function stageRow(row: Record<string, unknown>): void {
+        function stageRow(row: typeof requiredEscalationRow | typeof pendingDeliveryRow): void {
             mockPrismaTicket.findUnique.mockResolvedValue({
                 ...sampleTicket,
                 messages: [...sampleTicket.messages, row],
@@ -1512,6 +1512,40 @@ describe('handleAiResponse', () => {
 
         beforeEach(() => {
             mockPrismaMessage.updateMany.mockResolvedValue({ count: 0 });
+        });
+
+        it('keeps failing on retries that load DELIVERED with an owed-escalation marker', async () => {
+            stageRow({ ...requiredEscalationRow, responseState: 'DELIVERED' });
+            const context = makeContext({ jobId: 'job-recovery' });
+
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                const result = await handleAiResponse(requiredEscalationJob(), context);
+
+                expect(result.success).toBe(false);
+                expect(result.error).toContain('response is DELIVERED');
+                expect(result.error).toContain('owed-escalation marker remains');
+                expect(result.error).toContain(requiredEscalationRow.escalationRequiredReason);
+                expect(result.error).toContain('needs manual attention');
+                expect(result.data).toBeUndefined();
+            }
+            expect(mockPrismaMessage.updateMany).not.toHaveBeenCalled();
+            expect(mockPrismaMessage.update).not.toHaveBeenCalled();
+            expect(mockPrismaJob.create).not.toHaveBeenCalled();
+            expect(context.reportProgress).not.toHaveBeenCalledWith(100);
+            expect(mockGenerateSupportResponse).not.toHaveBeenCalled();
+            expect(mockPostResponse).not.toHaveBeenCalled();
+        });
+
+        it('accepts a retry that loads DELIVERED with no owed-escalation marker', async () => {
+            stageRow({ ...pendingDeliveryRow, responseState: 'DELIVERED' });
+            const context = makeContext({ jobId: 'job-recovery' });
+
+            const result = await handleAiResponse(requiredEscalationJob(), context);
+
+            expect(result.success).toBe(true);
+            expect(result.data).toMatchObject({ skipped: true, reason: 'already_answered' });
+            expect(mockPrismaJob.create).not.toHaveBeenCalled();
+            expect(context.reportProgress).toHaveBeenCalledWith(100);
         });
 
         describe.each([
@@ -1577,9 +1611,39 @@ describe('handleAiResponse', () => {
                 expect(context.reportProgress).toHaveBeenCalledWith(100);
             });
 
-            it('succeeds without claiming a handoff when the response is already DELIVERED', async () => {
+            it('fails loudly when a DELIVERED response retains an owed-escalation marker', async () => {
                 stageRow(row);
-                mockPrismaMessage.findUnique.mockResolvedValue({ responseState: 'DELIVERED' });
+                mockPrismaMessage.findUnique.mockResolvedValue({
+                    responseState: 'DELIVERED',
+                    escalationRequiredReason: requiredEscalationRow.escalationRequiredReason,
+                });
+                const context = makeContext({ jobId: 'job-recovery' });
+
+                const result = await handleAiResponse(makePayload(), context);
+
+                expect(result.success).toBe(false);
+                expect(result.error).toContain('response is DELIVERED');
+                expect(result.error).toContain('owed-escalation marker remains');
+                expect(result.error).toContain(requiredEscalationRow.escalationRequiredReason);
+                expect(result.error).toContain('needs manual attention');
+                expect(result.data).toBeUndefined();
+                expect(mockPrismaMessage.findUnique).toHaveBeenCalledWith({
+                    where: { id: row.id },
+                    select: { responseState: true, escalationRequiredReason: true },
+                });
+                expect(mockPrismaJob.create).not.toHaveBeenCalled();
+                expect(mockPrismaMessage.update).not.toHaveBeenCalled();
+                expect(context.reportProgress).not.toHaveBeenCalledWith(100);
+                expect(mockGenerateSupportResponse).not.toHaveBeenCalled();
+                expect(mockPostResponse).not.toHaveBeenCalled();
+            });
+
+            it('succeeds without claiming a handoff when DELIVERED has no owed-escalation marker', async () => {
+                stageRow(row);
+                mockPrismaMessage.findUnique.mockResolvedValue({
+                    responseState: 'DELIVERED',
+                    escalationRequiredReason: null,
+                });
                 const context = makeContext({ jobId: 'job-recovery' });
 
                 const result = await handleAiResponse(makePayload(), context);
