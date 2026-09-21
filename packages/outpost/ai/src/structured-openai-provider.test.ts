@@ -6,15 +6,19 @@ import { StructuredOpenAIProvider } from './structured-openai-provider.js';
 describe('structured Responses message phases', () => {
     afterEach(() => vi.unstubAllGlobals());
     let messageId = 0;
-    const message = (text: string, phase?: 'commentary' | 'final_answer') => ({
+    const message = (text: string | string[], phase?: 'commentary' | 'final_answer') => ({
         id: `msg_${messageId++}`,
         type: 'message',
         role: 'assistant',
         status: 'completed',
         ...(phase ? { phase } : {}),
-        content: [{ type: 'output_text', text, annotations: [] }],
+        content: (Array.isArray(text) ? text : [text]).map((part) => ({
+            type: 'output_text',
+            text: part,
+            annotations: [],
+        })),
     });
-    function run(output: unknown[]) {
+    function run(output: unknown[], structured = true) {
         vi.stubGlobal(
             'fetch',
             vi.fn<typeof fetch>().mockResolvedValue(
@@ -41,7 +45,7 @@ describe('structured Responses message phases', () => {
             new Agent({
                 name: 'Phase test',
                 model: 'gpt-5.6-luna',
-                outputType: z.object({ answer: z.string() }),
+                outputType: structured ? z.object({ answer: z.string() }) : 'text',
             }),
             'Answer the question.',
             { maxTurns: 1 },
@@ -67,6 +71,38 @@ describe('structured Responses message phases', () => {
         ]);
         expect(result.finalOutput).toEqual({ answer: 'Verified' });
     });
+    it.each([false, true])('accepts a split final answer (repeated: %s)', async (repeated) => {
+        const final = message(['{"answer":', '"Verified"}'], 'final_answer');
+        const result = await run(repeated ? [final, final] : [final]);
+        expect(result.finalOutput).toEqual({ answer: 'Verified' });
+    });
+    it.each([
+        {
+            name: 'unsplit then split',
+            first: ['{"answer":"Verified"}'],
+            second: ['{"answer":', '"Verified"}'],
+        },
+        {
+            name: 'different split boundaries',
+            first: ['{"answer":"', 'Verified"}'],
+            second: ['{"answer":', '"Verified"}'],
+        },
+        {
+            name: 'empty parts',
+            first: ['', '{"answer":"Verified"}', ''],
+            second: ['{"answer":', '', '"Verified"}'],
+        },
+    ])('accepts identical rendered final answers with $name', async ({ first, second }) => {
+        const result = await run([message(first, 'final_answer'), message(second, 'final_answer')]);
+        expect(result.finalOutput).toEqual({ answer: 'Verified' });
+        expect(result.runContext.usage.inputTokens).toBe(100);
+        expect(result.runContext.usage.outputTokens).toBe(20);
+        expect(result.rawResponses[0].responseId).toBe('resp_phases');
+        expect(result.rawResponses[0].output).toEqual([
+            expect.objectContaining({ type: 'reasoning', id: 'rsn_test' }),
+            expect.objectContaining({ type: 'message', phase: 'final_answer' }),
+        ]);
+    });
     it('does not choose between conflicting final answers', async () => {
         await expect(
             run([
@@ -74,6 +110,26 @@ describe('structured Responses message phases', () => {
                 message('{"answer":"Two"}', 'final_answer'),
             ]),
         ).rejects.toBeInstanceOf(ModelBehaviorError);
+    });
+    it.each([
+        { name: 'conflicting values', parts: ['{"answer":', '"Two"}'] },
+        { name: 'different JSON whitespace', parts: ['{ "answer": ', '"One" }'] },
+    ])('preserves distinct rendered final answers with $name', async ({ parts }) => {
+        await expect(
+            run([message('{"answer":"One"}', 'final_answer'), message(parts, 'final_answer')]),
+        ).rejects.toBeInstanceOf(ModelBehaviorError);
+    });
+    it('keeps commentary and repeated final messages for text output', async () => {
+        const result = await run(
+            [
+                message('Draft.', 'commentary'),
+                message(['Verified', '.'], 'final_answer'),
+                message('Verified.', 'final_answer'),
+            ],
+            false,
+        );
+        expect(result.finalOutput).toBe('Draft.Verified.Verified.');
+        expect(result.rawResponses[0].output).toHaveLength(4);
     });
     it('does not guess between multiple unlabelled JSON messages', async () => {
         await expect(

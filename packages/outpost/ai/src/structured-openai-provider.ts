@@ -3,7 +3,7 @@ import type { Model, ModelRequest, ModelResponse } from '@openai/agents';
 
 /** SDK 0.18 concatenates commentary and final text before validating JSON.
  * Responses distinguishes them with phase; validate only the final answer.
- * Repeated identical final messages carry no additional content; collapse them.
+ * Repeated final messages with identical rendered text carry no additional content.
  * Keep unlabelled/conflicting output unchanged for normal schema validation.
  */
 function finalStructuredResponse(request: ModelRequest, response: ModelResponse): ModelResponse {
@@ -25,9 +25,9 @@ function finalStructuredResponse(request: ModelRequest, response: ModelResponse)
             if (item.content.some((part) => part.type !== 'output_text')) return true;
             if (item.phase === 'commentary') return false;
             if (item.phase === 'final_answer') {
-                const text = JSON.stringify(
-                    item.content.map((part) => (part.type === 'output_text' ? part.text : '')),
-                );
+                const text = item.content
+                    .map((part) => (part.type === 'output_text' ? part.text : ''))
+                    .join('');
                 if (finalTexts.has(text)) return false;
                 finalTexts.add(text);
             }
