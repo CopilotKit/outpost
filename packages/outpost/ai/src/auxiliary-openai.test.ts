@@ -88,6 +88,16 @@ describe('Luna auxiliary calls', () => {
         'Production is currently down.',
         'Our production service is completely down.',
         'The production system is still down.',
+        'Data loss was not prevented.',
+        'A production outage was not avoided.',
+        'A security vulnerability was not prevented.',
+        "Data loss wasn't prevented.",
+        "Production outages weren't avoided.",
+        "A security vulnerability wasn't prevented.",
+        'Data loss has not been prevented.',
+        'Production outages have not been avoided.',
+        "Data loss hasn't been prevented.",
+        "A security vulnerability hadn't been prevented.",
     ])('retains heuristic CRITICAL when Luna underestimates an incident: %s', async (content) => {
         mock().llm.onMessage(/./, { content: JSON.stringify(classification) });
         expect(await new TicketClassifier(options).classify(content)).toMatchObject({

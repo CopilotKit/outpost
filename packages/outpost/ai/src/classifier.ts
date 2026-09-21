@@ -152,6 +152,10 @@ export class TicketClassifier {
                 copularNegationPrefix.test(prefix) ||
                 noIncidentPrefix.test(prefix) ||
                 negativeObservationPrefix.test(prefix));
+        const failedPassivePreventionSuffix = new RegExp(
+            `^${remainingIncidentList}\\s+(?:(?:(?:is|are|was|were|has|have|had)\\s+(?:not|never)|\\w+n['’]t)\\s+(?:been\\s+)?)(?:prevented|avoided)\\b`,
+            'i',
+        );
         const nonIncidentSuffix = new RegExp(
             `^${remainingIncidentList}\\s+(?:prevention\\b|(?:(?:(?:is|are|was|were)|(?:has|have|had)\\s+been)\\s+)(?:avoided|prevented)\\b|(?:avoided|prevented)(?:\\s+(?:by|during|before|after|through|with|via)\\b|[.?!,;:]|$)|(?:${auxiliaries}\\s+)*(?:not|never|\\w+n['’]t)\\b)`,
             'i',
@@ -223,7 +227,9 @@ export class TicketClassifier {
                     const prefixWithoutNotOnly = prefix.replace(affirmativeNotOnly, ' ');
                     const suffixWithoutNotOnly = suffix.replace(affirmativeNotOnly, ' ');
                     const hasNonIncidentPrefixMatch = hasNonIncidentPrefix(prefixWithoutNotOnly);
-                    const hasNonIncidentSuffix = nonIncidentSuffix.test(suffixWithoutNotOnly);
+                    const hasNonIncidentSuffix =
+                        !failedPassivePreventionSuffix.test(suffixWithoutNotOnly) &&
+                        nonIncidentSuffix.test(suffixWithoutNotOnly);
                     if (!hasNonIncidentPrefixMatch && !hasNonIncidentSuffix) {
                         return true;
                     }

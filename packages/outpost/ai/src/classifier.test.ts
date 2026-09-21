@@ -649,6 +649,16 @@ describe('critical incident context boundaries', () => {
         'We failed to prevent data loss for customers.',
         'We did not prevent a production outage.',
         'We could not avoid a security vulnerability.',
+        'Data loss was not prevented.',
+        'A production outage was not avoided.',
+        'A security vulnerability was not prevented.',
+        "Data loss wasn't prevented.",
+        "Production outages weren't avoided.",
+        "A security vulnerability wasn't prevented.",
+        'Data loss has not been prevented.',
+        'Production outages have not been avoided.',
+        "Data loss hasn't been prevented.",
+        "A security vulnerability hadn't been prevented.",
     ];
     const r6PreservationControls = [
         {
