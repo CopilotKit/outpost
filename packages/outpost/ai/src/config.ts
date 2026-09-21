@@ -177,5 +177,10 @@ export function validateModelProvider(provider: string, model: string, name: str
 
 /** Recognize known families and aliases without rejecting custom provider deployment names. */
 function isKnownOpenAIModel(model: string): boolean {
-    return model === 'chat-latest' || model.startsWith('gpt-') || /^o[134](?:-|$)/.test(model);
+    return (
+        model === 'chat-latest' ||
+        model.startsWith('gpt-') ||
+        model.startsWith('ft:gpt-') ||
+        /^o[134](?:-|$)/.test(model)
+    );
 }

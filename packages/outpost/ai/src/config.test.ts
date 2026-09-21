@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { validateConfig } from './config.js';
+import { validateConfig, validateModelProvider } from './config.js';
 
 const { loadConfig } = vi.hoisted(() => ({ loadConfig: () => import('./config.js') }));
+const fineTunedGpt41 = 'ft:gpt-4.1:org:job';
+const fineTunedGpt4o = 'ft:gpt-4o-mini:openai:custom-model-name:7p4lURel';
+const modelForms = (model: string) => [model, `  ${model}  `];
 
 describe('validateConfig', () => {
     const defaults = {
@@ -11,6 +14,49 @@ describe('validateConfig', () => {
         responseModel: 'gpt-5.6-luna',
         draftLintMode: 'report',
     };
+
+    describe('normalized provider identity', () => {
+        it.each(
+            [
+                { provider: 'anthropic', model: 'gpt-5.6-luna', accepted: false },
+                { provider: 'anthropic', model: 'o3', accepted: false },
+                { provider: 'anthropic', model: 'chat-latest', accepted: false },
+                { provider: 'anthropic', model: fineTunedGpt41, accepted: false },
+                { provider: 'openai', model: 'claude-sonnet-4-6', accepted: false },
+                { provider: 'anthropic', model: 'custom-anthropic-deployment', accepted: true },
+            ].flatMap((row) => modelForms(row.model).map((model) => ({ ...row, model }))),
+        )('preserves response identity for $provider / $model', ({ provider, model, accepted }) => {
+            const validate = () =>
+                validateConfig({ ...defaults, responseProvider: provider, responseModel: model });
+            if (accepted) expect(validate).not.toThrow();
+            else expect(validate).toThrow('AI_RESPONSE_MODEL does not match AI_RESPONSE_PROVIDER');
+        });
+
+        it.each(
+            ['openai', 'anthropic'].flatMap((provider) =>
+                modelForms(fineTunedGpt41).map((model) => ({ provider, model })),
+            ),
+        )('checks direct fine-tuned identity for $provider / $model', ({ provider, model }) => {
+            const validate = () => validateModelProvider(provider, model, 'auxiliary model');
+            if (provider === 'openai') expect(validate).not.toThrow();
+            else expect(validate).toThrow('auxiliary model does not match AI_RESPONSE_PROVIDER');
+        });
+
+        it.each(
+            (['confidenceModel', 'classifierModel', 'sentimentModel'] as const).flatMap((key) =>
+                modelForms(fineTunedGpt41).map((model) => ({ key, model })),
+            ),
+        )('rejects fine-tuned identity in $key / $model', ({ key, model }) => {
+            expect(() =>
+                validateConfig({
+                    ...defaults,
+                    responseProvider: 'anthropic',
+                    responseModel: 'claude-sonnet-4-6',
+                    [key]: model,
+                }),
+            ).toThrow('does not match AI_RESPONSE_PROVIDER');
+        });
+    });
     it('accepts an OpenAI-only default configuration', () =>
         expect(() => validateConfig({ ...defaults, anthropicApiKey: '' })).not.toThrow());
     it('requires Anthropic only for explicit rollback', () =>
@@ -113,6 +159,7 @@ describe('validateConfig', () => {
         it.each([
             'gpt-5.6-luna',
             'chat-latest',
+            ...modelForms(fineTunedGpt4o),
             'o1',
             'o1-preview',
             'o3',
@@ -137,6 +184,8 @@ describe('validateConfig', () => {
             'o3custom-deployment',
             'chat-custom-deployment',
             'chat-latest-custom',
+            'ft:custom-deployment',
+            'custom-gpt-deployment',
         ])('accepts Anthropic or custom model %s', (model) => {
             expect(() =>
                 validateConfig({
@@ -148,12 +197,16 @@ describe('validateConfig', () => {
             ).not.toThrow();
         });
 
-        it.each(['o1', 'o3', 'o4-mini', 'chat-latest'])(
-            'accepts known OpenAI model %s under OpenAI',
-            (model) => {
-                expect(() => validateConfig({ ...defaults, [key]: model })).not.toThrow();
-            },
-        );
+        it.each([
+            'o1',
+            'o3',
+            'o4-mini',
+            'chat-latest',
+            ...modelForms(fineTunedGpt41),
+            ...modelForms(fineTunedGpt4o),
+        ])('accepts known OpenAI model %s under OpenAI', (model) => {
+            expect(() => validateConfig({ ...defaults, [key]: model })).not.toThrow();
+        });
 
         it('accepts a nonblank custom OpenAI deployment name', () => {
             expect(() =>
