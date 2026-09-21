@@ -551,6 +551,34 @@ describe('critical incident context boundaries', () => {
             'Data loss and production outages have been reported.',
         ],
         [
+            'Data loss or production outages have not been reported.',
+            'Data loss or production outages have been reported.',
+        ],
+        [
+            'Data loss, security vulnerabilities have not been reported.',
+            'Data loss, security vulnerabilities have been reported.',
+        ],
+        [
+            'Production outages, data loss have not been reported.',
+            'Production outages, data loss have been reported.',
+        ],
+        [
+            'Production outages, security vulnerabilities have not been reported.',
+            'Production outages, security vulnerabilities have been reported.',
+        ],
+        [
+            'Security vulnerabilities, data loss have not been reported.',
+            'Security vulnerabilities, data loss have been reported.',
+        ],
+        [
+            'Security vulnerabilities, production outages have not been reported.',
+            'Security vulnerabilities, production outages have been reported.',
+        ],
+        [
+            'Data loss, production outages, security vulnerabilities have not been reported.',
+            'Data loss, production outages, security vulnerabilities have been reported.',
+        ],
+        [
             "We haven't seen customer reports of data loss.",
             'We have seen customer reports of data loss.',
         ],
@@ -623,6 +651,9 @@ describe('critical incident context boundaries', () => {
         'Can this be because data loss occurred?',
     ];
     const adjacentReports = [
+        'Data loss occurred, production outages have not been reported.',
+        'Data loss, production outages have not been reported, but production is down.',
+        'Data loss, production outages have not been reported and production is down.',
         'Data loss? The update caused data loss.',
         'Our production service is down and customers cannot connect.',
         'Data loss occurred, can you help?',
@@ -712,10 +743,30 @@ describe('critical incident context boundaries', () => {
         priority: TicketPriority.HIGH,
     });
 
+    const sharedPredicateScopeCases = [
+        {
+            content: 'Data loss, production outages have not been reported.',
+            priority: TicketPriority.HIGH,
+        },
+        {
+            content: 'Data loss, production outages have been reported.',
+            priority: TicketPriority.CRITICAL,
+        },
+        {
+            content: 'Data loss, production outages have not been reported. Production is down.',
+            priority: TicketPriority.CRITICAL,
+        },
+        {
+            content:
+                'Data loss, production outages, and security vulnerabilities have not been reported.',
+            priority: TicketPriority.HIGH,
+        },
+    ];
+
     describe.each(['heuristic', 'model failure', 'healthy LOW model'] as const)(
         '%s',
         (boundary) => {
-            it.each(cases)('$priority: $content', async ({ content, priority }) => {
+            const checkPriority = async ({ content, priority }: (typeof cases)[number]) => {
                 const classifier = new TicketClassifier({
                     provider: 'anthropic',
                     apiKey: 'test-key',
@@ -742,6 +793,10 @@ describe('critical incident context boundaries', () => {
                     priority,
                     degraded: boundary === 'model failure',
                 });
+            };
+            it.each(cases)('$priority: $content', checkPriority);
+            describe('shared predicate scope preservation', () => {
+                it.each(sharedPredicateScopeCases)('$priority: $content', checkPriority);
             });
         },
     );

@@ -183,10 +183,11 @@ export class TicketClassifier {
         let nextClauseInheritsQuestionScope: boolean = false;
         for (const boundary of content.matchAll(clauseBoundary)) {
             const preceding = content.slice(clauseStart, boundary.index);
-            // "Data loss and production outages have not occurred" shares one predicate.
+            // Comma/and/or incident subjects without a preceding predicate share one:
+            // "Data loss, production outages have not occurred" is one negative report.
             // Do not turn the first subject into a standalone affirmative report.
             if (
-                /^(?:and|or)$/i.test(boundary[0]) &&
+                /^(?:,|and|or)$/i.test(boundary[0]) &&
                 criticalPriorityPatterns.some((pattern) => pattern.test(preceding)) &&
                 !declarativePredicate.test(preceding) &&
                 !questionStart.test(preceding)
