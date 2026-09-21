@@ -320,6 +320,216 @@ describe('OpenAI support agent', () => {
             setup().agent.investigate({ question: 'Tools?', source: 'github' }),
         ).rejects.toBeInstanceOf(InvalidSupportReplyError);
     });
+    it('returns a model-visible too_large result for oversized source files', async () => {
+        const sha = 'a'.repeat(40);
+        const oversizedBody = 'x'.repeat(500_001);
+        const route = {
+            ...reply,
+            decision: 'route',
+            summary: 'The lockfile is too large to inspect in this run.',
+            details: '',
+            evidence: [],
+            handoffReason: 'Requested source file exceeded the 500000 byte read_source limit',
+        };
+        const realFetch = globalThis.fetch;
+        const githubRequests: string[] = [];
+        vi.stubGlobal(
+            'fetch',
+            vi.fn<typeof fetch>(async (input, init) => {
+                const requestUrl = input instanceof Request ? input.url : String(input);
+                if (!requestUrl.startsWith('https://api.github.com/'))
+                    return realFetch(input, init);
+                githubRequests.push(requestUrl);
+                return new Response(
+                    JSON.stringify(
+                        requestUrl.includes('/commits/')
+                            ? { sha }
+                            : {
+                                  encoding: 'base64',
+                                  content: Buffer.from(oversizedBody).toString('base64'),
+                                  size: oversizedBody.length,
+                              },
+                    ),
+                );
+            }),
+        );
+        mock().llm.on(
+            { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+            { content: JSON.stringify(route) },
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_source',
+                    name: 'read_source',
+                    arguments: {
+                        repository: 'CopilotKit/CopilotKit',
+                        path: 'pnpm-lock.yaml',
+                        ref: 'main',
+                    },
+                },
+            ],
+        });
+
+        const result = await setup().agent.investigate({
+            question: 'Inspect lockfile',
+            source: 'github',
+        });
+
+        expect(result.reply.decision).toBe('route');
+        expect(result.sources).toEqual([]);
+        expect(githubRequests).toEqual([
+            'https://api.github.com/repos/CopilotKit/CopilotKit/commits/main',
+            `https://api.github.com/repos/CopilotKit/CopilotKit/contents/pnpm-lock.yaml?ref=${sha}`,
+        ]);
+        const modelInput = JSON.stringify(mock().llm.getLastRequest()?.body);
+        expect(modelInput).toContain('too_large');
+        expect(modelInput).toContain('500000');
+        expect(modelInput).toContain('pnpm-lock.yaml');
+        expect(modelInput).not.toContain(oversizedBody);
+    });
+    it('returns too_large before requiring metadata-only large object content', async () => {
+        const sha = 'a'.repeat(40);
+        const route = {
+            ...reply,
+            decision: 'route',
+            summary: 'The lockfile is too large to inspect in this run.',
+            details: '',
+            evidence: [],
+            handoffReason: 'Requested source file exceeded the 500000 byte read_source limit',
+        };
+        const realFetch = globalThis.fetch;
+        vi.stubGlobal(
+            'fetch',
+            vi.fn<typeof fetch>(async (input, init) => {
+                const requestUrl = input instanceof Request ? input.url : String(input);
+                if (!requestUrl.startsWith('https://api.github.com/'))
+                    return realFetch(input, init);
+                return new Response(
+                    JSON.stringify(
+                        requestUrl.includes('/commits/')
+                            ? { sha }
+                            : { encoding: 'none', content: '', size: 1_000_000 },
+                    ),
+                );
+            }),
+        );
+        mock().llm.on(
+            { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+            { content: JSON.stringify(route) },
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_source',
+                    name: 'read_source',
+                    arguments: {
+                        repository: 'CopilotKit/CopilotKit',
+                        path: 'pnpm-lock.yaml',
+                        ref: 'main',
+                    },
+                },
+            ],
+        });
+
+        const result = await setup().agent.investigate({
+            question: 'Inspect lockfile',
+            source: 'github',
+        });
+
+        expect(result.reply.decision).toBe('route');
+        expect(result.sources).toEqual([]);
+        const modelInput = JSON.stringify(mock().llm.getLastRequest()?.body);
+        expect(modelInput).toContain('too_large');
+        expect(modelInput).toContain('1000000');
+        expect(modelInput).toContain('500000');
+    });
+    it('still rejects malformed in-limit source file payloads', async () => {
+        const sha = 'a'.repeat(40);
+        const realFetch = globalThis.fetch;
+        vi.stubGlobal(
+            'fetch',
+            vi.fn<typeof fetch>(async (input, init) => {
+                const requestUrl = input instanceof Request ? input.url : String(input);
+                if (!requestUrl.startsWith('https://api.github.com/'))
+                    return realFetch(input, init);
+                return new Response(
+                    JSON.stringify(
+                        requestUrl.includes('/commits/')
+                            ? { sha }
+                            : { encoding: 'none', content: '', size: 500_000 },
+                    ),
+                );
+            }),
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_source',
+                    name: 'read_source',
+                    arguments: {
+                        repository: 'CopilotKit/CopilotKit',
+                        path: 'pnpm-lock.yaml',
+                        ref: 'main',
+                    },
+                },
+            ],
+        });
+
+        await expect(
+            setup().agent.investigate({ question: 'Inspect lockfile', source: 'github' }),
+        ).rejects.toThrow('base64');
+    });
+    it('accepts source files at the maximum reported size', async () => {
+        const sha = 'a'.repeat(40);
+        const url = `https://github.com/CopilotKit/CopilotKit/blob/${sha}/packages/tools.ts`;
+        const output = { ...reply, evidence: [{ sourceUrl: url, quote: source.content }] };
+        const realFetch = globalThis.fetch;
+        vi.stubGlobal(
+            'fetch',
+            vi.fn<typeof fetch>(async (input, init) => {
+                const requestUrl = input instanceof Request ? input.url : String(input);
+                if (!requestUrl.startsWith('https://api.github.com/'))
+                    return realFetch(input, init);
+                return new Response(
+                    JSON.stringify(
+                        requestUrl.includes('/commits/')
+                            ? { sha }
+                            : {
+                                  encoding: 'base64',
+                                  content: Buffer.from(source.content).toString('base64'),
+                                  size: 500_000,
+                              },
+                    ),
+                );
+            }),
+        );
+        mock().llm.on(
+            { predicate: (req) => req.messages.some((m) => m.role === 'tool') },
+            { content: JSON.stringify(output) },
+        );
+        mock().llm.onMessage(/./, {
+            toolCalls: [
+                {
+                    id: 'call_source',
+                    name: 'read_source',
+                    arguments: {
+                        repository: 'CopilotKit/CopilotKit',
+                        path: 'packages/tools.ts',
+                        ref: 'main',
+                    },
+                },
+            ],
+        });
+
+        const result = await setup().agent.investigate({ question: 'Tools?', source: 'github' });
+
+        expect(result.sources[0]).toMatchObject({
+            content: source.content,
+            sourceUrl: url,
+        });
+        expect(result.reply).toEqual(validateSupportReply(output, result.sources));
+    });
     it.each([
         { description: 'empty', initialResults: [] },
         { description: 'deprecated-only', initialResults: [deprecatedSource] },

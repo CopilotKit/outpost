@@ -30,6 +30,8 @@ const refSchema = z
     .min(1)
     .max(120)
     .regex(/^[a-zA-Z0-9._/@-]+$/);
+const SOURCE_READ_MAX_BYTES = 500_000;
+
 const sourceParams = z.object({
     repository: repositorySchema,
     path: z.string().min(1).max(300),
@@ -248,11 +250,22 @@ export class SupportAgent {
                         ref: commit.sha,
                         path,
                     };
+                const fileMetadata = z.object({ size: z.number() }).parse(fileData);
+                if (fileMetadata.size > SOURCE_READ_MAX_BYTES)
+                    return {
+                        status: 'too_large',
+                        resource: 'file',
+                        repository,
+                        ref: commit.sha,
+                        path,
+                        size: fileMetadata.size,
+                        maxSize: SOURCE_READ_MAX_BYTES,
+                    };
                 const file = z
                     .object({
                         encoding: z.literal('base64'),
                         content: z.string(),
-                        size: z.number().max(500_000),
+                        size: z.number(),
                     })
                     .parse(fileData);
                 return remember([
