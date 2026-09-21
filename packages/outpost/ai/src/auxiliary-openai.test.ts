@@ -85,6 +85,10 @@ describe('Luna auxiliary calls', () => {
 
     it.each([
         'Security vulnerability in authentication',
+        'Users experienced data loss.',
+        'Customers experienced a production outage.',
+        'We had data loss.',
+        'No users experienced data loss, but production is down.',
         'Data loss, production outages have been reported.',
         'Data loss, production outages have not been reported. Production is down.',
         'Production is currently down.',
@@ -132,6 +136,9 @@ describe('Luna auxiliary calls', () => {
     it.each([
         'How do I prevent data loss?',
         'There was no data loss',
+        'No users experienced data loss.',
+        'No customers experienced a production outage.',
+        'We never had data loss.',
         'Data loss, production outages have not been reported.',
         'Data loss, production outages, and security vulnerabilities have not been reported.',
         'This does not represent data loss.',

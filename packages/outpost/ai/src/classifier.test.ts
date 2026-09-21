@@ -578,6 +578,24 @@ describe('critical incident context boundaries', () => {
             'Data loss, production outages, security vulnerabilities have not been reported.',
             'Data loss, production outages, security vulnerabilities have been reported.',
         ],
+        ['No users had data loss.', 'Users had data loss.'],
+        ['No users saw a production outage.', 'Users saw a production outage.'],
+        ['No users reported a security vulnerability.', 'Users reported a security vulnerability.'],
+        ['No customers had a security vulnerability.', 'Customers had a security vulnerability.'],
+        ['No customers saw data loss.', 'Customers saw data loss.'],
+        ['No customers reported a production outage.', 'Customers reported a production outage.'],
+        [
+            'No team members experienced a security vulnerability.',
+            'Team members experienced a security vulnerability.',
+        ],
+        ['No team members had a production outage.', 'Team members had a production outage.'],
+        ['No team members saw data loss.', 'Team members saw data loss.'],
+        [
+            'No team members reported a security vulnerability.',
+            'Team members reported a security vulnerability.',
+        ],
+        ['We never had a production outage.', 'We had a production outage.'],
+        ['We never had a security vulnerability.', 'We had a security vulnerability.'],
         [
             "We haven't seen customer reports of data loss.",
             'We have seen customer reports of data loss.',
@@ -651,6 +669,11 @@ describe('critical incident context boundaries', () => {
         'Can this be because data loss occurred?',
     ];
     const adjacentReports = [
+        'Users did experience data loss.',
+        'Customers did experience a production outage.',
+        'No users experienced data loss, but production is down.',
+        'No users experienced data loss and production is down.',
+        'No team members had a security vulnerability, production is down.',
         'Data loss occurred, production outages have not been reported.',
         'Data loss, production outages have not been reported, but production is down.',
         'Data loss, production outages have not been reported and production is down.',
@@ -763,6 +786,33 @@ describe('critical incident context boundaries', () => {
         },
     ];
 
+    const polarityContrastCases = [
+        { content: 'No users experienced data loss.', priority: TicketPriority.HIGH },
+        { content: 'Users experienced data loss.', priority: TicketPriority.CRITICAL },
+        {
+            content: 'No users experienced data loss. Production is down.',
+            priority: TicketPriority.CRITICAL,
+        },
+        {
+            content: 'No customers experienced a production outage.',
+            priority: TicketPriority.HIGH,
+        },
+        {
+            content: 'Customers experienced a production outage.',
+            priority: TicketPriority.CRITICAL,
+        },
+        {
+            content: 'No customers experienced a production outage. Production is down.',
+            priority: TicketPriority.CRITICAL,
+        },
+        { content: 'We never had data loss.', priority: TicketPriority.HIGH },
+        { content: 'We had data loss.', priority: TicketPriority.CRITICAL },
+        {
+            content: 'We never had data loss. Production is down.',
+            priority: TicketPriority.CRITICAL,
+        },
+    ];
+
     describe.each(['heuristic', 'model failure', 'healthy LOW model'] as const)(
         '%s',
         (boundary) => {
@@ -797,6 +847,9 @@ describe('critical incident context boundaries', () => {
             it.each(cases)('$priority: $content', checkPriority);
             describe('shared predicate scope preservation', () => {
                 it.each(sharedPredicateScopeCases)('$priority: $content', checkPriority);
+            });
+            describe('incident polarity contrasts', () => {
+                it.each(polarityContrastCases)('$priority: $content', checkPriority);
             });
         },
     );
