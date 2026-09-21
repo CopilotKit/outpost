@@ -15,14 +15,96 @@ function mockServer(result: unknown) {
     return fetchMock;
 }
 
-afterEach(() => vi.unstubAllGlobals());
-
-describe.each([
+const searches = [
     ['searchDocs', 'search-docs'],
     ['searchCode', 'search-code'],
     ['searchAgUiDocs', 'search-ag-ui-docs'],
     ['searchAgUiCode', 'search-ag-ui-code'],
-] as const)('%s version filtering', (method, tool) => {
+] as const;
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe.each(searches)('%s strict legacy JSON evidence', (method, tool) => {
+    const content = 'useCopilotAction registers frontend actions.';
+    const sourceUrl = 'https://docs.copilotkit.ai/actions';
+    const valid = { title: 'Actions', content, score: 0.9, sourceUrl };
+
+    function retrieve(entries: unknown[]) {
+        mockServer({ content: [{ type: 'text', text: JSON.stringify(entries) }] });
+        return new PathfinderClient('https://mcp.example.test').searchEvidence(tool, {
+            query: 'actions',
+        });
+    }
+
+    it.each([
+        ['object content', { content: { text: content }, score: 0.9 }],
+        ['boolean snippet', { snippet: true, score: 0.9 }],
+        ['numeric text', { text: 42, score: 0.9 }],
+        ['blank content', { content: ' \n ', score: 0.9 }],
+        ['missing content', { score: 0.9 }],
+        ['missing score', { content }],
+        ['null score', { content, score: null }],
+        ['numeric string similarity', { content, similarity: '0.9' }],
+        ['boolean score', { content, score: true }],
+        ['array relevance', { content, relevance: [0.9] }],
+        ['invalid preferred content', { content: false, snippet: content, score: 0.9 }],
+        ['invalid preferred score', { content, similarity: 'bad', score: 0.9 }],
+    ])('rejects %s instead of coercing it into evidence', async (_name, fields) => {
+        await expect(retrieve([{ title: 'Actions', sourceUrl, ...fields }])).rejects.toThrow(
+            'malformed search evidence',
+        );
+    });
+
+    it.each([
+        ['content/similarity', { content, similarity: 0.9 }, 0.9],
+        ['snippet/score', { snippet: content, score: 0.9 }, 0.9],
+        ['text/relevance', { text: content, relevance: 0.9 }, 0.9],
+        [
+            'nullish alias fallback and zero',
+            { content: null, snippet: content, similarity: null, score: 0 },
+            0,
+        ],
+    ])('preserves valid %s fields', async (_name, fields, score) => {
+        await expect(retrieve([{ title: 'Actions', sourceUrl, ...fields }])).resolves.toEqual([
+            { title: 'Actions', content, score, sourceUrl },
+        ]);
+    });
+
+    it('rejects the whole result when one entry has malformed fields', async () => {
+        await expect(retrieve([valid, { ...valid, content: { text: content } }])).rejects.toThrow(
+            'malformed search evidence',
+        );
+    });
+
+    it.each([
+        ['JSON array', { content: [{ type: 'text', text: '[]' }] }],
+        [
+            'no_results envelope',
+            { content: [{ type: 'text', text: '{"results":[],"reason":"no_results"}' }] },
+        ],
+        ['empty MCP success', { content: [] }],
+    ])('preserves explicit absence via %s', async (_name, payload) => {
+        mockServer(payload);
+        await expect(
+            new PathfinderClient('https://mcp.example.test').searchEvidence(tool, {
+                query: 'actions',
+            }),
+        ).resolves.toEqual([]);
+    });
+
+    it('keeps the public legacy wrapper tolerant', async () => {
+        mockServer({
+            content: [
+                { type: 'text', text: JSON.stringify([{ ...valid, content: true, score: '0.9' }]) },
+            ],
+        });
+        await expect(
+            new PathfinderClient('https://mcp.example.test')[method]({ query: 'actions' }),
+        ).resolves.toEqual([{ ...valid, content: 'true' }]);
+    });
+});
+
+describe.each(searches)('%s version filtering', (method, tool) => {
     it.each(['v1', 'v2', undefined] as const)(
         'preserves the requested version %s in the JSON-RPC arguments',
         async (version) => {

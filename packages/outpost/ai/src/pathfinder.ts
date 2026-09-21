@@ -3,6 +3,22 @@ import { z } from 'zod';
 import { config } from './config.js';
 import { parseSourceUrl } from './support-reply.js';
 
+// Validate selected legacy fields before the public parser can coerce them.
+const legacyEvidenceFields = z
+    .object({
+        content: z.unknown().optional(),
+        snippet: z.unknown().optional(),
+        text: z.unknown().optional(),
+        similarity: z.unknown().optional(),
+        score: z.unknown().optional(),
+        relevance: z.unknown().optional(),
+    })
+    .transform((entry) => ({
+        content: entry.content ?? entry.snippet ?? entry.text,
+        score: entry.similarity ?? entry.score ?? entry.relevance,
+    }))
+    .pipe(z.object({ content: z.string().trim().min(1), score: z.number().finite() }));
+
 /**
  * Turn a code hit's REPOSITORY + PATH into a link a reader can open.
  *
@@ -334,10 +350,15 @@ export class PathfinderClient {
             results: z.array(z.unknown()).length(0),
             reason: z.literal('no_results'),
         });
+        let decoded: unknown;
         try {
-            if (empty.safeParse(JSON.parse(text)).success) return [];
+            decoded = JSON.parse(text);
         } catch {
             /* The normal nonempty response uses SNIPPET blocks, not JSON. */
+        }
+        if (empty.safeParse(decoded).success) return [];
+        if (Array.isArray(decoded) && !z.array(legacyEvidenceFields).safeParse(decoded).success) {
+            throw new Error(`Pathfinder ${tool} returned malformed search evidence`);
         }
         const results = this.parseSearchResults(result);
         if (
