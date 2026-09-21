@@ -17,7 +17,8 @@ const auxiliaryDefaultModel =
     process.env.AI_RESPONSE_PROVIDER === 'anthropic' ? 'claude-haiku-4-5-20251001' : 'gpt-5.6-luna';
 
 function envValueOrDefault(value: string | undefined, fallback: string): string {
-    return value?.trim() ? value : fallback;
+    const normalized = value?.trim();
+    return normalized ? normalized : fallback;
 }
 
 function isBlank(value: string | undefined): boolean {
@@ -165,10 +166,11 @@ export function validateConfig(
 export function validateModelProvider(provider: string, model: string, name: string): void {
     if (!['openai', 'anthropic'].includes(provider))
         throw new Error('[AI Config] AI_RESPONSE_PROVIDER must be openai or anthropic');
-    if (isBlank(model)) throw new Error(`[AI Config] ${name} must not be blank`);
+    const normalizedModel = model.trim();
+    if (!normalizedModel) throw new Error(`[AI Config] ${name} must not be blank`);
     if (
-        (provider === 'openai' && model.startsWith('claude-')) ||
-        (provider === 'anthropic' && isKnownOpenAIModel(model))
+        (provider === 'openai' && normalizedModel.startsWith('claude-')) ||
+        (provider === 'anthropic' && isKnownOpenAIModel(normalizedModel))
     )
         throw new Error(`[AI Config] ${name} does not match AI_RESPONSE_PROVIDER`);
 }

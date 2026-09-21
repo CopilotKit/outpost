@@ -74,6 +74,42 @@ describe('validateConfig', () => {
         ['sentimentModel', 'AI_SENTIMENT_MODEL'],
     ] as const)('%s provider validation', (key, name) => {
         it.each([
+            ['anthropic', 'claude-sonnet-4-6', '  gpt-5.6-luna  '],
+            ['openai', 'gpt-5.6-luna', '  claude-sonnet-4-6  '],
+        ] as const)(
+            'rejects whitespace-padded known-family mismatch %s / %s',
+            (provider, responseModel, model) => {
+                expect(() =>
+                    validateConfig({
+                        ...defaults,
+                        responseProvider: provider,
+                        responseModel: key === 'responseModel' ? model : responseModel,
+                        [key]: model,
+                    }),
+                ).toThrow(`[AI Config] ${name} does not match AI_RESPONSE_PROVIDER`);
+            },
+        );
+
+        it.each([
+            ['anthropic', 'claude-sonnet-4-6', '  claude-haiku-4-5-20251001  '],
+            ['openai', 'gpt-5.6-luna', '  gpt-5.6-luna  '],
+            ['openai', 'gpt-5.6-luna', '  azure-prod-deployment  '],
+            ['anthropic', 'claude-sonnet-4-6', '  custom-anthropic-deployment  '],
+        ] as const)(
+            'accepts whitespace-padded valid/custom model %s / %s',
+            (provider, responseModel, model) => {
+                expect(() =>
+                    validateConfig({
+                        ...defaults,
+                        responseProvider: provider,
+                        responseModel: key === 'responseModel' ? model : responseModel,
+                        [key]: model,
+                    }),
+                ).not.toThrow();
+            },
+        );
+
+        it.each([
             'gpt-5.6-luna',
             'o1',
             'o1-preview',
@@ -173,6 +209,59 @@ describe('provider model defaults', () => {
             expect(values.sentimentModel).toBe(expected);
         },
     );
+
+    it.each([
+        ['anthropic', 'AI_RESPONSE_MODEL', '  gpt-5.6-luna  '],
+        ['anthropic', 'AI_CONFIDENCE_MODEL', '  gpt-5.6-luna  '],
+        ['anthropic', 'AI_CLASSIFIER_MODEL', '  gpt-5.6-luna  '],
+        ['anthropic', 'AI_SENTIMENT_MODEL', '  gpt-5.6-luna  '],
+        ['openai', 'AI_RESPONSE_MODEL', '  claude-sonnet-4-6  '],
+        ['openai', 'AI_CONFIDENCE_MODEL', '  claude-haiku-4-5-20251001  '],
+        ['openai', 'AI_CLASSIFIER_MODEL', '  claude-haiku-4-5-20251001  '],
+        ['openai', 'AI_SENTIMENT_MODEL', '  claude-haiku-4-5-20251001  '],
+    ] as const)(
+        'rejects whitespace-padded known-family mismatch from %s %s',
+        async (provider, envName, model) => {
+            vi.resetModules();
+            vi.stubEnv('AI_RESPONSE_PROVIDER', provider);
+            vi.stubEnv(
+                'AI_RESPONSE_MODEL',
+                provider === 'anthropic' ? 'claude-sonnet-4-6' : 'gpt-5.6-luna',
+            );
+            vi.stubEnv(envName, model);
+            vi.stubEnv('OPENAI_API_KEY', provider === 'openai' ? 'test-openai' : '');
+            vi.stubEnv('ANTHROPIC_API_KEY', provider === 'anthropic' ? 'test-anthropic' : '');
+            const { validateConfig: validate } = await loadConfig();
+            expect(() => validate()).toThrow('does not match AI_RESPONSE_PROVIDER');
+        },
+    );
+
+    it.each([
+        ['anthropic', 'AI_RESPONSE_MODEL', '  claude-sonnet-4-6  ', 'claude-sonnet-4-6'],
+        [
+            'anthropic',
+            'AI_CONFIDENCE_MODEL',
+            '  claude-haiku-4-5-20251001  ',
+            'claude-haiku-4-5-20251001',
+        ],
+        ['openai', 'AI_RESPONSE_MODEL', '  gpt-5.6-luna  ', 'gpt-5.6-luna'],
+        ['openai', 'AI_CLASSIFIER_MODEL', '  azure-prod-deployment  ', 'azure-prod-deployment'],
+    ] as const)('trims accepted %s %s override', async (provider, envName, model, expected) => {
+        vi.resetModules();
+        vi.stubEnv('AI_RESPONSE_PROVIDER', provider);
+        vi.stubEnv(envName, model);
+        vi.stubEnv('OPENAI_API_KEY', provider === 'openai' ? 'test-openai' : '');
+        vi.stubEnv('ANTHROPIC_API_KEY', provider === 'anthropic' ? 'test-anthropic' : '');
+        const { config: values, validateConfig: validate } = await loadConfig();
+        expect(() => validate()).not.toThrow();
+        const keyByEnv = {
+            AI_RESPONSE_MODEL: 'responseModel',
+            AI_CONFIDENCE_MODEL: 'confidenceModel',
+            AI_CLASSIFIER_MODEL: 'classifierModel',
+            AI_SENTIMENT_MODEL: 'sentimentModel',
+        } as const;
+        expect(values[keyByEnv[envName]]).toBe(expected);
+    });
 
     it.each(['openai', 'anthropic'] as const)(
         'treats blank %s model overrides as absent defaults',
