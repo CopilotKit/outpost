@@ -24,6 +24,19 @@ describe('validateConfig', () => {
         ).toThrow('ANTHROPIC_API_KEY'));
     it('requires an OpenAI key for the default provider', () =>
         expect(() => validateConfig({ ...defaults, openaiApiKey: '' })).toThrow('OPENAI_API_KEY'));
+    it.each([
+        ['openai', 'openaiApiKey', 'OPENAI_API_KEY'],
+        ['anthropic', 'anthropicApiKey', 'ANTHROPIC_API_KEY'],
+    ] as const)('rejects a blank selected %s API key', (provider, key, envName) => {
+        expect(() =>
+            validateConfig({
+                ...defaults,
+                responseProvider: provider,
+                responseModel: provider === 'anthropic' ? 'claude-sonnet-4-6' : 'gpt-5.6-luna',
+                [key]: '   ',
+            }),
+        ).toThrow(envName);
+    });
     it('supports an explicit Anthropic rollback without an OpenAI key', () =>
         expect(() =>
             validateConfig({
@@ -97,6 +110,31 @@ describe('validateConfig', () => {
         it.each(['o1', 'o3', 'o4-mini'])('accepts known OpenAI model %s under OpenAI', (model) => {
             expect(() => validateConfig({ ...defaults, [key]: model })).not.toThrow();
         });
+
+        it('accepts a nonblank custom OpenAI deployment name', () => {
+            expect(() =>
+                validateConfig({ ...defaults, [key]: 'azure-prod-deployment' }),
+            ).not.toThrow();
+        });
+
+        it.each(['openai', 'anthropic'] as const)(
+            'rejects a direct blank %s model value',
+            (provider) => {
+                expect(() =>
+                    validateConfig({
+                        ...defaults,
+                        responseProvider: provider,
+                        responseModel:
+                            key === 'responseModel'
+                                ? '   '
+                                : provider === 'anthropic'
+                                  ? 'claude-sonnet-4-6'
+                                  : 'gpt-5.6-luna',
+                        [key]: '   ',
+                    }),
+                ).toThrow(`[AI Config] ${name} must not be blank`);
+            },
+        );
     });
     it('rejects provider typos', () =>
         expect(() => validateConfig({ ...defaults, responseProvider: 'opeani' })).toThrow(
@@ -127,12 +165,38 @@ describe('provider model defaults', () => {
                 vi.stubEnv(name, '');
             vi.stubEnv('OPENAI_API_KEY', provider === 'openai' ? 'test-openai' : '');
             vi.stubEnv('ANTHROPIC_API_KEY', provider === 'anthropic' ? 'test-anthropic' : '');
-            const { config: values, validateConfig: validate } = await import('./config.js');
+            const { config: values, validateConfig: validate } = await loadConfig();
             expect(() => validate()).not.toThrow();
             const expected = provider === 'openai' ? 'gpt-5.6-luna' : 'claude-haiku-4-5-20251001';
             expect(values.confidenceModel).toBe(expected);
             expect(values.classifierModel).toBe(expected);
             expect(values.sentimentModel).toBe(expected);
+        },
+    );
+
+    it.each(['openai', 'anthropic'] as const)(
+        'treats blank %s model overrides as absent defaults',
+        async (provider) => {
+            vi.resetModules();
+            vi.stubEnv('AI_RESPONSE_PROVIDER', provider);
+            for (const name of [
+                'AI_RESPONSE_MODEL',
+                'AI_CONFIDENCE_MODEL',
+                'AI_CLASSIFIER_MODEL',
+                'AI_SENTIMENT_MODEL',
+            ])
+                vi.stubEnv(name, '   ');
+            vi.stubEnv('OPENAI_API_KEY', provider === 'openai' ? 'test-openai' : '');
+            vi.stubEnv('ANTHROPIC_API_KEY', provider === 'anthropic' ? 'test-anthropic' : '');
+            const { config: values, validateConfig: validate } = await loadConfig();
+            expect(() => validate()).not.toThrow();
+            const responseExpected = provider === 'openai' ? 'gpt-5.6-luna' : 'claude-sonnet-4-6';
+            const auxiliaryExpected =
+                provider === 'openai' ? 'gpt-5.6-luna' : 'claude-haiku-4-5-20251001';
+            expect(values.responseModel).toBe(responseExpected);
+            expect(values.confidenceModel).toBe(auxiliaryExpected);
+            expect(values.classifierModel).toBe(auxiliaryExpected);
+            expect(values.sentimentModel).toBe(auxiliaryExpected);
         },
     );
 });

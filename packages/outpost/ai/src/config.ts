@@ -16,6 +16,14 @@ if (!Number.isSafeInteger(maxQueryChars) || maxQueryChars <= 0) {
 const auxiliaryDefaultModel =
     process.env.AI_RESPONSE_PROVIDER === 'anthropic' ? 'claude-haiku-4-5-20251001' : 'gpt-5.6-luna';
 
+function envValueOrDefault(value: string | undefined, fallback: string): string {
+    return value?.trim() ? value : fallback;
+}
+
+function isBlank(value: string | undefined): boolean {
+    return value === undefined || value.trim().length === 0;
+}
+
 export const config = {
     /** Anthropic API key — required for Claude calls */
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
@@ -31,16 +39,17 @@ export const config = {
     fallbackDocsUrl: process.env.FALLBACK_DOCS_URL || 'https://docs.copilotkit.ai/llms-full.txt',
 
     /** Model used for response generation */
-    responseModel:
-        process.env.AI_RESPONSE_MODEL ||
-        (process.env.AI_RESPONSE_PROVIDER === 'anthropic' ? 'claude-sonnet-4-6' : 'gpt-5.6-luna'),
+    responseModel: envValueOrDefault(
+        process.env.AI_RESPONSE_MODEL,
+        process.env.AI_RESPONSE_PROVIDER === 'anthropic' ? 'claude-sonnet-4-6' : 'gpt-5.6-luna',
+    ),
     legacyResponseModel: process.env.AI_LEGACY_RESPONSE_MODEL || 'claude-sonnet-4-6',
 
     /** Model used for confidence scoring (cheaper, faster) */
-    confidenceModel: process.env.AI_CONFIDENCE_MODEL || auxiliaryDefaultModel,
+    confidenceModel: envValueOrDefault(process.env.AI_CONFIDENCE_MODEL, auxiliaryDefaultModel),
 
     /** Model used for ticket classification (cheaper, faster) */
-    classifierModel: process.env.AI_CLASSIFIER_MODEL || auxiliaryDefaultModel,
+    classifierModel: envValueOrDefault(process.env.AI_CLASSIFIER_MODEL, auxiliaryDefaultModel),
 
     /** Maximum tokens for response generation */
     maxResponseTokens: 2048,
@@ -52,7 +61,7 @@ export const config = {
     maxClassifierTokens: 2048,
 
     /** Model used for sentiment analysis (cheap, fast) */
-    sentimentModel: process.env.AI_SENTIMENT_MODEL || auxiliaryDefaultModel,
+    sentimentModel: envValueOrDefault(process.env.AI_SENTIMENT_MODEL, auxiliaryDefaultModel),
 
     /** Includes low-effort reasoning and structured sentiment output. */
     maxSentimentTokens: 2048,
@@ -130,7 +139,7 @@ export function validateConfig(
     > &
         Partial<Pick<AIConfig, 'confidenceModel' | 'classifierModel' | 'sentimentModel'>> = config,
 ): void {
-    if (values.responseProvider === 'anthropic' && !values.anthropicApiKey) {
+    if (values.responseProvider === 'anthropic' && isBlank(values.anthropicApiKey)) {
         throw new Error(
             '[AI Config] ANTHROPIC_API_KEY is required but not set. ' +
                 'Set the ANTHROPIC_API_KEY environment variable before starting the pipeline.',
@@ -138,7 +147,7 @@ export function validateConfig(
     }
     if (!['openai', 'anthropic'].includes(values.responseProvider))
         throw new Error('[AI Config] AI_RESPONSE_PROVIDER must be openai or anthropic');
-    if (values.responseProvider === 'openai' && !values.openaiApiKey)
+    if (values.responseProvider === 'openai' && isBlank(values.openaiApiKey))
         throw new Error('[AI Config] OPENAI_API_KEY is required for the OpenAI support agent');
     for (const [name, model] of [
         ['AI_RESPONSE_MODEL', values.responseModel],
@@ -146,7 +155,7 @@ export function validateConfig(
         ['AI_CLASSIFIER_MODEL', values.classifierModel],
         ['AI_SENTIMENT_MODEL', values.sentimentModel],
     ] as const) {
-        if (model) validateModelProvider(values.responseProvider, model, name);
+        if (model !== undefined) validateModelProvider(values.responseProvider, model, name);
     }
     if (!['report', 'enforce'].includes(values.draftLintMode))
         throw new Error('[AI Config] AI_DRAFT_LINT_MODE must be report or enforce');
@@ -156,6 +165,7 @@ export function validateConfig(
 export function validateModelProvider(provider: string, model: string, name: string): void {
     if (!['openai', 'anthropic'].includes(provider))
         throw new Error('[AI Config] AI_RESPONSE_PROVIDER must be openai or anthropic');
+    if (isBlank(model)) throw new Error(`[AI Config] ${name} must not be blank`);
     if (
         (provider === 'openai' && model.startsWith('claude-')) ||
         (provider === 'anthropic' && isKnownOpenAIModel(model))
