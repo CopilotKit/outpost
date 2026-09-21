@@ -118,7 +118,7 @@ export class TicketClassifier {
             /\bsecurity\s+vulnerabilit(?:y|ies)\b/i,
             /\bdata[\s-]+loss\b/i,
             /\bproduction[\s-]+outages?\b/i,
-            /\bproduction(?:\s+(?:service|system|environment))?\s+(?:is\s+)?down\b/i,
+            /\bproduction(?:\s+(?:service|system|environment))?\s+(?:(?:is|are|was|were)\s+(?:(?:currently|completely|still)\s+)*)?down\b/i,
         ];
         const auxiliaries =
             '(?:can|could|should|would|will|is|are|was|were|do|does|did|has|have|had)';

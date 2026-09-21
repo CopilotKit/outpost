@@ -224,6 +224,10 @@ describe('TicketClassifier', () => {
             'The latest runtime update caused data loss for our customers.',
             'Production outage: all customers are unable to reach the runtime.',
             'Our production service is down and customers cannot connect.',
+            'Production is currently down.',
+            'Our production service is completely down.',
+            'The production system is still down.',
+            'The production environment is currently down.',
         ])('preserves CRITICAL incidents when the model fails: %s', async (content) => {
             mock.nextRequestError(500, { message: 'API error' });
 
@@ -261,6 +265,9 @@ describe('TicketClassifier', () => {
             'We found security vulnerabilities exposing private conversations.',
             'Customers report data-loss after upgrading the runtime.',
             'PRODUCTION OUTAGE: every request times out.',
+            'Production is currently down.',
+            'Our production service is completely down.',
+            'The production system is still down.',
         ])('detects explicit critical incidents: %s', (content) => {
             expect(classifier.heuristicClassify(content).priority).toBe(TicketPriority.CRITICAL);
         });
@@ -440,6 +447,7 @@ describe('critical incident context boundaries', () => {
         ['Production outage?', 'A production outage occurred.'],
         ['Security vulnerability?', 'A security vulnerability was found.'],
         ['Production is down?', 'Production is down.'],
+        ['Is production currently down?', 'Production is currently down.'],
         ['Data loss has not occurred.', 'Data loss has occurred.'],
         ['A production outage has never been reported.', 'A production outage has been reported.'],
         [

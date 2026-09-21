@@ -83,13 +83,17 @@ describe('Luna auxiliary calls', () => {
         ).toBe('CRITICAL');
     });
 
-    it('retains heuristic CRITICAL when Luna underestimates an incident', async () => {
+    it.each([
+        'Security vulnerability in authentication',
+        'Production is currently down.',
+        'Our production service is completely down.',
+        'The production system is still down.',
+    ])('retains heuristic CRITICAL when Luna underestimates an incident: %s', async (content) => {
         mock().llm.onMessage(/./, { content: JSON.stringify(classification) });
-        expect(
-            await new TicketClassifier(options).classify(
-                'Security vulnerability in authentication',
-            ),
-        ).toMatchObject({ priority: 'CRITICAL', degraded: false });
+        expect(await new TicketClassifier(options).classify(content)).toMatchObject({
+            priority: 'CRITICAL',
+            degraded: false,
+        });
     });
 
     it.each([
