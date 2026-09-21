@@ -175,7 +175,7 @@ export function validateModelProvider(provider: string, model: string, name: str
         throw new Error(`[AI Config] ${name} does not match AI_RESPONSE_PROVIDER`);
 }
 
-/** Recognize known families without rejecting custom provider deployment names. */
+/** Recognize known families and aliases without rejecting custom provider deployment names. */
 function isKnownOpenAIModel(model: string): boolean {
-    return model.startsWith('gpt-') || /^o[134](?:-|$)/.test(model);
+    return model === 'chat-latest' || model.startsWith('gpt-') || /^o[134](?:-|$)/.test(model);
 }
