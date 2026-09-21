@@ -137,6 +137,8 @@ export class TicketClassifier {
             /\bwithout(?:\s+(?:any|reported|evidence|of|reports?|customer|customers))*\s+(?:a|an|the)?\s*$/i;
         const noIncidentPrefix =
             /\b(?:there\s+(?:was|were)\s+no|no(?:\s+(?:reported|customer|customers|reports?|evidence|of))*)\s+(?:a|an|the)?\s*$/i;
+        const copularNegationPrefix =
+            /\b(?:(?:is|are|was|were)\s+not|(?:is|are|was|were)n['’]t)\s+(?:a|an|the)?\s*$/i;
         const hypotheticalIncidentPrefix = /\bhypothetical\s+(?:a|an|the)?\s*$/i;
         const negativeObservationPrefix = new RegExp(
             `\\b(?:(?:(?:has|have|had|do|does|did|was|were|is|are)\\s+(?:not|never)|\\w+n['’]t)\\s+|never\\s+)(?:yet\\s+|already\\s+|any\\s+|customer\\s+|customers\\s+|reports?\\s+|reported\\s+|evidence\\s+|of\\s+)*(?:see|seen|find|found|receive|received|experience|experienced|suffer|suffered|cause|caused|occur|occurred|happen|happened)\\b(?:\\s+(?:yet|already|any|customer|customers|reports?|reported|evidence|of|(?:a|an|the)|${incidentMention})|\\s*[,/]\\s*|\\s+(?:and|or)\\s+)*\\s*$`,
@@ -147,6 +149,7 @@ export class TicketClassifier {
             (successfulPreventionPrefix.test(prefix) ||
                 withoutIncidentPrefix.test(prefix) ||
                 hypotheticalIncidentPrefix.test(prefix) ||
+                copularNegationPrefix.test(prefix) ||
                 noIncidentPrefix.test(prefix) ||
                 negativeObservationPrefix.test(prefix));
         const nonIncidentSuffix = new RegExp(

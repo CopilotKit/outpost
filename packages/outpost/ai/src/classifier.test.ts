@@ -446,6 +446,18 @@ describe('critical incident context boundaries', () => {
             'Security vulnerabilities have not been found.',
             'Security vulnerabilities have been found.',
         ],
+        ['This is not a security vulnerability.', 'A security vulnerability was found.'],
+        ['This is not data loss.', 'Data loss occurred in production.'],
+        ['This is not a production outage.', 'A production outage occurred.'],
+        ['These are not security vulnerabilities.', 'Security vulnerabilities were found.'],
+        ['That was not the production outage.', 'A production outage was reported.'],
+        ['Those were not production outages.', 'Production outages occurred in production.'],
+        ["This isn't a security vulnerability.", 'A security vulnerability was found.'],
+        ['This isn’t data loss.', 'Data loss occurred in production.'],
+        ["This isn't a production outage.", 'A production outage occurred.'],
+        ["These aren't security vulnerabilities.", 'Security vulnerabilities were found.'],
+        ["That wasn't the production outage.", 'A production outage was reported.'],
+        ['Those weren’t production outages.', 'Production outages occurred in production.'],
         [
             'We have not seen any customer reports of data loss.',
             'We have seen customer reports of data loss.',
@@ -637,6 +649,11 @@ describe('critical incident context boundaries', () => {
             priority: TicketPriority.CRITICAL,
         },
     ];
+    const ownerNoPreservationControls = [
+        'We had no data loss',
+        'We have no reports of data loss',
+        'The team had no production outage',
+    ];
     cases.push(
         ...adjacentReports.map((content) => ({
             content,
@@ -651,6 +668,10 @@ describe('critical incident context boundaries', () => {
             priority: TicketPriority.CRITICAL,
         })),
         ...r6PreservationControls,
+        ...ownerNoPreservationControls.map((content) => ({
+            content,
+            priority: TicketPriority.HIGH,
+        })),
     );
 
     cases.push({
