@@ -175,12 +175,31 @@ export function validateModelProvider(provider: string, model: string, name: str
         throw new Error(`[AI Config] ${name} does not match AI_RESPONSE_PROVIDER`);
 }
 
-/** Recognize known families and aliases without rejecting custom provider deployment names. */
+/**
+ * Recognize known families and aliases without rejecting custom provider deployment names.
+ *
+ * A fine-tune is resolved to the base family it was trained from rather than matched as its own
+ * prefix, so every family recognized bare is recognized under `ft:` too — previously `ft:gpt-`
+ * was recognized while the o-series fine-tunes of the same helper's own `/^o[134]/` families
+ * were not, and that mismatch reached a runtime provider call instead of failing at startup.
+ */
 function isKnownOpenAIModel(model: string): boolean {
-    return (
-        model === 'chat-latest' ||
-        model.startsWith('gpt-') ||
-        model.startsWith('ft:gpt-') ||
-        /^o[134](?:-|$)/.test(model)
-    );
+    return isRecognizedOpenAIBase(fineTuneBase(model));
+}
+
+/**
+ * The base model of an OpenAI fine-tune output ID, or the value unchanged when it is not one.
+ *
+ * Customer model IDs are `ft:<base>:<org>[:<suffix>[:<id>]]` and the base itself carries no
+ * colon, so the first segment after the prefix is the base. Taking the segment (not the whole
+ * remainder) is what lets a bare-family test anchored to `-` or end-of-string — `/^o[134](?:-|$)/`
+ * — still match when a fine-tune suffix follows it.
+ */
+function fineTuneBase(model: string): string {
+    return model.startsWith('ft:') ? model.slice(3).split(':')[0] : model;
+}
+
+/** Bare family membership. Compared exactly: custom deployment names keep their own casing. */
+function isRecognizedOpenAIBase(base: string): boolean {
+    return base === 'chat-latest' || base.startsWith('gpt-') || /^o[134](?:-|$)/.test(base);
 }

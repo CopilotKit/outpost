@@ -4,7 +4,50 @@ import { validateConfig, validateModelProvider } from './config.js';
 const { loadConfig } = vi.hoisted(() => ({ loadConfig: () => import('./config.js') }));
 const fineTunedGpt41 = 'ft:gpt-4.1:org:job';
 const fineTunedGpt4o = 'ft:gpt-4o-mini:openai:custom-model-name:7p4lURel';
+/**
+ * Fine-tuned o-series identifier, evidence status per r12-openai-finetuning-evidence.md
+ * (primary sources checked 2026-09-21):
+ *   DOCUMENTED — `o4-mini-2025-04-16` is named as a reinforcement-fine-tuning base model, and
+ *     callers are instructed to use output-model IDs beginning `ft:`. Both halves are real.
+ *   INFERRED — the concatenated spelling below was NOT observed as a literal example on either
+ *     page; it follows from combining the documented RFT base with the documented `ft:`
+ *     output-ID rule. (The deprecations page's `ft-o4-mini-2025-04-16` uses a hyphen and is a
+ *     different label, not the colon customer-model-ID format.)
+ * This fixture asserts how the guard classifies an identifier SHAPE. It does not assert that
+ * this identifier is an available model on any account.
+ */
+const fineTunedO4Mini = 'ft:o4-mini-2025-04-16:org:job';
 const modelForms = (model: string) => [model, `  ${model}  `];
+
+/**
+ * Closure invariant for provider-family recognition (R12-LEVER-A02-PROVIDER-FAMILY-CLOSURE).
+ *
+ * Five REPRESENTATIVES of the families the guard already recognizes bare — deliberately not an
+ * inventory, and this array must not grow into a general OpenAI model catalog. Each base is
+ * derived below into its bare form and its `ft:` customer-model-ID form inside the SAME loop, so
+ * a base recognized bare but not under `ft:` fails, and the inverse fails too. That derived
+ * relation is the point: rounds 10-12 each hand-wrote one half of it and missed the other.
+ *
+ * Evidence status of the derived `ft:` fixtures, so no row overclaims (see fineTunedO4Mini above
+ * for the documented/inferred split on `ft:o4-mini-2025-04-16:...`):
+ *   SYNTHETIC CLOSURE CONTROL — `ft:gpt-4.1:...`, `ft:o1:...`, `ft:o3:...` and
+ *     `ft:chat-latest:...` are shape fixtures over bases the guard already classifies as OpenAI.
+ *     No documentation is claimed for them and none is required. They pin the bare/`ft:`
+ *     relation; they do NOT assert that any of these is an available fine-tuned OpenAI model.
+ */
+const RECOGNIZED_OPENAI_BASES = ['gpt-4.1', 'o1', 'o3', 'o4-mini-2025-04-16', 'chat-latest'];
+
+/**
+ * Names that must stay accepted under Anthropic as custom provider deployments. Each embeds a
+ * recognized token (`custom-anthropic-deployment`, the `chat-latest` prefix, the `ft:` prefix)
+ * without being a recognized identifier, so a broadening of the guard shows up here as a
+ * rejection. Compared exactly — case is preserved, never folded (R12-AI-DESIGN01 refuted).
+ */
+const PROTECTED_CUSTOM_DEPLOYMENTS = [
+    'custom-anthropic-deployment',
+    'chat-latest-custom',
+    'ft:custom-deployment',
+];
 
 describe('validateConfig', () => {
     const defaults = {
@@ -32,9 +75,13 @@ describe('validateConfig', () => {
             else expect(validate).toThrow('AI_RESPONSE_MODEL does not match AI_RESPONSE_PROVIDER');
         });
 
+        // `auxiliary model` is the exact name AuxiliaryModel's constructor passes, so these rows
+        // pin the shared direct call site as well as validateConfig's four configured roles.
         it.each(
             ['openai', 'anthropic'].flatMap((provider) =>
-                modelForms(fineTunedGpt41).map((model) => ({ provider, model })),
+                [fineTunedGpt41, fineTunedO4Mini].flatMap((base) =>
+                    modelForms(base).map((model) => ({ provider, model })),
+                ),
             ),
         )('checks direct fine-tuned identity for $provider / $model', ({ provider, model }) => {
             const validate = () => validateModelProvider(provider, model, 'auxiliary model');
@@ -57,6 +104,42 @@ describe('validateConfig', () => {
             ).toThrow('does not match AI_RESPONSE_PROVIDER');
         });
     });
+
+    describe('recognized-base closure across the ft: namespace', () => {
+        // Bare and ft: forms are generated from RECOGNIZED_OPENAI_BASES in one loop, and both
+        // provider expectations from one array, so the four halves cannot drift apart.
+        // Padding appears on the ft: form only; bare padding is already owned by R8-LEVER-A03.
+        it.each(
+            RECOGNIZED_OPENAI_BASES.flatMap((base) =>
+                [base, `ft:${base}:org:job`, `  ft:${base}:org:job  `].flatMap((model) =>
+                    (['anthropic', 'openai'] as const).map((provider) => ({
+                        base,
+                        model,
+                        provider,
+                    })),
+                ),
+            ),
+        )('classifies $base as OpenAI in form $model under $provider', ({ model, provider }) => {
+            const validate = () =>
+                validateConfig({ ...defaults, responseProvider: provider, responseModel: model });
+            if (provider === 'openai') expect(validate).not.toThrow();
+            else expect(validate).toThrow('AI_RESPONSE_MODEL does not match AI_RESPONSE_PROVIDER');
+        });
+
+        it.each(PROTECTED_CUSTOM_DEPLOYMENTS.flatMap(modelForms))(
+            'keeps custom Anthropic deployment %j accepted',
+            (model) => {
+                expect(() =>
+                    validateConfig({
+                        ...defaults,
+                        responseProvider: 'anthropic',
+                        responseModel: model,
+                    }),
+                ).not.toThrow();
+            },
+        );
+    });
+
     it('accepts an OpenAI-only default configuration', () =>
         expect(() => validateConfig({ ...defaults, anthropicApiKey: '' })).not.toThrow());
     it('requires Anthropic only for explicit rollback', () =>
@@ -160,6 +243,7 @@ describe('validateConfig', () => {
             'gpt-5.6-luna',
             'chat-latest',
             ...modelForms(fineTunedGpt4o),
+            ...modelForms(fineTunedO4Mini),
             'o1',
             'o1-preview',
             'o3',
@@ -204,6 +288,7 @@ describe('validateConfig', () => {
             'chat-latest',
             ...modelForms(fineTunedGpt41),
             ...modelForms(fineTunedGpt4o),
+            ...modelForms(fineTunedO4Mini),
         ])('accepts known OpenAI model %s under OpenAI', (model) => {
             expect(() => validateConfig({ ...defaults, [key]: model })).not.toThrow();
         });
