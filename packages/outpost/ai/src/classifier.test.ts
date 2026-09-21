@@ -591,13 +591,24 @@ describe('critical incident context boundaries', () => {
             priority: TicketPriority.CRITICAL,
         },
     ]);
+    const causalDiagnosticQuestions = [
+        'Did this happen because data loss occurred?',
+        'Could this be because a security vulnerability was found?',
+        'Did this happen because a production outage occurred?',
+        'Is this because customers reported data loss?',
+        'Did this happen because data loss occurred or customers reported a security vulnerability?',
+        'Did this happen because data loss occurred and production is down?',
+    ];
     const adjacentReports = [
         'Data loss? The update caused data loss.',
         'Our production service is down and customers cannot connect.',
         'Data loss occurred, can you help?',
         'Can you help, data loss occurred.',
         'Data loss occurred and can you help us restore it?',
+        'Can you help because production is down?',
         'Can you help because our production service is down?',
+        'This happened because data loss occurred.',
+        'Did this happen because data loss occurred? Production is down.',
         'We have not restarted the server and data loss occurred.',
         'Data loss occurred and we have not restarted the server.',
         'No users can connect because production is down.',
@@ -630,6 +641,10 @@ describe('critical incident context boundaries', () => {
         ...adjacentReports.map((content) => ({
             content,
             priority: TicketPriority.CRITICAL,
+        })),
+        ...causalDiagnosticQuestions.map((content) => ({
+            content,
+            priority: TicketPriority.HIGH,
         })),
         ...r6IncidentReports.map((content) => ({
             content,

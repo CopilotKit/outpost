@@ -124,6 +124,8 @@ export class TicketClassifier {
             '(?:can|could|should|would|will|is|are|was|were|do|does|did|has|have|had)';
         const questionWords = `(?:how|what|why|when|where|${auxiliaries})`;
         const questionStart = new RegExp(`^\\s*${questionWords}\\b`, 'i');
+        const causalDiagnosticQuestionStart =
+            /^\s*(?:did\s+(?:this|it|that)\s+happen|could\s+(?:this|it|that)\s+be|is\s+(?:this|it|that))\b/i;
         const incidentMention = `(?:${criticalPriorityPatterns.map((p) => p.source).join('|')})`;
         const coordination = '(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+)';
         const remainingIncidentList = `(?:${coordination}(?:(?:a|an)\\s+)?${incidentMention})*`;
@@ -166,8 +168,9 @@ export class TicketClassifier {
             `(?<=[.!?\\n;])|\\b(?:but|however|because)\\b|(?:[:,]|\\b(?:and|or|yet)\\b)(?=\\s*${independentClauseStart})`,
             'gi',
         );
-        const clauses: string[] = [];
+        const clauses: Array<{ text: string; inheritedQuestionScope: boolean }> = [];
         let clauseStart = 0;
+        let nextClauseInheritsQuestionScope: boolean = false;
         for (const boundary of content.matchAll(clauseBoundary)) {
             const preceding = content.slice(clauseStart, boundary.index);
             // "Data loss and production outages have not occurred" shares one predicate.
@@ -179,18 +182,30 @@ export class TicketClassifier {
                 !questionStart.test(preceding)
             )
                 continue;
-            clauses.push(preceding);
+            clauses.push({
+                text: preceding,
+                inheritedQuestionScope: nextClauseInheritsQuestionScope,
+            });
+            const carriesInheritedQuestionScope: boolean =
+                nextClauseInheritsQuestionScope && /^(?:and|or)$/i.test(boundary[0]);
+            nextClauseInheritsQuestionScope =
+                carriesInheritedQuestionScope ||
+                (/^because$/i.test(boundary[0]) && causalDiagnosticQuestionStart.test(preceding));
             clauseStart = boundary.index + boundary[0].length;
         }
-        clauses.push(content.slice(clauseStart));
+        clauses.push({
+            text: content.slice(clauseStart),
+            inheritedQuestionScope: nextClauseInheritsQuestionScope,
+        });
         let earlierQuestion = false;
-        const hasCriticalIncident = clauses.some((clause) => {
+        const hasCriticalIncident = clauses.some(({ text: clause, inheritedQuestionScope }) => {
             const startsQuestion = questionStart.test(clause);
             // In "Can you help because production is down?", the final question
             // mark belongs to the help request; the declarative clause reports
             // the incident. A bare "Production is down?" remains a question.
             const hasDeclarativePredicate = declarativePredicate.test(clause);
             const isQuestion =
+                inheritedQuestionScope ||
                 startsQuestion ||
                 (clause.includes('?') && (!earlierQuestion || !hasDeclarativePredicate));
             earlierQuestion = /[.!?\n]/.test(clause) ? false : earlierQuestion || startsQuestion;
