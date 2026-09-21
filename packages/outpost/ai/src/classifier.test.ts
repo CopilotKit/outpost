@@ -610,6 +610,9 @@ describe('critical incident context boundaries', () => {
         'Is this because customers reported data loss?',
         'Did this happen because data loss occurred or customers reported a security vulnerability?',
         'Did this happen because data loss occurred and production is down?',
+        'Did the crash happen because data loss occurred?',
+        'Did the migration fail because production is down?',
+        'Can this be because data loss occurred?',
     ];
     const adjacentReports = [
         'Data loss? The update caused data loss.',

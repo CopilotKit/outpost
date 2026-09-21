@@ -125,7 +125,7 @@ export class TicketClassifier {
         const questionWords = `(?:how|what|why|when|where|${auxiliaries})`;
         const questionStart = new RegExp(`^\\s*${questionWords}\\b`, 'i');
         const causalDiagnosticQuestionStart =
-            /^\s*(?:did\s+(?:this|it|that)\s+happen|could\s+(?:this|it|that)\s+be|is\s+(?:this|it|that))\b/i;
+            /^\s*(?:(?:can|could)\s+(?:this|it|that)\s+be|is\s+(?:this|it|that)|did\s+(?:(?:this|it|that)\s+happen|(?:[a-z]+\s+){1,5}(?:happen|fail)))\b/i;
         const incidentMention = `(?:${criticalPriorityPatterns.map((p) => p.source).join('|')})`;
         const coordination = '(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+)';
         const remainingIncidentList = `(?:${coordination}(?:(?:a|an)\\s+)?${incidentMention})*`;
