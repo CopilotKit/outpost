@@ -174,6 +174,8 @@ describe('support reply contract', () => {
         `Read ${sourceUrl}.`,
         `<${sourceUrl}>`,
         `[documentation][guide]\n\n[guide]: ${sourceUrl}`,
+        `[documentation][guide]\n\n[guide]: <${sourceUrl}>`,
+        `[documentation][guide]\n\n   [guide]: ${sourceUrl}`,
     ])('allows retrieved links and anchors in prose %#', (details) => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
     });
@@ -271,6 +273,8 @@ describe('support reply contract', () => {
         '[documentation][a\nb\nc]\n\n[a\nb\nc]: //example.invalid/steal',
         '[documentation][a\\]b\nc]\n\n[a\\]b\nc]: //example.invalid/steal',
         '[documentation][a\\\nb]\n\n[a\\\nb]: //example.invalid/steal',
+        '[documentation][guide]\n\n[guide]: <//example.invalid/steal>',
+        '[documentation][guide]\n\n   [guide]: //example.invalid/steal',
     ])('rejects a non-evidence reference definition destination %#', (details) => {
         expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
     });
@@ -282,6 +286,8 @@ describe('support reply contract', () => {
         `[re\nf]\n\n[re\nf]: \`${sourceUrl}\``,
         `[documentation][re\\]f]\n\n[re\\]f]: \`https://example.com/steal\``,
         `[documentation][re\nf]\n\n[re\nf]: \`https://example.com/steal\``,
+        `[documentation][guide]\n\n> [guide]: \`https://example.com/steal\``,
+        `[documentation][guide]\n\n- [guide]: \`https://example.com/steal\``,
     ])('does not hide a reference destination behind non-code backticks %#', (details) => {
         expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
     });
@@ -301,6 +307,100 @@ describe('support reply contract', () => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
     });
 
+    // A block quote or list item marker only shifts where the line's content starts;
+    // the definition behind it still resolves to a clickable link in the renderer.
+    it.each([
+        '[documentation][ref]\n\n> [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- [ref]: //example.invalid/steal',
+        '> [documentation][ref]\n>\n> [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n>[ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n>\t[ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n>    [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n   > [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n> > [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n* [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n+ [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n1. [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n1) [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n123456789. [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n-\t[ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n-    [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n> - [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- > [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n> [ref]: <//example.invalid/steal>',
+        '[documentation][ref]\n\n> [ref]:\n> //example.invalid/steal',
+        '[documentation][ref]\n\n- [ref]:\n  //example.invalid/steal',
+        '[documentation][re\nf]\n\n> [re\n> f]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n- [re\n  f]: //example.invalid/steal',
+        '[documentation][re\\]f]\n\n> [re\\]f]: //example.invalid/steal',
+    ])(
+        'rejects a non-evidence reference definition behind a block container prefix %#',
+        (details) => {
+            expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
+        },
+    );
+
+    it.each([
+        `[documentation][ref]\n\n> [ref]: ${sourceUrl}`,
+        `[documentation][ref]\n\n- [ref]: ${sourceUrl}`,
+        `[documentation][ref]\n\n> [ref]: <${sourceUrl}>`,
+        `[documentation][ref]\n\n1. [ref]: ${sourceUrl}#runtime`,
+        `[documentation][re\nf]\n\n> [re\n> f]: ${sourceUrl}`,
+        `[documentation][ref]\n\n- [ref]:\n  ${sourceUrl}`,
+    ])('allows an evidence destination behind a block container prefix %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // A list item opens a container whose content column its marker width sets, and
+    // a later line indented to that column is inside the item — across blank lines,
+    // and with no marker of its own to give it away.
+    it.each([
+        '[documentation][ref]\n\n123. item\n\n     [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n-    item\n\n     [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n10. item\n\n    [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n-   item\n\n    [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- item\n\n  [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n1. item\n\n   [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- item\n\n   [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n> 1. item\n>\n>    [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n> 123. item\n>\n>      [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- item\n\n  - nested\n\n    [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- item\n\n  > [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- item\n\n\n  [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- item\n\n\t[ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- item\n\n[ref]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n123. [re\n     f]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n> - [re\n> f]: //example.invalid/steal',
+    ])('rejects a non-evidence reference definition continuing an open list item %#', (details) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
+    });
+
+    it.each([
+        `[documentation][ref]\n\n123. item\n\n     [ref]: ${sourceUrl}`,
+        `[documentation][ref]\n\n-    item\n\n     [ref]: ${sourceUrl}`,
+        `[documentation][ref]\n\n> 1. item\n>\n>    [ref]: ${sourceUrl}`,
+        `[documentation][ref]\n\n- item\n\n  - nested\n\n    [ref]: ${sourceUrl}`,
+        `[documentation][ref]\n\n- item\n\n\t[ref]: ${sourceUrl}`,
+        `[documentation][re\nf]\n\n123. [re\n     f]: ${sourceUrl}`,
+    ])('allows an evidence destination continuing an open list item %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // Four columns past the item's content column is an indented code block inside
+    // the item, so the definition spelled there is a literal example the renderer
+    // never resolves. These must stay accepted while the rows above are rejected.
+    it.each([
+        '[documentation][ref]\n\n123. item\n\n         [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n-    item\n\n         [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- item\n\n      [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n1. item\n\n       [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n123. item\n\n    [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n- item\n\n  - nested\n\n        [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n    [ref]: //example.invalid/steal',
+    ])('keeps an indented literal code example inside a list item %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
     // Shapes the renderer resolves to no definition, and therefore to no link: a
     // destination is only reachable across a single line ending, and a label stops
     // at a blank line and at 999 characters.
@@ -309,7 +409,51 @@ describe('support reply contract', () => {
         '[documentation][a\n\nb]\n\n[a\n\nb]: //example.invalid/steal',
         '[documentation][a\n   \nb]\n\n[a\n   \nb]: //example.invalid/steal',
         `[documentation][a\n${'b'.repeat(999)}]\n\n[a\n${'b'.repeat(999)}]: //example.invalid/steal`,
+        // A label may not hold an unescaped bracket, and may not be only whitespace.
+        // Both render as literal paragraph text, so neither is a link to ground.
+        '[documentation][a[b]\n\n[a[b]: //example.invalid/steal',
+        '[documentation][ ]\n\n[ ]: //example.invalid/steal',
+        // A code fence carried by a block container is still code.
+        '> ```\n> [ref]: //example.invalid/steal\n> ```',
     ])('keeps prose that resolves to no reference definition %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // A container marker consumes a bounded prefix, and an already open container is
+    // the only one a label may continue through. Past those bounds the renderer sees
+    // indented code, a thematic break, or a new block, and resolves no link.
+    it.each([
+        '[documentation][ref]\n\n>     [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n-     [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n    > [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n    - [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n-[ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n1.[ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n1234567890. [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n--- [ref]: //example.invalid/steal',
+        '[documentation][ref]\n\n[ref]:\n- //example.invalid/steal',
+        '[documentation][ref]\n\n[ref]:\n> //example.invalid/steal',
+        '[documentation][re\nf]\n\n[re\n- f]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n[re\n> f]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n> [re\n- f]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n- [re\n- f]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n- [re\n> f]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n> [re\n>\n> f]: //example.invalid/steal',
+    ])('keeps prose whose container prefix resolves to no reference definition %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // The fence recognizer and the reference-definition recognizer must agree: a
+    // definition spelled inside fenced code is a literal example, not a citation.
+    it.each([
+        '```md\n[guide]: //example.invalid/steal\n```',
+        '```md\n[re\\]f]: //example.invalid/steal\n```',
+        '```md\n[re\nf]: //example.invalid/steal\n```',
+        '```md\n   [guide]: //example.invalid/steal\n```',
+        '```md\n[guide]: <//example.invalid/steal>\n```',
+        '```md\n> [guide]: //example.invalid/steal\n```',
+        '```md\n- [guide]: //example.invalid/steal\n```',
+    ])('does not read a reference definition out of fenced code %#', (details) => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
     });
 

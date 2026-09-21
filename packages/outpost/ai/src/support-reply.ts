@@ -1,3 +1,5 @@
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import type { Definition, Nodes } from 'mdast';
 import { z } from 'zod';
 import type { SearchResult } from './types.js';
 
@@ -118,110 +120,85 @@ function proseOutsideFences(text: string): string {
     return prose.join('\n');
 }
 
-/** Between the brackets of a link label CommonMark allows at most 999 characters. */
-const REFERENCE_LABEL_LIMIT = 999;
-
 interface ReferenceDefinition {
-    /** Inclusive line range the whole definition occupies. */
+    /** Inclusive, zero-based line range the whole definition occupies. */
     firstLine: number;
     lastLine: number;
+    /** Destination as the parser decodes it: escapes and references resolved. */
     destination: string;
+    /** Offsets of the destination alone in the text the definition was found in. */
     destinationStart: number;
     destinationEnd: number;
 }
 
 /**
- * Recognize a link reference definition beginning at `start`, which must be the
- * start of line `firstLine`. A label ends at the first right bracket that is not
- * backslash-escaped and may span lines, so no single-line pattern can bound one;
- * missing those labels would leave their destinations unvalidated even though the
- * renderer resolves them to clickable links. Stay at least as permissive as
- * CommonMark: the controls enforced here are only the ones that make the renderer
- * produce no definition at all, and therefore no link.
+ * Offsets of the destination inside a definition the parser has already
+ * delimited. The parser reports the node's range and the decoded URL but not the
+ * destination's own span, and the raw-URL scans below must skip exactly the text
+ * the destination check already covered — no more, so that a URL written inside
+ * a label stays subject to them. Returning nothing masks nothing, which leaves
+ * those scans stricter rather than looser.
  */
-function referenceDefinitionAt(
+function destinationSpan(
     text: string,
     start: number,
-    firstLine: number,
-): ReferenceDefinition | undefined {
-    let cursor = start;
-    for (let indent = 0; indent < 3 && text[cursor] === ' '; indent++) cursor++;
-    if (text[cursor] !== '[') return undefined;
-
-    cursor++;
-    let line = firstLine;
-    const labelStart = cursor;
-    while (cursor < text.length && text[cursor] !== ']') {
-        if (cursor - labelStart >= REFERENCE_LABEL_LIMIT) return undefined;
-        // A backslash at the end of a line escapes nothing, so let the line
-        // ending below decide whether the label continues.
-        if (text[cursor] === '\\' && text[cursor + 1] !== '\n') {
-            cursor += 2;
-            continue;
-        }
-        if (text[cursor] === '\n') {
-            line++;
-            // A blank line ends the label, leaving no definition behind.
-            let ahead = cursor + 1;
-            while (text[ahead] === ' ' || text[ahead] === '\t') ahead++;
-            if (ahead >= text.length || text[ahead] === '\n') return undefined;
-        }
-        cursor++;
-    }
+    end: number,
+): { from: number; to: number } | undefined {
+    let cursor = start + 1;
+    while (cursor < end && text[cursor] !== ']') cursor += text[cursor] === '\\' ? 2 : 1;
     if (text[cursor] !== ']' || text[cursor + 1] !== ':') return undefined;
     cursor += 2;
-
-    // Spaces or tabs reach the destination, across at most one line ending.
-    while (text[cursor] === ' ' || text[cursor] === '\t') cursor++;
-    if (text[cursor] === '\n') {
-        cursor++;
-        line++;
-        while (text[cursor] === ' ' || text[cursor] === '\t') cursor++;
-    }
-
-    const destinationStart = cursor;
-    if (text[destinationStart] === '<') {
-        for (let scan = destinationStart + 1; scan < text.length; scan++) {
-            if (text[scan] === '\n') break;
-            if (text[scan] === '\\' && text[scan + 1] !== '\n') {
+    while (cursor < end && /\s/.test(text[cursor])) cursor++;
+    if (text[cursor] === '<') {
+        for (let scan = cursor + 1; scan < end; scan++) {
+            if (text[scan] === '\\') {
                 scan++;
                 continue;
             }
-            if (text[scan] === '>') {
-                return {
-                    firstLine,
-                    lastLine: line,
-                    destination: text.slice(destinationStart + 1, scan),
-                    destinationStart,
-                    destinationEnd: scan + 1,
-                };
-            }
+            if (text[scan] === '>') return { from: cursor, to: scan + 1 };
         }
-        // An angle destination never spans a line ending. Fall through so an
-        // unterminated one is still checked as the run of characters it is.
     }
-    let destinationEnd = destinationStart;
-    while (destinationEnd < text.length && !/\s/.test(text[destinationEnd])) destinationEnd++;
-    if (destinationEnd === destinationStart) return undefined;
-    return {
-        firstLine,
-        lastLine: line,
-        destination: text.slice(destinationStart, destinationEnd),
-        destinationStart,
-        destinationEnd,
-    };
+    let scan = cursor;
+    while (scan < end && !/\s/.test(text[scan])) scan++;
+    return scan > cursor ? { from: cursor, to: scan } : undefined;
 }
 
-/** Every line start in `text` that begins a link reference definition. */
+/** Definitions can sit at any depth, inside block quotes and list items. */
+function collectDefinitions(node: Nodes, into: Definition[]): void {
+    if (node.type === 'definition') into.push(node);
+    if ('children' in node) for (const child of node.children) collectDefinitions(child, into);
+}
+
+/**
+ * Every link reference definition in `text`, located with the parser the chat
+ * renderer itself runs on — `mdast-util-from-markdown`, which is what
+ * react-markdown's remark-parse uses, at the one version installed here.
+ *
+ * Recognizing definitions by hand drifted from that renderer once per review
+ * round: escaped closing brackets, then labels spanning lines, then block quote
+ * and list markers, then the content column an open list item keeps across blank
+ * lines. Each of those is block structure rather than a line pattern, so each
+ * hand-written bound fixed an instance and left the class. Asking the renderer's
+ * own parser which definitions exist removes the class.
+ */
 function referenceDefinitions(text: string): ReferenceDefinition[] {
-    const definitions: ReferenceDefinition[] = [];
-    let lineStart = 0;
-    for (const [line, source] of text.split('\n').entries()) {
-        const definition = referenceDefinitionAt(text, lineStart, line);
-        if (definition) definitions.push(definition);
-        lineStart += source.length + 1;
-    }
-    return definitions;
+    const nodes: Definition[] = [];
+    collectDefinitions(fromMarkdown(text), nodes);
+    return nodes.flatMap(({ position, url }) => {
+        const start = position?.start.offset;
+        const end = position?.end.offset;
+        if (!position || start === undefined || end === undefined) return [];
+        const span = destinationSpan(text, start, end);
+        return [
+            {
+                firstLine: position.start.line - 1,
+                lastLine: position.end.line - 1,
+                destination: url,
+                destinationStart: span?.from ?? start,
+                destinationEnd: span?.to ?? start,
+            },
+        ];
+    });
 }
 
 /**
@@ -335,7 +312,7 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     // Mask the destination alone: a label is not rendered, and leaving it visible
     // keeps a raw URL inside a multiline label subject to the checks below.
     for (const definition of referenceDefinitions(prose)) {
-        checkUrl(definition.destination, false, true);
+        checkUrl(definition.destination);
         maskMarkdownDestination(definition.destinationStart, definition.destinationEnd);
     }
     const proseRawUrlView = proseWithoutMarkdownDestinations.join('');
