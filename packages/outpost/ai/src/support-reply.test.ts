@@ -249,6 +249,79 @@ describe('support reply contract', () => {
         expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
     });
 
+    // A link label ends at the first right bracket that is not backslash-escaped and
+    // may span lines, so every shape below resolves to a clickable link in the
+    // renderer even though a single-line label pattern cannot describe it.
+    it.each([
+        '[documentation][guide]\n\n[guide]: //example.invalid/steal',
+        '[documentation][guide]\n\n[guide]: #invented',
+        '[documentation][re\\]f]\n\n[re\\]f]: //example.invalid/steal',
+        '[documentation][re\\]f]\n\n[re\\]f]: //docs.copilotkit.ai/reference/provider',
+        '[documentation][re\\]f]\n\n[re\\]f]: <//example.invalid/steal>',
+        '[documentation][re\\]f]\n\n[re\\]f]:\n//example.invalid/steal',
+        '[documentation][re\\]f]\n\n[re\\]f]: #invented',
+        '[re\\]f]\n\n[re\\]f]: //example.invalid/steal',
+        '[documentation][a\\\\]\n\n[a\\\\]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n[re\nf]: //example.invalid/steal',
+        '[documentation][re\nf]\n\n[re\nf]: //docs.copilotkit.ai/reference/provider',
+        '[documentation][re\nf]\n\n[re\nf]: <//example.invalid/steal>',
+        '[documentation][re\nf]\n\n[re\nf]:\n//example.invalid/steal',
+        '[documentation][re\nf]\n\n[re\nf]: #invented',
+        '[re\nf][]\n\n[re\nf]: //example.invalid/steal',
+        '[documentation][a\nb\nc]\n\n[a\nb\nc]: //example.invalid/steal',
+        '[documentation][a\\]b\nc]\n\n[a\\]b\nc]: //example.invalid/steal',
+        '[documentation][a\\\nb]\n\n[a\\\nb]: //example.invalid/steal',
+    ])('rejects a non-evidence reference definition destination %#', (details) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
+    });
+
+    // Backticks inside a reference definition are destination characters, not a code
+    // span, for an escaped or multiline label just as for `[guide]: ...` above.
+    it.each([
+        `[re\\]f]\n\n[re\\]f]: \`${sourceUrl}\``,
+        `[re\nf]\n\n[re\nf]: \`${sourceUrl}\``,
+        `[documentation][re\\]f]\n\n[re\\]f]: \`https://example.com/steal\``,
+        `[documentation][re\nf]\n\n[re\nf]: \`https://example.com/steal\``,
+    ])('does not hide a reference destination behind non-code backticks %#', (details) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
+    });
+
+    it.each([
+        `[documentation][re\\]f]\n\n[re\\]f]: ${sourceUrl}`,
+        `[documentation][re\\]f]\n\n[re\\]f]: <${sourceUrl}>`,
+        `[documentation][re\\]f]\n\n[re\\]f]:\n${sourceUrl}`,
+        `[documentation][re\\]f]\n\n[re\\]f]: ${sourceUrl}#runtime`,
+        `[documentation][re\nf]\n\n[re\nf]: ${sourceUrl}`,
+        `[documentation][re\nf]\n\n[re\nf]: <${sourceUrl}>`,
+        `[documentation][re\nf]\n\n[re\nf]:\n${sourceUrl}`,
+        `[documentation][re\nf]\n\n[re\nf]: ${sourceUrl}#runtime`,
+        `[documentation][a\nb\nc]\n\n[a\nb\nc]: ${sourceUrl}`,
+        `[documentation][a\\]b\nc]\n\n[a\\]b\nc]: ${sourceUrl}`,
+    ])('allows an evidence destination behind an escaped or multiline label %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // Shapes the renderer resolves to no definition, and therefore to no link: a
+    // destination is only reachable across a single line ending, and a label stops
+    // at a blank line and at 999 characters.
+    it.each([
+        '[guide]:\n\nSee the provider guide for setup.',
+        '[documentation][a\n\nb]\n\n[a\n\nb]: //example.invalid/steal',
+        '[documentation][a\n   \nb]\n\n[a\n   \nb]: //example.invalid/steal',
+        `[documentation][a\n${'b'.repeat(999)}]\n\n[a\n${'b'.repeat(999)}]: //example.invalid/steal`,
+    ])('keeps prose that resolves to no reference definition %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    it.each([
+        `[documentation][ref]\n\n[ref]: <//example.invalid/steal\\>y>`,
+        `[documentation][ref]\n\n[ref]: <${sourceUrl}\\>y>`,
+        `[documentation][re\\]f]\n\n[re\\]f]: <${sourceUrl}\\>y>`,
+        `[documentation][re\nf]\n\n[re\nf]: <${sourceUrl}\\>y>`,
+    ])('rejects an angle destination whose escaped delimiter changes the target %#', (details) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
+    });
+
     it.each([
         '<details><summary>Hide the answer</summary>unsafe</details>',
         '<img src=x onerror=alert(1)>',

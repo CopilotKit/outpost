@@ -118,14 +118,118 @@ function proseOutsideFences(text: string): string {
     return prose.join('\n');
 }
 
+/** Between the brackets of a link label CommonMark allows at most 999 characters. */
+const REFERENCE_LABEL_LIMIT = 999;
+
+interface ReferenceDefinition {
+    /** Inclusive line range the whole definition occupies. */
+    firstLine: number;
+    lastLine: number;
+    destination: string;
+    destinationStart: number;
+    destinationEnd: number;
+}
+
+/**
+ * Recognize a link reference definition beginning at `start`, which must be the
+ * start of line `firstLine`. A label ends at the first right bracket that is not
+ * backslash-escaped and may span lines, so no single-line pattern can bound one;
+ * missing those labels would leave their destinations unvalidated even though the
+ * renderer resolves them to clickable links. Stay at least as permissive as
+ * CommonMark: the controls enforced here are only the ones that make the renderer
+ * produce no definition at all, and therefore no link.
+ */
+function referenceDefinitionAt(
+    text: string,
+    start: number,
+    firstLine: number,
+): ReferenceDefinition | undefined {
+    let cursor = start;
+    for (let indent = 0; indent < 3 && text[cursor] === ' '; indent++) cursor++;
+    if (text[cursor] !== '[') return undefined;
+
+    cursor++;
+    let line = firstLine;
+    const labelStart = cursor;
+    while (cursor < text.length && text[cursor] !== ']') {
+        if (cursor - labelStart >= REFERENCE_LABEL_LIMIT) return undefined;
+        // A backslash at the end of a line escapes nothing, so let the line
+        // ending below decide whether the label continues.
+        if (text[cursor] === '\\' && text[cursor + 1] !== '\n') {
+            cursor += 2;
+            continue;
+        }
+        if (text[cursor] === '\n') {
+            line++;
+            // A blank line ends the label, leaving no definition behind.
+            let ahead = cursor + 1;
+            while (text[ahead] === ' ' || text[ahead] === '\t') ahead++;
+            if (ahead >= text.length || text[ahead] === '\n') return undefined;
+        }
+        cursor++;
+    }
+    if (text[cursor] !== ']' || text[cursor + 1] !== ':') return undefined;
+    cursor += 2;
+
+    // Spaces or tabs reach the destination, across at most one line ending.
+    while (text[cursor] === ' ' || text[cursor] === '\t') cursor++;
+    if (text[cursor] === '\n') {
+        cursor++;
+        line++;
+        while (text[cursor] === ' ' || text[cursor] === '\t') cursor++;
+    }
+
+    const destinationStart = cursor;
+    if (text[destinationStart] === '<') {
+        for (let scan = destinationStart + 1; scan < text.length; scan++) {
+            if (text[scan] === '\n') break;
+            if (text[scan] === '\\' && text[scan + 1] !== '\n') {
+                scan++;
+                continue;
+            }
+            if (text[scan] === '>') {
+                return {
+                    firstLine,
+                    lastLine: line,
+                    destination: text.slice(destinationStart + 1, scan),
+                    destinationStart,
+                    destinationEnd: scan + 1,
+                };
+            }
+        }
+        // An angle destination never spans a line ending. Fall through so an
+        // unterminated one is still checked as the run of characters it is.
+    }
+    let destinationEnd = destinationStart;
+    while (destinationEnd < text.length && !/\s/.test(text[destinationEnd])) destinationEnd++;
+    if (destinationEnd === destinationStart) return undefined;
+    return {
+        firstLine,
+        lastLine: line,
+        destination: text.slice(destinationStart, destinationEnd),
+        destinationStart,
+        destinationEnd,
+    };
+}
+
+/** Every line start in `text` that begins a link reference definition. */
+function referenceDefinitions(text: string): ReferenceDefinition[] {
+    const definitions: ReferenceDefinition[] = [];
+    let lineStart = 0;
+    for (const [line, source] of text.split('\n').entries()) {
+        const definition = referenceDefinitionAt(text, lineStart, line);
+        if (definition) definitions.push(definition);
+        lineStart += source.length + 1;
+    }
+    return definitions;
+}
+
 /**
  * Exclude same-line code spans only. Crossing a line can cross a Markdown block
  * boundary, so multiline spans remain conservatively subject to prose checks.
  * Closing runs must match the opening length; backslashes are literal in code.
  */
 function proseOutsideInlineCode(line: string): string {
-    // Backticks in a link definition or destination are URL characters, not code.
-    if (/^ {0,3}\[[^\]\n]+\]:/.test(line)) return line;
     let cursor = 0;
     let preserved = 0;
     let prose = '';
@@ -176,7 +280,20 @@ function proseOutsideInlineCode(line: string): string {
 }
 
 function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
-    const prose = proseOutsideFences(text).split('\n').map(proseOutsideInlineCode).join('\n');
+    const fenced = proseOutsideFences(text);
+    // Backticks anywhere in a reference definition are label or URL characters,
+    // not code, and a label can span lines, so exempt whole definitions found by
+    // the multiline scan rather than testing each line on its own.
+    const definitionLines = new Set<number>();
+    for (const definition of referenceDefinitions(fenced)) {
+        for (let line = definition.firstLine; line <= definition.lastLine; line++) {
+            definitionLines.add(line);
+        }
+    }
+    const prose = fenced
+        .split('\n')
+        .map((line, index) => (definitionLines.has(index) ? line : proseOutsideInlineCode(line)))
+        .join('\n');
     const proseWithoutMarkdownDestinations = prose.split('');
     const maskMarkdownDestination = (start: number, end: number): void => {
         for (let index = start; index < end; index++) proseWithoutMarkdownDestinations[index] = ' ';
@@ -215,9 +332,11 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
         checkUrl(destination.slice(0, end), false, true);
         maskMarkdownDestination(destinationStart, destinationStart + end);
     }
-    for (const match of prose.matchAll(/^ {0,3}\[[^\]\n]+\]:\s*(?:<([^>\n]*)>|(\S+))/gm)) {
-        checkUrl(match[1] ?? match[2], false, true);
-        maskMarkdownDestination(match.index, match.index + match[0].length);
+    // Mask the destination alone: a label is not rendered, and leaving it visible
+    // keeps a raw URL inside a multiline label subject to the checks below.
+    for (const definition of referenceDefinitions(prose)) {
+        checkUrl(definition.destination, false, true);
+        maskMarkdownDestination(definition.destinationStart, definition.destinationEnd);
     }
     const proseRawUrlView = proseWithoutMarkdownDestinations.join('');
     for (const match of proseRawUrlView.matchAll(/<(https?:\/\/[^\s<>]+)>/gi)) {
