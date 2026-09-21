@@ -127,7 +127,16 @@ describe('Luna auxiliary calls', () => {
         },
     );
 
-    it.each(['How do I prevent data loss?', 'There was no data loss'])(
+    it.each([
+        'How do I prevent data loss?',
+        'There was no data loss',
+        'This does not represent data loss.',
+        'This does not constitute data loss.',
+        'This is unrelated to data loss.',
+        "This doesn't represent a production outage.",
+        "This didn't constitute a security vulnerability.",
+        'These are unrelated to production outages.',
+    ])(
         'does not promote a healthy LOW model to CRITICAL for a non-incident: %s',
         async (content) => {
             mock().llm.onMessage(/./, { content: JSON.stringify(classification) });

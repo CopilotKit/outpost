@@ -675,6 +675,14 @@ describe('critical incident context boundaries', () => {
         'We have no reports of data loss',
         'The team had no production outage',
     ];
+    const denialRelationControls = [
+        'This does not represent data loss.',
+        'This does not constitute data loss.',
+        'This is unrelated to data loss.',
+        "This doesn't represent a production outage.",
+        "This didn't constitute a security vulnerability.",
+        'These are unrelated to production outages.',
+    ];
     cases.push(
         ...adjacentReports.map((content) => ({
             content,
@@ -690,6 +698,10 @@ describe('critical incident context boundaries', () => {
         })),
         ...r6PreservationControls,
         ...ownerNoPreservationControls.map((content) => ({
+            content,
+            priority: TicketPriority.HIGH,
+        })),
+        ...denialRelationControls.map((content) => ({
             content,
             priority: TicketPriority.HIGH,
         })),
