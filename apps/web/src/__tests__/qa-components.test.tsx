@@ -262,6 +262,49 @@ describe('ChatMessage', () => {
             markdown: 'See https://docs.copilotkit.ai/search?a=1&amp;b=2 now.',
             hrefs: ['https://docs.copilotkit.ai/search?a=1&amp;b=2'],
         },
+        // An emphasis or strikethrough run closing on a bare address is a delimiter,
+        // not part of the address: the anchor carries the address alone and the run
+        // is published outside it. The validator grounds a reply on these hrefs, so a
+        // renderer or remark-gfm change that starts folding a delimiter into the
+        // destination fails here rather than silently discarding a grounded reply.
+        {
+            markdown: '**Read https://docs.copilotkit.ai/reference/provider**',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: '*Read https://docs.copilotkit.ai/reference/provider*',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: '_Read https://docs.copilotkit.ai/reference/provider_',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: '__Read https://docs.copilotkit.ai/reference/provider__',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: '~~Read https://docs.copilotkit.ai/reference/provider~~',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: 'Read https://docs.copilotkit.ai/reference/provider*',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: '**https://docs.copilotkit.ai/reference/provider**',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider'],
+        },
+        // The same delimiters carry an ungrounded address just as clickably, which
+        // is why the validator still has to refuse that spelling.
+        {
+            markdown: '**Read www.example.invalid/steal**',
+            hrefs: ['http://www.example.invalid/steal'],
+        },
+        {
+            markdown: '~~Contact help@example.invalid~~',
+            hrefs: ['mailto:help@example.invalid'],
+        },
         // A bracket pair is a link only where a label closed on it. The subscript
         // row is the one that matters: it looks like the punctuation rows above it
         // and publishes a real anchor, so neither can be decided by the `](` alone.

@@ -213,6 +213,55 @@ describe('support reply contract', () => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
     });
 
+    // Where a GFM autolink literal ends is the grammar's answer, not a punctuation
+    // class's. An emphasis or strikethrough run closing on the address is a
+    // delimiter the renderer publishes outside the anchor — every row below reaches
+    // the reader as the cited evidence URL inside <strong>, <em> or <del>, recorded
+    // against the app's real ReactMarkdown + remark-gfm in
+    // apps/web/src/__tests__/qa-components.test.tsx. The raw-URL scan read the
+    // closing run as URL characters instead, so a correctly grounded citation was
+    // discarded and its reply escalated to a human.
+    it.each([
+        `**Read ${sourceUrl}**`,
+        `*Read ${sourceUrl}*`,
+        `_Read ${sourceUrl}_`,
+        `__Read ${sourceUrl}__`,
+        `~~Read ${sourceUrl}~~`,
+        `Read ${sourceUrl}*`,
+        `**${sourceUrl}**`,
+        // The shape that already passed, on the other side of the same boundary:
+        // here the grammar and the punctuation class happened to agree.
+        `Read (${sourceUrl}).`,
+    ])('keeps an evidence autolink a delimiter run closes on %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // `validateProse` has one caller, which runs it over all three public fields, so
+    // the delimiters must not be read differently in the field a reply is escalated
+    // over than in the one the rows above use.
+    it.each(['summary', 'details', 'appliesTo'] as const)(
+        'keeps an emphasized evidence autolink cited in %s',
+        (field) => {
+            const value = reply({ [field]: `**Read ${sourceUrl}**` });
+            expect(validateSupportReply(value, sources)[field]).toBe(`**Read ${sourceUrl}**`);
+        },
+    );
+
+    // The refusal the rows above must not take with them. A delimiter run around an
+    // address no evidence backs changes nothing a reader can click: the renderer
+    // publishes the ungrounded destination just as clickably, so each of these stays
+    // refused.
+    it.each([
+        '**Read https://docs.copilotkit.ai/invented**',
+        '__Read https://docs.copilotkit.ai/invented__',
+        '~~Read https://docs.copilotkit.ai/invented~~',
+        'Read https://docs.copilotkit.ai/invented*',
+        '**Read www.example.invalid/steal**',
+        '~~Contact help@example.invalid~~',
+    ])('still refuses an ungrounded autolink a delimiter run closes on %#', (details) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
+    });
+
     // `](` is a destination opener only where a link label closed on it. In each of
     // these the renderer publishes no anchor at all and prints the brackets as
     // ordinary punctuation, so reading every `](` as a destination discards a reply

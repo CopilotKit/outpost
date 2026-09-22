@@ -331,6 +331,44 @@ function inlineDestinations(text: string): InlineDestination[] {
     });
 }
 
+interface AutolinkLiteral {
+    /** Offsets the address alone spans in `text`. */
+    start: number;
+    end: number;
+    /** The address exactly as written, which is the form this syntax publishes. */
+    address: string;
+}
+
+/**
+ * Every GFM autolink literal in `text`: a bare address the renderer links with no
+ * delimiters of its own, located with the parser the renderer runs.
+ *
+ * Where such a literal ends is the grammar's answer and nothing else's. The raw
+ * URL scan below finds addresses by pattern and runs each one to the next space,
+ * so a GFM closing run written against the address — `**Read <url>**`, `~~…~~`, a
+ * bare trailing `*` — was read as URL characters and trimmed against a punctuation
+ * class that does not contain them. The renderer publishes those delimiters
+ * outside the anchor, so the reply cited exactly its evidence and was discarded
+ * anyway, escalated to a human over a link the reader would have clicked through
+ * to the cited source. Asking the grammar where the address ends removes the
+ * class rather than adding characters to a class that keeps meeting new ones.
+ *
+ * Only the literal form is returned. A `[label](…)` destination, a reference
+ * definition and a CommonMark `<…>` autolink each carry their own delimiters and
+ * are already checked above, each in the form its own syntax publishes.
+ */
+function autolinkLiterals(text: string): AutolinkLiteral[] {
+    const nodes: (Link | Image)[] = [];
+    collectInlineLinks(parseMarkdown(text), nodes);
+    return nodes.flatMap((node) => {
+        const start = node.position?.start.offset;
+        const end = node.position?.end.offset;
+        if (node.type !== 'link' || start === undefined || end === undefined) return [];
+        const address = text.slice(start, end);
+        return address.startsWith('[') || address.startsWith('<') ? [] : [{ start, end, address }];
+    });
+}
+
 /**
  * The same answer per line and relative to the line's own start: the columns a
  * `](` really opens a destination at. The inline-code scan below runs a line at a
@@ -542,6 +580,15 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     for (const definition of referenceDefinitions(prose)) {
         checkUrl(definition.destination);
         maskMarkdownDestination(definition.destinationStart, definition.destinationEnd);
+    }
+    // A GFM autolink literal is held to the evidence set here, in the spelling the
+    // reader clicks, and masked from the pattern scan below by the span the grammar
+    // gives it. Checking before masking is what keeps the scan no looser than it
+    // was: a literal the parser finds in a region that scan deliberately still
+    // reaches — the contents of a code span crossing a line — stays refused.
+    for (const { start, end, address } of autolinkLiterals(prose)) {
+        checkUrl(address);
+        maskMarkdownDestination(start, end);
     }
     const proseRawUrlView = proseWithoutMarkdownDestinations.join('');
     // Autolinks are the same question with a different answer, so they keep their
