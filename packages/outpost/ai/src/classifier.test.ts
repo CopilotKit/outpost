@@ -974,6 +974,204 @@ describe('critical incident context boundaries', () => {
         { content: 'Data loss has not been detected yet.', priority: TicketPriority.HIGH },
     ];
 
+    // An incident term can appear in a clause that reports no incident at all,
+    // in two shapes under one contract. A planned action spells the outage
+    // phrase as a verb-object-particle frame, where `down` belongs to the verb
+    // rather than being predicated of the service ("we will take production
+    // down"); and a compound noun can put the term in modifier position under a
+    // head that names the tooling aimed at that incident class ("security
+    // vulnerability scanning"). Neither asserts an occurrence, so neither may
+    // raise the irreversible CRITICAL floor.
+    //
+    // Each row is paired with the nearest wording that does report, and the
+    // pair is asserted below not to collapse. That direction is the one this
+    // class has failed before: a narrowing must not be paid for by muting a
+    // real report, because the floor never downgrades afterwards.
+    const plannedTakedownVersusOutageContrasts = [
+        {
+            rationale: 'modal + bare verb; the finite past of the same verb reports an outage',
+            nonReport: 'We will take production down for scheduled maintenance tonight.',
+            report: 'The deploy took production down.',
+        },
+        {
+            rationale: 'infinitival `to` under a volitional matrix verb',
+            nonReport: 'We need to scale production down to save costs.',
+            report: 'Production is down.',
+        },
+        {
+            rationale: 'plan-to frame; the finite past of the same verb reports an outage',
+            nonReport: 'We plan to bring production down during the maintenance window.',
+            report: 'The migration brought production down.',
+        },
+        {
+            rationale: 'modal over the `production service` spelling, with a determiner',
+            nonReport: 'We should shut the production service down before the migration.',
+            report: 'Our production service is completely down.',
+        },
+        {
+            rationale: 'bare infinitive after `says to`, against the copula-less headline report',
+            nonReport: 'The runbook says to spin production down first.',
+            report: 'Production down.',
+        },
+        {
+            rationale: 'modal over the `production environment` spelling',
+            nonReport: 'We could power the production environment down overnight.',
+            report: 'PRODUCTION DOWN: every request fails.',
+        },
+    ];
+    const incidentToolingVersusReportContrasts = [
+        {
+            rationale: 'a CI capability, not a vulnerability that was found',
+            nonReport: 'We added security vulnerability scanning to CI.',
+            report: 'A security vulnerability was found.',
+        },
+        {
+            rationale: 'detection capability, not detected data loss',
+            nonReport: 'We added data loss detection to the pipeline.',
+            report: 'We have data loss across three tenants.',
+        },
+        {
+            rationale: 'a rehearsal, not an outage',
+            nonReport: 'The team owns production outage drills.',
+            report: 'We had a production outage this morning.',
+        },
+        {
+            rationale: 'an instrument, not a finding',
+            nonReport: 'Security vulnerability scanners run nightly.',
+            report: 'Security vulnerabilities were found.',
+        },
+        {
+            rationale: 'a shipped feature, not an incident',
+            nonReport: 'We shipped data loss protection last quarter.',
+            report: 'Customers report data-loss after upgrading the runtime.',
+        },
+        {
+            rationale: 'a practice, not an incident',
+            nonReport: 'Security vulnerability training is mandatory.',
+            report: 'Security vulnerabilities were found during the rollout.',
+        },
+    ];
+    // Adjacency alone must not cancel a mention. A head that presupposes an
+    // instance refers back to an incident that happened, so it leaves that
+    // incident standing however closely it follows the term. The `postmortem`,
+    // `root cause`, `mitigation plan` and `exploit path` spellings are already
+    // pinned by observedAbsenceVersusStandingIncidentContrasts above; this row
+    // adds the one head that is itself a reporting noun.
+    const incidentPresupposingHeadControls = [
+        'We are still triaging the security vulnerability report from a customer.',
+    ];
+    // A deliberate action is not a hypothetical one. The infinitival arm of the
+    // takedown frame above is justified by the verb being bare - a bare verb
+    // asserts no occurrence - and that reasoning only holds while nothing above
+    // the `to` supplies the assertion. A matrix that entails its complement
+    // happened does supply it: "we had to take production down" reports a
+    // takedown that occurred, and the downtime it reports is as real as any
+    // other. Choosing the downtime does not make it hypothetical.
+    //
+    // Each row is paired with the already-pinned planned spelling of the same
+    // frame, so the two readings of `to` cannot be satisfied by collapsing onto
+    // one priority - the direction this class fails in.
+    const completedTakedownVersusPlannedContrasts = [
+        {
+            rationale: 'past `had to` against the present `need to`, which is still a plan',
+            report: 'We had to take production down after the incident.',
+            planned: 'We need to scale production down to save costs.',
+        },
+        {
+            rationale: 'past passive `were forced to` against the modal `will`',
+            report: 'We were forced to take production down after the incident.',
+            planned: 'We will take production down for scheduled maintenance tonight.',
+        },
+        {
+            rationale: 'present perfect `have had to` over a recurring count',
+            report: 'We have had to take production down twice this month.',
+            planned: 'We plan to bring production down during the maintenance window.',
+        },
+        {
+            rationale: '`managed to` entails the takedown happened',
+            report: 'We managed to spin the production service down before the leak spread.',
+            planned: 'The runbook says to spin production down first.',
+        },
+    ];
+    // The adverb slot the frame already admits belongs to the completed reading
+    // too, so the guard cannot be escaped by inserting one.
+    const completedTakedownAdverbControls = ['We had to quickly take production down.'];
+    // The exemption on the infinitival arm is carried by the matrix above the
+    // `to`, never by the `to` itself: "we plan to" leaves the takedown
+    // uncommitted, and that is the whole reason the clause reports nothing. A
+    // matrix the frame does not name therefore has no claim on the exemption,
+    // and the clause must keep the irreversible floor it has at the base rather
+    // than inherit a reading from the two characters it shares.
+    //
+    // These two spellings are ordinary outage reports that say how long
+    // production was down. Both are periphrastic - the implicature sits in
+    // "ended up" and in "no choice", not in a single matrix verb - so no list
+    // of completed matrices reaches them, and only the direction of the frame
+    // decides them. Each is paired with a listed planned frame so the pair
+    // cannot be satisfied by collapsing onto one priority.
+    const unlistedTakedownMatrixVersusPlannedContrasts = [
+        {
+            rationale: '`ended up having to` - periphrastic, and the downtime is stated',
+            report: 'We ended up having to take production down for three hours last night.',
+            planned: 'We needed to take production down next week.',
+        },
+        {
+            rationale: '`had no choice but to` - no matrix verb governs the `to` at all',
+            report: 'We had no choice but to take production down for two hours this morning.',
+            planned: 'We decided to take production down during the freeze.',
+        },
+    ];
+    // The matrices that do not entail occurrence, held at HIGH. Each is a
+    // matrix a reader might expect to pattern with `had to` but which passes
+    // the cancellation test: "we needed to take production down but could not
+    // get approval" is coherent, where "we had to take production down but
+    // could not get approval" is not. `have to`/`are forced to` are the present
+    // tense of two implicative spellings and are prospective obligations, so
+    // tense alone decides them; the conditional row must keep reaching the
+    // protasis guard rather than this one.
+    const prospectiveTakedownMatrixControls = [
+        'We needed to take production down next week.',
+        'We decided to take production down during the freeze.',
+        'We tried to take production down but the runbook failed.',
+        'We are forced to take production down tonight.',
+        'We will have to take production down tonight.',
+        'If we had to take production down, the team would notice.',
+    ];
+    const mentionWithoutReportingRoleContrasts = [
+        ...plannedTakedownVersusOutageContrasts,
+        ...incidentToolingVersusReportContrasts,
+    ];
+    const mentionWithoutReportingRoleCases = [
+        ...mentionWithoutReportingRoleContrasts.flatMap(({ nonReport, report }) => [
+            { content: nonReport, priority: TicketPriority.HIGH },
+            { content: report, priority: TicketPriority.CRITICAL },
+        ]),
+        ...incidentPresupposingHeadControls.map((content) => ({
+            content,
+            priority: TicketPriority.CRITICAL,
+        })),
+        // Only the reporting side is restated here: every `planned` row above is
+        // already pinned at HIGH by mentionWithoutReportingRoleContrasts.
+        ...completedTakedownVersusPlannedContrasts.map(({ report }) => ({
+            content: report,
+            priority: TicketPriority.CRITICAL,
+        })),
+        ...completedTakedownAdverbControls.map((content) => ({
+            content,
+            priority: TicketPriority.CRITICAL,
+        })),
+        // Same restatement rule: every `planned` row here is a
+        // prospectiveTakedownMatrixControls row, already pinned at HIGH below.
+        ...unlistedTakedownMatrixVersusPlannedContrasts.map(({ report }) => ({
+            content: report,
+            priority: TicketPriority.CRITICAL,
+        })),
+        ...prospectiveTakedownMatrixControls.map((content) => ({
+            content,
+            priority: TicketPriority.HIGH,
+        })),
+    ];
+
     // Round-13 convergence lever L3 (audit class C3), conditional half
     // (R13-AI-A07). An incident named inside a conditional protasis is
     // hypothesised, not reported, so it must not raise the irreversible
@@ -1231,6 +1429,9 @@ describe('critical incident context boundaries', () => {
                 it.each(observedAbsenceContrastCases)('$priority: $content', checkPriority);
                 it.each(observedAbsenceSubjectAdverbCases)('$priority: $content', checkPriority);
             });
+            describe('incident mention without a reporting role', () => {
+                it.each(mentionWithoutReportingRoleCases)('$priority: $content', checkPriority);
+            });
             describe('conditional protasis versus assertion', () => {
                 it.each(conditionalScopeCases)('$priority: $content', checkPriority);
             });
@@ -1239,6 +1440,46 @@ describe('critical incident context boundaries', () => {
             });
         },
     );
+
+    // The same relation for the mention-without-a-reporting-role rows: a
+    // planned takedown or a tooling compound must never land on the priority of
+    // the report it borrows its vocabulary from. A widening that buys one
+    // spelling by collapsing the pair fails here even if both rows move
+    // together.
+    describe('incident mention without a reporting role', () => {
+        it.each(mentionWithoutReportingRoleContrasts)(
+            'does not collapse "$nonReport" into "$report" ($rationale)',
+            ({ nonReport, report }) => {
+                const classifier = new TicketClassifier({
+                    provider: 'anthropic',
+                    apiKey: 'test-key',
+                    baseURL: aimock().url,
+                });
+                expect(classifier.heuristicClassify(nonReport).priority).not.toBe(
+                    classifier.heuristicClassify(report).priority,
+                );
+            },
+        );
+
+        // The same relation for the two readings of the infinitival `to`. A
+        // narrowing that keeps the planned spelling free of the floor by also
+        // freeing the completed one, or that restores the completed one by
+        // re-pinning every plan, fails here even though each direction on its
+        // own could be made to look correct.
+        it.each([
+            ...completedTakedownVersusPlannedContrasts,
+            ...unlistedTakedownMatrixVersusPlannedContrasts,
+        ])('does not collapse "$report" into "$planned" ($rationale)', ({ report, planned }) => {
+            const classifier = new TicketClassifier({
+                provider: 'anthropic',
+                apiKey: 'test-key',
+                baseURL: aimock().url,
+            });
+            expect(classifier.heuristicClassify(report).priority).not.toBe(
+                classifier.heuristicClassify(planned).priority,
+            );
+        });
+    });
 
     // Stated once as a relation, so a fix cannot satisfy the rows above by
     // moving both sides together. A hypothesised incident and the same incident

@@ -245,6 +245,79 @@ export class TicketClassifier {
             `(?:\\b${conditionalSubordinator}\\b|^\\s*should\\b)[^,;:.!?]*$`,
             'i',
         );
+        // A mention is not a report. Two shapes put an incident term in a
+        // clause that asserts no occurrence, and both are guarded here.
+        //
+        // First, the outage phrase spelled as a verb-object-particle frame.
+        // "Production is down." predicates `down` of the service; "We will take
+        // production down." makes the service the object of a verb whose
+        // particle is `down`, and plans an action instead of reporting one. The
+        // two readings are only ever confusable where the copula is absent,
+        // which is the form the pattern admits so a headline report
+        // ("PRODUCTION DOWN: every request fails.") still lands.
+        //
+        // Two enumerations, each with its own membership test, so a future
+        // token joins the right set on purpose.
+        //
+        // The verb belongs when it takes the service as its object and `down`
+        // as its particle, naming a deliberate change of state someone
+        // performs. A verb that reports what the service itself did
+        // ("production went down") does not belong: there the service is the
+        // subject and the clause is a report.
+        const serviceTakedownVerbs = '(?:take|bring|shut|scale|spin|wind|power|throttle|tear)';
+        // The frame belongs when it leaves that verb bare, and something in the
+        // frame has to be what asserts no occurrence. A finite form asserts
+        // one, which is why no finite spelling is accepted: "The deploy took
+        // production down." reports an outage and stays CRITICAL.
+        //
+        // A modal carries that on its own: `will take` plans the takedown, and
+        // no modal in the list can head a report of one.
+        const modalTakedownFrame = "(?:will|[’']ll|shall|would|must|should|may|might|can|could)";
+        // An infinitival `to` carries nothing on its own - it is two characters
+        // shared by every reading of the complement, including the ones that
+        // report actual downtime ("we ended up having to take production down
+        // for three hours", "we had no choice but to take production down").
+        // What asserts no occurrence there is the matrix above the `to`, so the
+        // `to` arm is admitted only under a named matrix and an unnamed one
+        // keeps the floor. That direction is deliberate: the floor is
+        // irreversible, so an unrecognised matrix must cost a false CRITICAL
+        // rather than a lost outage report, and no enumeration of the matrices
+        // that do report can substitute for it - both spellings above are
+        // periphrastic and no single matrix verb governs their `to` at all.
+        //
+        // A matrix belongs when its complement can be cancelled: "we needed to
+        // take production down but could not get approval" is coherent, so
+        // `needed to` belongs; the same continuation after "we had to"
+        // contradicts itself, so `had to` does not. `plan to`, `decided to`,
+        // `tried to` and the reported-speech `says to` all survive the
+        // cancellation. Every listed lemma is non-implicative in every tense,
+        // except the two where tense alone decides: `have to` and `is forced
+        // to` are prospective obligations, while their past and progressive
+        // forms report what was done, so only the present forms are listed.
+        const plannedTakedownMatrix =
+            '(?:need(?:s|ed|ing)?|plan(?:s|ned|ning)?|decid(?:e|es|ed|ing)|tr(?:y|ies|ied|ying)|say(?:s|ing)?|said|ha(?:ve|s)|(?:am|is|are)\\s+forced)';
+        const volitionalTakedownFrame = `(?:${modalTakedownFrame}|${plannedTakedownMatrix}\\s+to)`;
+        const takedownObjectDeterminers = '(?:the|our|its|their|your|a|an|all|both)';
+        const plannedTakedownPrefix = new RegExp(
+            `\\b${volitionalTakedownFrame}\\s+(?:\\w+ly\\s+)?${serviceTakedownVerbs}\\s+(?:${takedownObjectDeterminers}\\s+)*$`,
+            'i',
+        );
+        // Second, the term in modifier position inside a compound noun whose
+        // head names the tooling or practice aimed at that incident class:
+        // "security vulnerability scanning" is something a team adds to CI, not
+        // something that happened to it. `nonIncidentSuffix` already encodes
+        // this for one such head ("prevention"); these are the rest of the set.
+        //
+        // A head belongs when naming it asserts a capability that exists
+        // whether or not any instance ever occurs. A head does not belong when
+        // it presupposes an instance: "postmortem", "root cause", "report",
+        // "incident" and "mitigation" all refer back to an incident that
+        // happened and must leave it standing, so adjacency alone never
+        // cancels a mention.
+        const incidentToolingHeads =
+            '(?:scan(?:s|ner|ners|ning)?|tool(?:s|ing)?|check(?:s|ing)?|test(?:s|ing)?|monitoring|detection|protection|training|drills?|polic(?:y|ies)|guidelines?|checklists?|documentation)';
+        const incidentToolingSuffix = new RegExp(`^\\s+${incidentToolingHeads}\\b`, 'i');
+
         // Retain punctuation, and separate independent clauses rather than
         // treating a greeting, question, or negation as sentence-wide context.
         // Coordinated noun lists keep their shared question/negation scope;
@@ -337,8 +410,16 @@ export class TicketClassifier {
                         nonIncidentSuffix.test(suffixWithoutNotOnly);
                     const inConditionalProtasis =
                         conditionalProtasisPrefix.test(prefixWithoutNotOnly);
+                    // Scoped to the one pattern whose match can end in the
+                    // particle; no other incident term has a takedown reading.
+                    const namesPlannedTakedown =
+                        /\bdown$/i.test(match[0]) &&
+                        plannedTakedownPrefix.test(prefixWithoutNotOnly);
+                    const namesIncidentTooling = incidentToolingSuffix.test(suffixWithoutNotOnly);
                     if (
                         !inConditionalProtasis &&
+                        !namesPlannedTakedown &&
+                        !namesIncidentTooling &&
                         !hasNonIncidentPrefixMatch &&
                         !hasNonIncidentSuffix
                     ) {
