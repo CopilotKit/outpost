@@ -217,6 +217,34 @@ export class TicketClassifier {
             'i',
         );
         const affirmativeNotOnly = /\bnot\s+only\b/gi;
+        // A conditional protasis hypothesises its incident rather than
+        // reporting one: "If data loss occurs, we page the on-call engineer."
+        // is a runbook. Subordination is the cause, not question scope, so this
+        // holds whether the main clause is a question, a declarative or an
+        // imperative, and whether or not a comma separates the two.
+        //
+        // Only irrealis subordinators are listed. Each can open a hypothesis
+        // and none can open a factual past report, which is why `when` and
+        // `once` are deliberately absent: "We paged the on-call engineer when
+        // data loss occurred." and "Once data loss occurred, we restored from
+        // backup." are reports and must stay CRITICAL, and separating their two
+        // readings would need tense analysis rather than a word list. `should`
+        // is only the inverted conditional, so it is anchored to the clause
+        // start and cannot catch the plain modal in "We should fix data loss in
+        // production."; `provided`/`providing` require `that`, which separates
+        // the subordinator from the lexical verb in "We provided data loss
+        // reports to customers.".
+        const conditionalSubordinator =
+            '(?:if|unless|whenever|in\\s+case(?:\\s+of)?|in\\s+the\\s+event\\s+(?:of|that)|provid(?:ed|ing)\\s+that)';
+        // The protasis runs from its subordinator up to the first
+        // clause-terminating punctuation, so an incident named past that
+        // punctuation is outside it and stays affirmed: "If you ask, data loss
+        // occurred." still reports data loss. An incident in the consequent of
+        // a conditional is likewise untouched here.
+        const conditionalProtasisPrefix = new RegExp(
+            `(?:\\b${conditionalSubordinator}\\b|^\\s*should\\b)[^,;:.!?]*$`,
+            'i',
+        );
         // Retain punctuation, and separate independent clauses rather than
         // treating a greeting, question, or negation as sentence-wide context.
         // Coordinated noun lists keep their shared question/negation scope;
@@ -227,6 +255,19 @@ export class TicketClassifier {
         const incidentSubject =
             '(?:(?:a|an|our|the)\\s+)?(?:data[\\s-]+loss|production[\\s-]+outages?|security\\s+vulnerabilit(?:y|ies)|production(?:\\s+(?:service|system|environment))?)';
         const independentClauseStart = `(?:${questionWords}\\b|(?:we|they|i|you|it|there|customers|users)\\s+\\w+|${incidentSubject}\\s+${declarativeVerbs}\\b)`;
+        // The alternatives below are five different linguistic classes, and
+        // only one of them licenses the shared-subject reading the guard in the
+        // loop applies. Stated per alternative so a new token joins the right
+        // set on purpose:
+        //   (?<=[.!?\n;])  sentence break     - no shared subject across it
+        //   but, however   adversative        - contrast, never a noun list
+        //   because        subordinator       - contrast, never a noun list
+        //   yet            adversative coord. - contrasts, does not enumerate
+        //   :              expository punct.  - labels or elaborates a topic
+        //   , and or       list-forming       - the only shared-subject class
+        // Splitting is the same for all of them; only the list-forming class is
+        // eligible for the guard below, so `:`/`yet`/`but`/`however`/`because`
+        // keep their affirmative-contrast CRITICAL deliberately.
         const clauseBoundary = new RegExp(
             `(?<=[.!?\\n;])|\\b(?:but|however|because)\\b|(?:[:,]|\\b(?:and|or|yet)\\b)(?=\\s*${independentClauseStart})`,
             'gi',
@@ -239,6 +280,10 @@ export class TicketClassifier {
             // Comma/and/or incident subjects without a preceding predicate share one:
             // "Data loss, production outages have not occurred" is one negative report.
             // Do not turn the first subject into a standalone affirmative report.
+            // This is a coordination guard, not a general subordination guard:
+            // only the list-forming class above belongs in it. A leading
+            // subordinate clause is handled by conditionalProtasisPrefix, which
+            // acts on the mention's position rather than on the separator.
             if (
                 /^(?:,|and|or)$/i.test(boundary[0]) &&
                 criticalPriorityPatterns.some((pattern) => pattern.test(preceding)) &&
@@ -290,7 +335,13 @@ export class TicketClassifier {
                     const hasNonIncidentSuffix =
                         !failedPassivePreventionSuffix.test(suffixWithoutNotOnly) &&
                         nonIncidentSuffix.test(suffixWithoutNotOnly);
-                    if (!hasNonIncidentPrefixMatch && !hasNonIncidentSuffix) {
+                    const inConditionalProtasis =
+                        conditionalProtasisPrefix.test(prefixWithoutNotOnly);
+                    if (
+                        !inConditionalProtasis &&
+                        !hasNonIncidentPrefixMatch &&
+                        !hasNonIncidentSuffix
+                    ) {
                         return true;
                     }
                 }

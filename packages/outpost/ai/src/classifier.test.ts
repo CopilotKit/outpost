@@ -974,6 +974,218 @@ describe('critical incident context boundaries', () => {
         { content: 'Data loss has not been detected yet.', priority: TicketPriority.HIGH },
     ];
 
+    // Round-13 convergence lever L3 (audit class C3), conditional half
+    // (R13-AI-A07). An incident named inside a conditional protasis is
+    // hypothesised, not reported, so it must not raise the irreversible
+    // CRITICAL floor. The protasis may lead ("If data loss occurs, …") or
+    // trail ("… if data loss occurs"), and the main clause may be a question,
+    // a declarative or an imperative - the cause is subordination, not
+    // question scope, so all three shapes belong in one table.
+    const conditionalProtasisCases = [
+        // Leading protasis, interrogative main clause.
+        'If data loss occurs, how do I recover?',
+        'If a security vulnerability is found, what is the process?',
+        // Leading protasis, declarative main clause: no question anywhere.
+        'If data loss occurs, we page the on-call engineer.',
+        'Unless data loss occurs, we stay on the current plan.',
+        'If production is down, we roll back.',
+        'Unless a production outage occurs, we ship on Friday.',
+        'Unless a security vulnerability is found, we ship on Friday.',
+        // Leading protasis, imperative main clause: no clause boundary is
+        // produced at all, so the whole sentence is scored as one clause.
+        'If data loss occurs, escalate to the on-call engineer.',
+        'In the event of data loss, restore from backup.',
+        // The remaining irrealis subordinators, leading.
+        'Whenever data loss occurs, we page the on-call engineer.',
+        'Provided that data loss occurs, we restore from backup.',
+        'In the event that data loss occurs, restore from backup.',
+        'In case data loss occurs, we restore from backup.',
+        // Trailing protasis: same subordination, no boundary token involved.
+        'We restore from backup if data loss occurs.',
+        'We stay on the current plan unless data loss occurs.',
+        'We page the on-call engineer whenever data loss occurs.',
+        'Keep the snapshot in case data loss occurs.',
+        'Restore from backup in case of data loss.',
+        'Check if data loss occurred.',
+        'Let me know if this is a security vulnerability.',
+    ];
+
+    // Conditionals the reviewed implementation already passed, but only by
+    // accident - `when` and `should` collide with `questionWords`/`auxiliaries`
+    // and "in case of" has no declarative predicate for the coordination guard
+    // to trip over. They are pinned so the explicit conditional handling cannot
+    // buy `if`/`unless` at their expense.
+    const conditionalProtasisRegressionPins = [
+        'If data loss occurs how do I recover?',
+        'When a production outage occurs, who do I page?',
+        'Should data loss occur, how do we restore?',
+        'Should data loss occur, escalate to the on-call engineer.',
+        'In case of data loss, what is the runbook?',
+        'How do I recover if data loss occurs?',
+        'What happens if a production outage occurs, and how do I recover?',
+    ];
+
+    // The other side of the same boundary: a subordinator-shaped word that is
+    // not opening a conditional protasis over the incident must leave the
+    // incident affirmed. These are the sentences a careless widening would
+    // silently mute, so each names the reason it stays CRITICAL.
+    const nonConditionalSubordinatorControls = [
+        {
+            rationale: 'plain modal `should`, not the inverted conditional',
+            content: 'We should fix data loss in production.',
+        },
+        {
+            rationale: '`provided` as a lexical verb, not the `provided that` subordinator',
+            content: 'We provided data loss reports to customers.',
+        },
+        {
+            rationale: '`when` is temporal here and reports a past event, not a hypothesis',
+            content: 'We paged the on-call engineer when data loss occurred.',
+        },
+        {
+            rationale: '`when` again: the factual reading is the only one available',
+            content: 'Customers lost access when the production outage occurred.',
+        },
+        {
+            rationale: '`once` is temporal, not irrealis, and reports a past event',
+            content: 'Once data loss occurred, we restored from backup.',
+        },
+        {
+            rationale: 'the incident is asserted before the subordinator opens',
+            content: 'Data loss occurred if you look at the logs.',
+        },
+        {
+            rationale: 'the incident is in the apodosis, outside the protasis',
+            content: 'If you ask, data loss occurred.',
+        },
+        {
+            rationale: 'a sentence break closes the protasis before the incident',
+            content: 'Ask me if you can. Data loss occurred.',
+        },
+        {
+            rationale: 'a semicolon closes the protasis before the incident',
+            content: 'Tell me if you like; data loss occurred.',
+        },
+        {
+            rationale: 'the protasis ends at its comma; the incident follows it',
+            content: 'If you look at the dashboard, data loss is at forty percent.',
+        },
+        {
+            rationale:
+                'consequent of a conditional: deliberately out of scope, pinned so a later widening is a decision',
+            content: 'If the backup fails, data loss occurs.',
+        },
+    ];
+
+    // Separator half of the same lever. `clauseBoundary` emits five linguistic
+    // classes and only the list-forming ones license the shared-subject reading
+    // in which a later negation scopes back over an earlier bare incident
+    // mention. This is asserted as behaviour on both sides of the line, not as
+    // agreement between two private token sets: adding an adversative or a
+    // subordinator to the boundary alternation must not quietly join the
+    // coordination guard, and must not fail this table for the wrong reason.
+    const listFormingSeparators = [
+        { token: ',', content: 'Data loss, production outages have not been reported.' },
+        { token: 'and', content: 'Data loss and production outages have not been reported.' },
+        { token: 'or', content: 'Data loss or production outages have not been reported.' },
+    ];
+    const nonListFormingSeparators = [
+        {
+            token: 'yet',
+            kind: 'adversative coordinator',
+            content: 'Data loss yet production outages have not been reported.',
+        },
+        {
+            token: ', yet',
+            kind: 'adversative coordinator, comma spelling',
+            content: 'Data loss, yet production outages have not been reported.',
+        },
+        {
+            token: ', but',
+            kind: 'adversative coordinator',
+            content: 'Data loss, but production outages have not been reported.',
+        },
+        {
+            token: 'however',
+            kind: 'adversative adverb after a sentence break',
+            content: 'Data loss occurred. However, production outages have not been reported.',
+        },
+        {
+            token: 'because',
+            kind: 'subordinator',
+            content: 'Data loss because production outages have not been reported.',
+        },
+        {
+            token: ':',
+            kind: 'expository punctuation',
+            content: 'Data loss: production outages have not been reported.',
+        },
+        {
+            token: '.',
+            kind: 'sentence break',
+            content: 'Data loss. Production outages have not been reported.',
+        },
+        {
+            token: ';',
+            kind: 'sentence break',
+            content: 'Data loss; production outages have not been reported.',
+        },
+    ];
+
+    // Affirmative contrast and exposition: an incident is affirmed and then
+    // contrasted with the absence of a *different* one. Green before the
+    // conditional change and required to stay green, so conditional symmetry
+    // cannot be bought by folding adversatives or colons into shared-subject
+    // grammar.
+    const affirmativeContrastControls = [
+        {
+            content: 'Data loss occurred, yet production outages have not been reported.',
+            priority: TicketPriority.CRITICAL,
+        },
+        {
+            content: 'We hit data loss, but production outages have not been reported.',
+            priority: TicketPriority.CRITICAL,
+        },
+        {
+            content: 'Data loss occurred. However, production outages have not been reported.',
+            priority: TicketPriority.CRITICAL,
+        },
+        {
+            content: 'Incident summary: data loss affected twelve tenants.',
+            priority: TicketPriority.CRITICAL,
+        },
+        {
+            content: 'Status: data loss has not been reported.',
+            priority: TicketPriority.HIGH,
+        },
+    ];
+
+    const conditionalScopeCases = [
+        ...conditionalProtasisCases.map((content) => ({
+            content,
+            priority: TicketPriority.HIGH,
+        })),
+        ...conditionalProtasisRegressionPins.map((content) => ({
+            content,
+            priority: TicketPriority.HIGH,
+        })),
+        ...nonConditionalSubordinatorControls.map(({ content }) => ({
+            content,
+            priority: TicketPriority.CRITICAL,
+        })),
+    ];
+    const separatorClassCases = [
+        ...listFormingSeparators.map(({ content }) => ({
+            content,
+            priority: TicketPriority.HIGH,
+        })),
+        ...nonListFormingSeparators.map(({ content }) => ({
+            content,
+            priority: TicketPriority.CRITICAL,
+        })),
+        ...affirmativeContrastControls,
+    ];
+
     describe.each(['heuristic', 'model failure', 'healthy LOW model'] as const)(
         '%s',
         (boundary) => {
@@ -1019,8 +1231,73 @@ describe('critical incident context boundaries', () => {
                 it.each(observedAbsenceContrastCases)('$priority: $content', checkPriority);
                 it.each(observedAbsenceSubjectAdverbCases)('$priority: $content', checkPriority);
             });
+            describe('conditional protasis versus assertion', () => {
+                it.each(conditionalScopeCases)('$priority: $content', checkPriority);
+            });
+            describe('clause separator classes', () => {
+                it.each(separatorClassCases)('$priority: $content', checkPriority);
+            });
         },
     );
+
+    // Stated once as a relation, so a fix cannot satisfy the rows above by
+    // moving both sides together. A hypothesised incident and the same incident
+    // asserted in the main clause must not land on one priority.
+    describe('conditional protasis versus assertion', () => {
+        const hypothesisedVersusAsserted = [
+            {
+                rationale: 'leading protasis against the same runbook stated as a report',
+                hypothesised: 'If data loss occurs, we page the on-call engineer.',
+                asserted: 'Data loss occurred, we paged the on-call engineer.',
+            },
+            {
+                rationale: 'trailing protasis against the same clause asserted',
+                hypothesised: 'We restore from backup if data loss occurs.',
+                asserted: 'We restore from backup because data loss occurred.',
+            },
+            {
+                rationale: 'negative conditional against a plain report',
+                hypothesised: 'Unless data loss occurs, we stay on the current plan.',
+                asserted: 'Data loss occurred, so we left the current plan.',
+            },
+        ];
+        it.each(hypothesisedVersusAsserted)(
+            'does not collapse "$hypothesised" into "$asserted" ($rationale)',
+            ({ hypothesised, asserted }) => {
+                const classifier = new TicketClassifier({
+                    provider: 'anthropic',
+                    apiKey: 'test-key',
+                    baseURL: aimock().url,
+                });
+                expect(classifier.heuristicClassify(hypothesised).priority).not.toBe(
+                    classifier.heuristicClassify(asserted).priority,
+                );
+            },
+        );
+    });
+
+    // The separator relation, likewise stated once. Only a list-forming
+    // coordinator lets a later negation reach back over a bare incident
+    // mention; every other boundary class leaves that mention affirmed.
+    describe('clause separator classes', () => {
+        it.each(
+            nonListFormingSeparators.flatMap((nonListForming) =>
+                listFormingSeparators.map((listForming) => ({ nonListForming, listForming })),
+            ),
+        )(
+            '"$nonListForming.token" ($nonListForming.kind) does not read like the "$listForming.token" list',
+            ({ nonListForming, listForming }) => {
+                const classifier = new TicketClassifier({
+                    provider: 'anthropic',
+                    apiKey: 'test-key',
+                    baseURL: aimock().url,
+                });
+                expect(classifier.heuristicClassify(nonListForming.content).priority).not.toBe(
+                    classifier.heuristicClassify(listForming.content).priority,
+                );
+            },
+        );
+    });
 
     // The relation itself, stated once: a negated remediation verb, property or
     // foreign object must never land on the same priority as the absence
