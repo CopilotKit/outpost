@@ -225,6 +225,32 @@ describe('structured support formatting', () => {
         },
     );
 
+    // The composed details are the last transform between a validated reply and the
+    // reader, and the source list is the one part of them this formatter's caller
+    // appends rather than the model writing it. Every destination it introduces has
+    // to be an evidence URL, and where there is no evidence it introduces none.
+    it('appends a source list holding only evidence destinations', () => {
+        const value = reply({
+            evidence: [
+                { sourceUrl: 'https://docs.copilotkit.ai/provider', quote: 'Configure it.' },
+                { sourceUrl: 'https://docs.copilotkit.ai/runtime', quote: 'Mount it.' },
+            ],
+        });
+        const details = formatter.formatStructured(value, 'web').details ?? '';
+
+        expect([...details.matchAll(/]\(<([^>]*)>\)/g)].map((match) => match[1])).toEqual(
+            value.evidence.map((evidence) => evidence.sourceUrl),
+        );
+        expect(details).not.toMatch(/https?:\/\/(?!docs\.copilotkit\.ai\/(provider|runtime)\b)/);
+    });
+
+    it('appends no destination at all to a reply carrying no evidence', () => {
+        const details = formatter.formatStructured(reply({ evidence: [] }), 'web').details ?? '';
+
+        expect(details).not.toContain('**Sources**');
+        expect(details).not.toMatch(/https?:\/\//);
+    });
+
     it.each(['discord', 'github', 'slack', 'teams', 'web'] as const)(
         'renders routes plainly on %s without draft details',
         (platform) => {

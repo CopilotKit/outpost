@@ -517,6 +517,95 @@ describe('ChatMessage', () => {
             swallowed ? null : 'API version:',
         );
     });
+
+    // What the reader is actually handed: the string `supportReplyDetails` composes
+    // out of a validated reply, rather than any one field the evidence check ran
+    // over. `hrefs` is the whole contract — the composed details may publish the
+    // cited evidence link and nothing else, spelled exactly as cited.
+    //
+    // The second and fourth rows are the spellings publication used to emit, kept
+    // because they are why the first and third are worth asserting: trimming the
+    // field away from its indentation republished an inert example as a live link,
+    // and escaping the applicability rewrote a cited URL into one that resolves
+    // somewhere else. Literal fixtures, so the web suite stays independent of the
+    // AI package's tests.
+    const providerUrl = 'https://docs.copilotkit.ai/reference/provider';
+    const guideUrl = 'https://docs.copilotkit.ai/reference/my-guide';
+    const composed = (body: string, source: string) =>
+        [body, '', '**API version:** v2', '', '**Sources**', '', `- [Source 1](<${source}>)`].join(
+            '\n',
+        );
+
+    it.each([
+        {
+            form: 'an indented example block',
+            content: composed(
+                '    Read https://example.invalid/steal now.\n\n**Applies to:** React applications using the provider.',
+                providerUrl,
+            ),
+            hrefs: [providerUrl],
+            code: ['Read https://example.invalid/steal now.\n'],
+        },
+        {
+            form: 'the same block trimmed off its indentation',
+            content: composed(
+                'Read https://example.invalid/steal now.\n\n**Applies to:** React applications using the provider.',
+                providerUrl,
+            ),
+            hrefs: ['https://example.invalid/steal', providerUrl],
+            code: [],
+        },
+        // A destination is decoded, so the cited spelling has to survive the trip:
+        // the reference written into the source list decodes back to the URL the
+        // evidence check approved, and the unescaped spelling below does not.
+        {
+            form: 'a source reference that decodes back to the cited URL',
+            content: composed(
+                '**Applies to:** React applications using the provider.',
+                'https://docs.copilotkit.ai/search?a=1&amp;amp;b=2',
+            ),
+            hrefs: ['https://docs.copilotkit.ai/search?a=1&amp;b=2'],
+            code: [],
+        },
+        {
+            form: 'a source reference decoded away from the cited URL',
+            content: composed(
+                '**Applies to:** React applications using the provider.',
+                'https://docs.copilotkit.ai/search?a=1&amp;b=2',
+            ),
+            hrefs: ['https://docs.copilotkit.ai/search?a=1&b=2'],
+            code: [],
+        },
+        {
+            form: 'a cited applicability URL',
+            content: composed(
+                `The provider supplies the connection to your runtime.\n\n**Applies to:** ${guideUrl}`,
+                guideUrl,
+            ),
+            hrefs: [guideUrl, guideUrl],
+            code: [],
+        },
+        {
+            form: 'the same URL with its hyphen escaped',
+            content: composed(
+                'The provider supplies the connection to your runtime.\n\n**Applies to:** https://docs.copilotkit.ai/reference/my\\-guide',
+                guideUrl,
+            ),
+            hrefs: ['https://docs.copilotkit.ai/reference/my%5C-guide', guideUrl],
+            code: [],
+        },
+    ])('publishes composed details holding $form', ({ content, hrefs, code }) => {
+        const { container } = render(
+            <ChatMessage message={{ id: 'composed-fixture', role: 'assistant', content }} />,
+        );
+
+        expect(
+            [...container.querySelectorAll('a')].map((node) => node.getAttribute('href')),
+        ).toEqual(hrefs);
+        expect([...container.querySelectorAll('pre code')].map((node) => node.textContent)).toEqual(
+            code,
+        );
+    });
 });
 
 describe('SourcePanel', () => {

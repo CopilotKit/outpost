@@ -682,25 +682,121 @@ export function validateSupportReply(reply: unknown, sources: SearchResult[]): S
     for (const text of [parsed.summary, parsed.details, parsed.appliesTo]) {
         validateProse(text, knownUrls);
     }
+    // The fields above are what the model wrote. This is what the reader receives:
+    // publication trims `details` and normalizes and escapes `appliesTo`, so a
+    // structure the checks above credited as inert can be gone by the time it is
+    // published, and a destination they approved can reach the reader spelled
+    // differently. Both happened. Checking the composed string holds every
+    // transform standing between this function and the reader to the same
+    // evidence, including whichever one is added next.
+    validateProse(supportReplyDetails(parsed), knownUrls);
     return parsed;
 }
 
+/**
+ * Escape the Markdown structure an applicability sentence could otherwise open.
+ *
+ * Only the characters that open an inline construct. The applicability publishes
+ * mid-line, after `**Applies to:** `, where '-', '#' and '+' are a thematic
+ * break, a heading and a list marker that can never start, and where '(' and ')'
+ * mean nothing once the '[' and ']' that would have made them a destination are
+ * escaped. Escaping them anyway cost fidelity without buying safety: each is
+ * ordinary URL content, and '-' alone published the cited `…/reference/my-guide`
+ * as `…/reference/my%5C-guide`.
+ */
 function escapeMarkdown(text: string): string {
-    return text.replace(/\s+/g, ' ').replace(/[\\`*_[\]{}()#+!|<>~-]/g, '\\$&');
+    return text.replace(/[\\`*_[\]<>~|]/g, '\\$&');
+}
+
+/**
+ * Spans of every link and image the grammar resolves, in order and outermost
+ * only. A nested node already sits inside the span that contains it, and the
+ * caller copies these spans through verbatim, so copying one twice would
+ * duplicate the text around it.
+ */
+function resolvedLinkSpans(text: string): [number, number][] {
+    const nodes: (Link | Image)[] = [];
+    collectInlineLinks(parseMarkdown(text), nodes);
+    const spans = nodes.flatMap<[number, number]>(({ position }) => {
+        const start = position?.start.offset;
+        const end = position?.end.offset;
+        return start === undefined || end === undefined ? [] : [[start, end]];
+    });
+    spans.sort((first, second) => first[0] - second[0] || second[1] - first[1]);
+    const outermost: [number, number][] = [];
+    for (const span of spans) {
+        if (span[0] >= (outermost.at(-1)?.[1] ?? 0)) outermost.push(span);
+    }
+    return outermost;
+}
+
+/**
+ * The applicability sentence in the exact form the reply publishes it: normalized
+ * onto the single line it renders on, its Markdown structure escaped, and the
+ * links and images the grammar resolves left as the model wrote them.
+ *
+ * The escape used to run over every character, and an address is spelled out of
+ * the characters Markdown punctuates with. A cited URL came out rewritten — the
+ * evidence check approved one address and the reader clicked another — and a
+ * `[label](…)` citation escaped into plain URL text is relinkified by GFM onto
+ * that same rewritten address, so escaping a link neither removed it nor kept it.
+ * A span the grammar already publishes as a link is therefore copied through
+ * untouched, and the escape runs between those spans, where a stray '[' or '`'
+ * really would invent structure a reader can act on. `validateSupportReply`
+ * checks this composed result, so a destination preserved here is still held to
+ * the evidence set.
+ */
+function publishedAppliesTo(text: string): string {
+    const line = text.replace(/\s+/g, ' ').trim();
+    let published = '';
+    let cursor = 0;
+    for (const [start, end] of resolvedLinkSpans(line)) {
+        published += escapeMarkdown(line.slice(cursor, start)) + line.slice(start, end);
+        cursor = end;
+    }
+    return published + escapeMarkdown(line.slice(cursor));
+}
+
+/**
+ * Trim the blank edges of `details` without moving its first line.
+ *
+ * `.trim()` moved it, and indentation is block structure: four leading spaces are
+ * an indented code block, which is why the evidence check credits an address
+ * inside one as inert, and removing them republished that block as a paragraph
+ * with a live link in it. Whole blank lines above and whitespace below carry no
+ * block structure, so they still go.
+ */
+function trimBlankEdges(text: string): string {
+    return text.replace(/^(?:[^\S\n]*\n)+/, '').replace(/\s+$/, '');
+}
+
+/**
+ * A URL written so an inline destination decodes back to it. The renderer
+ * resolves HTML character references inside a destination, so a cited address
+ * holding one — `…/search?a=1&amp;b=2` — published as the address that reference
+ * decodes to, and "Source 1" led somewhere the evidence never said. A destination
+ * cannot carry whitespace, '<', '>', '"' or '\' either, but `parseSourceUrl` has
+ * already refused an evidence URL holding any of those, so the character
+ * reference is the one spelling left to preserve.
+ */
+function escapeDestination(url: string): string {
+    return url.replace(/&/g, '&amp;');
 }
 
 /** Evidence quotes establish grounding internally; public replies link the sources once. */
 export function supportReplyDetails(reply: SupportReply): string {
     if (reply.decision === 'route') return '';
-    const parts = [reply.details.trim()];
+    const parts = [trimBlankEdges(reply.details)];
     if (reply.appliesTo.trim())
-        parts.push(`**Applies to:** ${escapeMarkdown(reply.appliesTo.trim())}`);
+        parts.push(`**Applies to:** ${publishedAppliesTo(reply.appliesTo)}`);
     parts.push(`**API version:** ${reply.apiVersion}`);
     const urls = [...new Set(reply.evidence.map((evidence) => evidence.sourceUrl))];
     if (urls.length) {
         parts.push(
             '**Sources**\n\n' +
-                urls.map((url, index) => `- [Source ${index + 1}](<${url}>)`).join('\n'),
+                urls
+                    .map((url, index) => `- [Source ${index + 1}](<${escapeDestination(url)}>)`)
+                    .join('\n'),
         );
     }
     return parts.filter(Boolean).join('\n\n');

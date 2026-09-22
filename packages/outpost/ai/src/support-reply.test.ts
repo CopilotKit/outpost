@@ -364,8 +364,9 @@ describe('support reply contract', () => {
         expect(validateSupportReply(value, retrieved)).toEqual(value);
     });
 
-    // `validateProse` has one caller, which runs it over all three public fields,
-    // so the decoding must not be specific to the field the rows above use.
+    // `validateProse` has one caller, which runs it over all three public fields
+    // and over the composed reply, so the decoding must not be specific to the
+    // field the rows above use.
     it.each(['summary', 'details', 'appliesTo'] as const)(
         'decodes an entity-encoded destination cited in %s',
         (field) => {
@@ -1111,5 +1112,122 @@ describe('support reply rendering helpers', () => {
         });
         expect(supportReplyDetails(value)).toBe('');
         expect(supportReplyText(value)).toBe(value.summary);
+    });
+});
+
+// The reader receives the composed reply, not the fields it was assembled from,
+// and publication moves both of the fields it composes: `details` is trimmed and
+// `appliesTo` is normalized onto one line and escaped. Validating the field as
+// written therefore answers a question about a string nobody publishes. Every row
+// below asserts the string `supportReplyDetails` actually emits, so a transform
+// applied after the evidence check can neither reactivate a link that check never
+// saw nor rewrite one it approved.
+//
+// The published strings are pinned against the app's real ReactMarkdown +
+// remark-gfm in apps/web/src/__tests__/qa-components.test.tsx, which is what makes
+// "publishes no link" and "publishes this href" claims here mean what they say.
+// An ordinary applicability sentence publishing unchanged is already pinned by
+// 'renders applicability, API version, and unique evidence links without repeating
+// the summary' above.
+describe('published form of a validated reply', () => {
+    const guideUrl = 'https://docs.copilotkit.ai/reference/my-guide';
+    const guideSources = sources.map((source) => ({ ...source, sourceUrl: guideUrl }));
+    const footer = '\n\n**Applies to:** React applications using the provider.';
+
+    // Four leading spaces are an indented code block, which is why the evidence
+    // check credits the address inside one as inert. Trimming the field removed
+    // exactly those spaces, and the reader received a paragraph with a live link to
+    // a host no evidence mentions. Blank edges carry no structure and still go.
+    it.each([
+        '    Read https://example.invalid/steal now.',
+        '    Read https://example.invalid/steal now.\n',
+        '\n    Read https://example.invalid/steal now.',
+        '\n    Read https://example.invalid/steal now.  \n\n',
+    ])('publishes an indented example block as the code it validated %#', (details) => {
+        const value = reply({ details });
+
+        expect(validateSupportReply(value, sources)).toEqual(value);
+        expect(
+            supportReplyDetails(value).startsWith(
+                `    Read https://example.invalid/steal now.${footer}`,
+            ),
+        ).toBe(true);
+    });
+
+    it('publishes a fenced example block still fenced', () => {
+        const details = '```text\nhttps://example.invalid/documented-example\n```';
+        const value = reply({ details });
+
+        expect(validateSupportReply(value, sources)).toEqual(value);
+        expect(supportReplyDetails(value).startsWith(`${details}${footer}`)).toBe(true);
+    });
+
+    it('publishes a grounded link in details with the href it validated', () => {
+        const value = reply({
+            details: `See [the guide](${guideUrl}).`,
+            evidence: [{ sourceUrl: guideUrl, quote }],
+        });
+
+        expect(validateSupportReply(value, guideSources)).toEqual(value);
+        expect(supportReplyDetails(value).startsWith(`See [the guide](${guideUrl}).`)).toBe(true);
+    });
+
+    // Normalizing the applicability onto one line removes the same indentation, and
+    // the escape it is then put through covers Markdown structure only — never the
+    // '@', '.' and '/' a GFM autolink literal is built from. Both rows published a
+    // live link to a host outside the evidence set.
+    it.each(['    Read www.example.invalid/steal now.', '    help@example.invalid users'])(
+        'refuses applicability whose published form links off the evidence %#',
+        (appliesTo) => {
+            expect(() => validateSupportReply(reply({ appliesTo }), sources)).toThrow(/link|url/i);
+        },
+    );
+
+    // The corruption in the other direction: the escape rewrote the cited URL's own
+    // characters, and the reader clicked an address the evidence check never saw.
+    it('publishes a cited applicability URL with the href it validated', () => {
+        const value = reply({
+            appliesTo: guideUrl,
+            evidence: [{ sourceUrl: guideUrl, quote }],
+        });
+
+        expect(validateSupportReply(value, guideSources)).toEqual(value);
+        expect(supportReplyDetails(value)).toContain(`**Applies to:** ${guideUrl}\n`);
+    });
+
+    // The source list is the one part of the composed details this module writes
+    // rather than the model, and it is subject to the same contract. An inline
+    // destination is decoded, so a cited URL spelled with a character reference
+    // published as the address that reference decodes to — a different page, and
+    // one no evidence names. The href the literal below publishes is pinned in
+    // apps/web/src/__tests__/qa-components.test.tsx.
+    it('publishes a source link whose destination decodes to the cited URL', () => {
+        const value = reply({
+            appliesTo: '',
+            evidence: [{ sourceUrl: encodedAmpersandUrl, quote }],
+        });
+        const retrieved = sources.map((source) => ({
+            ...source,
+            sourceUrl: encodedAmpersandUrl,
+        }));
+
+        expect(validateSupportReply(value, retrieved)).toEqual(value);
+        expect(supportReplyDetails(value)).toContain(
+            '- [Source 1](<https://docs.copilotkit.ai/search?a=1&amp;amp;b=2>)',
+        );
+    });
+
+    // A citation written as a link is the same contract: the destination the reader
+    // clicks stays the destination the evidence check approved.
+    it('publishes a cited applicability link with the href it validated', () => {
+        const value = reply({
+            appliesTo: `See [the guide](${guideUrl}).`,
+            evidence: [{ sourceUrl: guideUrl, quote }],
+        });
+
+        expect(validateSupportReply(value, guideSources)).toEqual(value);
+        expect(supportReplyDetails(value)).toContain(
+            `**Applies to:** See [the guide](${guideUrl}).\n`,
+        );
     });
 });
