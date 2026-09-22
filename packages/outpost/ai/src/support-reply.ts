@@ -61,10 +61,6 @@ function canonicalSourceUrl(value: string): string | undefined {
     return url.href;
 }
 
-function unescapeMarkdownDestination(value: string): string {
-    return value.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g, '$1');
-}
-
 function inlineDestinationEnd(destination: string): number {
     if (destination.startsWith('<')) {
         for (let index = 1; index < destination.length; index++) {
@@ -258,11 +254,17 @@ function publishesRawHtml(text: string): boolean {
     return html.length > 0;
 }
 
-interface InlineDestination {
+interface InlineDestinationSpan {
     /** Offset of the `]` whose `](` opened the destination. */
     openerStart: number;
-    /** Offset the destination itself begins at, any padding whitespace skipped. */
+    /** Offsets the destination itself spans, any padding whitespace skipped. */
     start: number;
+    end: number;
+}
+
+interface InlineDestination extends InlineDestinationSpan {
+    /** Destination as the parser decodes it: escapes and references resolved. */
+    url: string;
 }
 
 /**
@@ -279,7 +281,7 @@ function inlineDestination(
     text: string,
     start: number,
     end: number,
-): InlineDestination | undefined {
+): InlineDestinationSpan | undefined {
     let cursor = text[start] === '!' ? start + 1 : start;
     if (text[cursor] !== '[') return undefined;
     let depth = 0;
@@ -295,7 +297,7 @@ function inlineDestination(
     const openerStart = cursor;
     cursor += 2;
     while (cursor < end && /\s/.test(text[cursor])) cursor++;
-    return { openerStart, start: cursor };
+    return { openerStart, start: cursor, end: cursor + inlineDestinationEnd(text.slice(cursor)) };
 }
 
 /** Inline links and images can sit at any depth, including inside a link label. */
@@ -305,9 +307,9 @@ function collectInlineLinks(node: Nodes, into: (Link | Image)[]): void {
 }
 
 /**
- * Offsets in `text` of the destination of every link or image written in the
- * `[label](destination)` form, found with the parser the renderer runs rather
- * than by looking for `](`.
+ * Every link or image written in the `[label](destination)` form: where its
+ * destination sits in `text`, and the URL the parser decodes that destination to.
+ * Found with the parser the renderer runs rather than by looking for `](`.
  *
  * Those two questions have different answers. `](` is a destination opener only
  * where a link label closed on it; everywhere else the renderer prints it as
@@ -319,16 +321,13 @@ function collectInlineLinks(node: Nodes, into: (Link | Image)[]): void {
  */
 function inlineDestinations(text: string): InlineDestination[] {
     const nodes: (Link | Image)[] = [];
-    collectInlineLinks(
-        fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }),
-        nodes,
-    );
-    return nodes.flatMap(({ position }) => {
+    collectInlineLinks(parseMarkdown(text), nodes);
+    return nodes.flatMap(({ position, url }) => {
         const start = position?.start.offset;
         const end = position?.end.offset;
         if (start === undefined || end === undefined) return [];
-        const destination = inlineDestination(text, start, end);
-        return destination === undefined ? [] : [destination];
+        const span = inlineDestination(text, start, end);
+        return span === undefined ? [] : [{ ...span, url }];
     });
 }
 
@@ -391,10 +390,13 @@ function publishedDestinations(text: string): string[] {
  * lines. Each of those is block structure rather than a line pattern, so each
  * hand-written bound fixed an instance and left the class. Asking the renderer's
  * own parser which definitions exist removes the class.
+ *
+ * It asks through `parseMarkdown`, the one configuration in this file, so the
+ * definitions masked here cannot drift from the destinations published below.
  */
 function referenceDefinitions(text: string): ReferenceDefinition[] {
     const nodes: Definition[] = [];
-    collectDefinitions(fromMarkdown(text), nodes);
+    collectDefinitions(parseMarkdown(text), nodes);
     return nodes.flatMap(({ position, url }) => {
         const start = position?.start.offset;
         const end = position?.end.offset;
@@ -505,12 +507,8 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     const maskMarkdownDestination = (start: number, end: number): void => {
         for (let index = start; index < end; index++) proseWithoutMarkdownDestinations[index] = ' ';
     };
-    const checkUrl = (
-        raw: string,
-        allowProsePunctuation = false,
-        markdownDestination = false,
-    ): void => {
-        let candidate = markdownDestination ? unescapeMarkdownDestination(raw) : raw;
+    const checkUrl = (raw: string, allowProsePunctuation = false): void => {
+        let candidate = raw;
         // Prose punctuation and Markdown closing delimiters are not URL content.
         // Try the full URL first, so a retrieved URL ending in ')' still works.
         while (candidate) {
@@ -527,20 +525,17 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     };
 
     // Validate destinations separately so relative, protocol-relative, and
-    // non-HTTP links cannot bypass the checks for raw URLs below. Each is read
-    // as the reply spells it, not as the parser decodes it, so a destination the
-    // renderer resolves through a character reference stays subject to them too.
-    for (const { start: destinationStart } of inlineDestinations(prose)) {
-        const destination = prose.slice(destinationStart);
-        if (destination.startsWith('<')) {
-            const end = inlineDestinationEnd(destination);
-            checkUrl(destination.slice(1, end > 0 ? end - 1 : end), false, true);
-            maskMarkdownDestination(destinationStart, destinationStart + end);
-            continue;
-        }
-        const end = inlineDestinationEnd(destination);
-        checkUrl(destination.slice(0, end), false, true);
-        maskMarkdownDestination(destinationStart, destinationStart + end);
+    // non-HTTP links cannot bypass the checks for raw URLs below. Each is compared
+    // as the parser decodes it, because that is the value the renderer publishes:
+    // it resolves both backslash escapes and HTML character references inside an
+    // inline destination, so `…/search?a=1&amp;b=2` reaches the reader as
+    // `…/search?a=1&b=2` — the same href the definition form below already
+    // produced. Reading the inline form as spelled instead put the two spellings
+    // of one published destination on opposite sides of this check, and discarded
+    // a reply whose reader would have clicked through to the cited evidence.
+    for (const { start, end, url } of inlineDestinations(prose)) {
+        checkUrl(url);
+        maskMarkdownDestination(start, end);
     }
     // Mask the destination alone: a label is not rendered, and leaving it visible
     // keeps a raw URL inside a multiline label subject to the checks below.
@@ -549,6 +544,12 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
         maskMarkdownDestination(definition.destinationStart, definition.destinationEnd);
     }
     const proseRawUrlView = proseWithoutMarkdownDestinations.join('');
+    // Autolinks are the same question with a different answer, so they keep their
+    // own comparison. This renderer publishes a CommonMark autolink's and a GFM
+    // literal's address exactly as written — a character reference is left alone
+    // there, `<…?a=1&amp;b=2>` links to `…?a=1&amp;b=2` — so decoding them the way
+    // an inline destination is decoded would ground them on a URL no reader
+    // reaches. These two scans compare the spelling because the reader clicks it.
     for (const match of proseRawUrlView.matchAll(/<(https?:\/\/[^\s<>]+)>/gi)) {
         checkUrl(match[1]);
     }

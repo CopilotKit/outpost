@@ -61,6 +61,18 @@ function replyWithDeprecatedSource(marker: 'url' | 'title', overrides: Partial<S
     };
 }
 
+/** The same reply and retrieval set, grounded on one chosen evidence URL. */
+function grounded(evidenceUrl: string, details: string) {
+    return {
+        value: reply({ details, evidence: [{ sourceUrl: evidenceUrl, quote }] }),
+        retrieved: sources.map((source) => ({ ...source, sourceUrl: evidenceUrl })),
+    };
+}
+
+/** One URL whose query carries an '&', and the character-reference spelling of it. */
+const ampersandUrl = 'https://docs.copilotkit.ai/search?a=1&b=2';
+const encodedAmpersandUrl = 'https://docs.copilotkit.ai/search?a=1&amp;b=2';
+
 describe('support reply contract', () => {
     it('exposes a strict structured-output schema with every field required', () => {
         const schema = z.toJSONSchema(supportReplySchema);
@@ -278,6 +290,101 @@ describe('support reply contract', () => {
         `[documentation][guide]\n\n   [guide]: ${sourceUrl}`,
     ])('allows retrieved links and anchors in prose %#', (details) => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // A '&' in a query is the character a model most often writes as `&amp;`, and
+    // the renderer resolves that reference before publishing the href: every
+    // spelling below reaches the reader as `…/search?a=1&b=2`. The definition form
+    // arrived from the parser already decoded and was accepted; the inline form was
+    // read as spelled and discarded, so one published href had two spellings on
+    // opposite sides of the evidence check. Recorded in 00-renderer-probe.log (the
+    // app's ReactMarkdown + remark-gfm) and 01-grammar-probe.log (this parser).
+    it.each([
+        `See [docs](${encodedAmpersandUrl}).`,
+        `See [docs](<${encodedAmpersandUrl}>).`,
+        `![diagram](${encodedAmpersandUrl})`,
+        `See [docs][d].\n\n[d]: ${encodedAmpersandUrl}`,
+        `See [docs][d].\n\n[d]: <${encodedAmpersandUrl}>`,
+        'See [docs](https://docs.copilotkit.ai/search?a=1&#38;b=2).',
+        'See [docs](https://docs.copilotkit.ai/search?a=1&#x26;b=2).',
+        // A backslash escape is resolved in the same place and was already decoded
+        // before this change; it is the control the character-reference rows join.
+        'See [docs](https://docs.copilotkit.ai/search?a=1\\&b=2).',
+    ])('grounds an entity-encoded destination on the URL it decodes to %#', (details) => {
+        const { value, retrieved } = grounded(ampersandUrl, details);
+        expect(validateSupportReply(value, retrieved)).toEqual(value);
+    });
+
+    // `validateProse` has one caller, which runs it over all three public fields,
+    // so the decoding must not be specific to the field the rows above use.
+    it.each(['summary', 'details', 'appliesTo'] as const)(
+        'decodes an entity-encoded destination cited in %s',
+        (field) => {
+            const value = reply({
+                [field]: `See [docs](${encodedAmpersandUrl}).`,
+                evidence: [{ sourceUrl: ampersandUrl, quote }],
+            });
+            const retrieved = sources.map((source) => ({ ...source, sourceUrl: ampersandUrl }));
+            expect(validateSupportReply(value, retrieved)).toEqual(value);
+        },
+    );
+
+    // The comparison is per syntax because the renderer is. An inline destination
+    // and a reference definition publish the decoded URL; a CommonMark autolink and
+    // a GFM autolink literal publish their address exactly as spelled, `&amp;` and
+    // all. Asserting one normalization for all five would ground two of them on a
+    // URL the reader never reaches. Each row is checked in both directions, so the
+    // relation holds rather than the individual values.
+    it.each([
+        {
+            syntax: 'inline destination',
+            details: `See [docs](${encodedAmpersandUrl}).`,
+            publishes: ampersandUrl,
+        },
+        {
+            syntax: 'angle inline destination',
+            details: `See [docs](<${encodedAmpersandUrl}>).`,
+            publishes: ampersandUrl,
+        },
+        {
+            syntax: 'reference definition',
+            details: `See [docs][d].\n\n[d]: ${encodedAmpersandUrl}`,
+            publishes: ampersandUrl,
+        },
+        {
+            syntax: 'CommonMark autolink',
+            details: `See <${encodedAmpersandUrl}> now.`,
+            publishes: encodedAmpersandUrl,
+        },
+        {
+            syntax: 'GFM autolink literal',
+            details: `See ${encodedAmpersandUrl} now.`,
+            publishes: encodedAmpersandUrl,
+        },
+    ])('grounds a $syntax on the destination that syntax publishes', ({ details, publishes }) => {
+        const published = grounded(publishes, details);
+        expect(validateSupportReply(published.value, published.retrieved)).toEqual(published.value);
+
+        const other = publishes === ampersandUrl ? encodedAmpersandUrl : ampersandUrl;
+        const misgrounded = grounded(other, details);
+        expect(() => validateSupportReply(misgrounded.value, misgrounded.retrieved)).toThrow(
+            /link|url/i,
+        );
+    });
+
+    // Decoding widens what matches, so it has to widen it to the evidence and to
+    // nothing else. A reference that resolves to a different query, a different
+    // host, or a character no evidence URL may contain stays refused.
+    it.each([
+        'See [docs](https://other.invalid/search?a=1&amp;b=2).',
+        'See [docs](https://docs.copilotkit.ai/search?a=1&amp;b=3).',
+        'See [docs](https://docs.copilotkit.ai&#46;evil.invalid/search?a=1&amp;b=2).',
+        // `&lt;` decodes to a raw '<', which `parseSourceUrl` refuses on both sides
+        // of the comparison, so no evidence can ever ground this one.
+        'See [docs](https://docs.copilotkit.ai/search?a=1&lt;b=2).',
+    ])('still refuses an entity-encoded destination no evidence decodes to %#', (details) => {
+        const { value, retrieved } = grounded(ampersandUrl, details);
+        expect(() => validateSupportReply(value, retrieved)).toThrow(/link|url/i);
     });
 
     it('rejects a v2 prose citation to deprecated material omitted from its evidence', () => {

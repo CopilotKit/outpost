@@ -242,6 +242,26 @@ describe('ChatMessage', () => {
             markdown: 'Read [Doc][g].\n\n[g]: https://docs.copilotkit.ai/reference/provider',
             hrefs: ['https://docs.copilotkit.ai/reference/provider'],
         },
+        // An HTML character reference in a destination is resolved for an inline
+        // link and a reference definition, and left exactly as spelled for either
+        // autolink form. The validator compares each syntax against its own row
+        // here, so a renderer change that aligns or further splits them fails here.
+        {
+            markdown: 'See [Doc](https://docs.copilotkit.ai/search?a=1&amp;b=2).',
+            hrefs: ['https://docs.copilotkit.ai/search?a=1&b=2'],
+        },
+        {
+            markdown: 'See [Doc][g].\n\n[g]: https://docs.copilotkit.ai/search?a=1&amp;b=2',
+            hrefs: ['https://docs.copilotkit.ai/search?a=1&b=2'],
+        },
+        {
+            markdown: 'See <https://docs.copilotkit.ai/search?a=1&amp;b=2> now.',
+            hrefs: ['https://docs.copilotkit.ai/search?a=1&amp;b=2'],
+        },
+        {
+            markdown: 'See https://docs.copilotkit.ai/search?a=1&amp;b=2 now.',
+            hrefs: ['https://docs.copilotkit.ai/search?a=1&amp;b=2'],
+        },
         // A bracket pair is a link only where a label closed on it. The subscript
         // row is the one that matters: it looks like the punctuation rows above it
         // and publishes a real anchor, so neither can be decided by the `](` alone.
