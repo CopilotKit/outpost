@@ -728,6 +728,113 @@ describe('support reply contract', () => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
     });
 
+    // The rows above put the destination on the definition's own line. A
+    // destination may instead sit on the next line, where the container re-states
+    // the markers the parser has already consumed — they are not part of the node
+    // it reports, so they are still in the raw text its range covers. Locating the
+    // destination by skipping whitespace alone stopped on the '>' and reported the
+    // marker as the destination: the marker was masked, and the destination — which
+    // the definition check had already approved, decoded — stayed visible to the raw
+    // scans, which read it as spelled. Every spelling the parser decodes was
+    // discarded there while the literal one passed by accident.
+    //
+    // So the matrix below is closed on both axes that decide the answer: every
+    // container continuation the grammar recognizes, crossed with every destination
+    // spelling it decodes. A positive row per cell is the half that pins the fix; a
+    // literal-only suite could not see it. The href each cell publishes is pinned
+    // against the app's real renderer in apps/web/src/__tests__/qa-components.test.tsx.
+    const parenthesizedUrl = 'https://docs.copilotkit.ai/reference/setup)';
+    const continuations = [
+        { container: 'a block quote', open: '> ', carry: '> ', eol: '\n' },
+        { container: 'a nested block quote', open: '> > ', carry: '> > ', eol: '\n' },
+        { container: 'a block quote in a list item', open: '- > ', carry: '  > ', eol: '\n' },
+        { container: 'a list item', open: '- ', carry: '  ', eol: '\n' },
+        { container: 'a CRLF block quote', open: '> ', carry: '> ', eol: '\r\n' },
+    ];
+    const spellings = [
+        { spelling: 'a literal', written: sourceUrl, publishes: sourceUrl },
+        { spelling: 'an entity-encoded', written: encodedAmpersandUrl, publishes: ampersandUrl },
+        {
+            spelling: 'an escape-delimited',
+            written: 'https://docs.copilotkit.ai/reference/setup\\)',
+            publishes: parenthesizedUrl,
+        },
+        {
+            spelling: 'an angle-delimited entity-encoded',
+            written: `<${encodedAmpersandUrl}>`,
+            publishes: ampersandUrl,
+        },
+    ];
+    const carried = (index: number, written: string, tail = '') => {
+        const { open, carry, eol } = continuations[index];
+        return `[documentation][ref]${eol}${eol}${open}[ref]:${eol}${carry}${written}${tail}`;
+    };
+
+    it.each(
+        continuations.flatMap(({ container, open, carry, eol }) =>
+            spellings.map(({ spelling, written, publishes }) => ({
+                container,
+                spelling,
+                publishes,
+                details: `[documentation][ref]${eol}${eol}${open}[ref]:${eol}${carry}${written}`,
+            })),
+        ),
+    )(
+        'grounds $spelling destination carried onto the next line of $container',
+        ({ details, publishes }) => {
+            const { value, retrieved } = grounded(publishes, details);
+            expect(validateSupportReply(value, retrieved).details).toBe(details);
+        },
+    );
+
+    // The other half. Masking the destination is only correct if it is the
+    // destination alone: a whole-definition, whole-node or whole-line mask would
+    // make every row here pass while publishing an ungrounded href, and loosening
+    // the canonical, escape or entity comparison would make the first four pass.
+    // The label and title rows are the two places a raw URL can sit inside a
+    // definition without ever becoming a destination, and the renderer agrees —
+    // it publishes the title as `title=`, never as `href=`.
+    it.each([
+        {
+            why: 'an ungrounded destination carried by a block quote',
+            url: sourceUrl,
+            details: carried(0, 'https://example.invalid/steal'),
+        },
+        {
+            why: 'an ungrounded destination carried by a nested block quote',
+            url: sourceUrl,
+            details: carried(1, 'https://example.invalid/steal'),
+        },
+        {
+            why: 'an entity-encoded destination decoding away from the evidence',
+            url: ampersandUrl,
+            details: carried(0, 'https://docs.copilotkit.ai/search?a=1&amp;b=3'),
+        },
+        {
+            why: 'an escape-delimited destination decoding away from the evidence',
+            url: parenthesizedUrl,
+            details: carried(3, 'https://docs.copilotkit.ai/reference/invented\\)'),
+        },
+        {
+            why: 'an angle destination whose escaped delimiter changes the target',
+            url: sourceUrl,
+            details: carried(0, `<${sourceUrl}\\>y>`),
+        },
+        {
+            why: 'a raw URL written into the label the continuation carries',
+            url: sourceUrl,
+            details: `[documentation][re\nf]\n\n> [re\n> f https://example.invalid/steal]:\n> ${sourceUrl}`,
+        },
+        {
+            why: 'a raw URL written into the title on the line after the destination',
+            url: sourceUrl,
+            details: carried(0, sourceUrl, '\n> "https://example.invalid/steal"'),
+        },
+    ])('still refuses $why', ({ url, details }) => {
+        const { value, retrieved } = grounded(url, details);
+        expect(() => validateSupportReply(value, retrieved)).toThrow(/link|url/i);
+    });
+
     // A list item opens a container whose content column its marker width sets, and
     // a later line indented to that column is inside the item — across blank lines,
     // and with no marker of its own to give it away.

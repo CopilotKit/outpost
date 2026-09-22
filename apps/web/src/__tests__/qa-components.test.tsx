@@ -841,6 +841,83 @@ describe('ChatMessage', () => {
             [...container.querySelectorAll('img')].map((node) => node.getAttribute('src')),
         ).toEqual(srcs);
     });
+
+    // The href side of the validator's reference-definition matrix. A definition
+    // can put its destination on the line after `[ref]:`, where the container
+    // re-states the markers it opened with; the validator has to mask exactly that
+    // destination and nothing around it, and what "that destination" resolves to is
+    // this renderer's answer rather than a reading of the spelling. Recorded here
+    // so the AI package's rows are checked against a published href instead of a
+    // handwritten one. `title` is asserted beside `href` on the last row: the
+    // renderer publishes a definition's title as an attribute and never as a
+    // destination, which is why a raw URL written there stays prose the validator
+    // must still hold to the evidence set. Literal fixtures, so the web suite stays
+    // independent of the AI package's tests.
+    const searchUrl = 'https://docs.copilotkit.ai/search?a=1&b=2';
+    const encodedSearchUrl = 'https://docs.copilotkit.ai/search?a=1&amp;b=2';
+
+    it.each([
+        {
+            form: 'a literal destination carried by a block quote',
+            content: `[documentation][ref]\n\n> [ref]:\n> ${providerUrl}`,
+            hrefs: [providerUrl],
+            titles: [null],
+        },
+        {
+            form: 'an entity-encoded destination carried by a block quote',
+            content: `[documentation][ref]\n\n> [ref]:\n> ${encodedSearchUrl}`,
+            hrefs: [searchUrl],
+            titles: [null],
+        },
+        {
+            form: 'an escape-delimited destination carried by a block quote',
+            content:
+                '[documentation][ref]\n\n> [ref]:\n> https://docs.copilotkit.ai/reference/setup\\)',
+            hrefs: ['https://docs.copilotkit.ai/reference/setup)'],
+            titles: [null],
+        },
+        {
+            form: 'an angle-delimited destination carried by a nested block quote',
+            content: `[documentation][ref]\n\n> > [ref]:\n> > <${encodedSearchUrl}>`,
+            hrefs: [searchUrl],
+            titles: [null],
+        },
+        {
+            form: 'an entity-encoded destination carried by a quote in a list item',
+            content: `[documentation][ref]\n\n- > [ref]:\n  > ${encodedSearchUrl}`,
+            hrefs: [searchUrl],
+            titles: [null],
+        },
+        {
+            form: 'an entity-encoded destination carried by a list item',
+            content: `[documentation][ref]\n\n- [ref]:\n  ${encodedSearchUrl}`,
+            hrefs: [searchUrl],
+            titles: [null],
+        },
+        {
+            form: 'an ungrounded destination carried by a block quote',
+            content: '[documentation][ref]\n\n> [ref]:\n> https://example.invalid/steal',
+            hrefs: ['https://example.invalid/steal'],
+            titles: [null],
+        },
+        {
+            form: 'a raw URL written into the title rather than the destination',
+            content: `[documentation][ref]\n\n> [ref]:\n> ${providerUrl}\n> "https://example.invalid/steal"`,
+            hrefs: [providerUrl],
+            titles: ['https://example.invalid/steal'],
+        },
+    ])('publishes a reference definition holding $form', ({ content, hrefs, titles }) => {
+        const { container } = render(
+            <ChatMessage message={{ id: 'definition-fixture', role: 'assistant', content }} />,
+        );
+
+        expect(
+            [...container.querySelectorAll('a')].map((node) => node.getAttribute('href')),
+        ).toEqual(hrefs);
+        expect(
+            [...container.querySelectorAll('a')].map((node) => node.getAttribute('title')),
+        ).toEqual(titles);
+    });
 });
 
 describe('SourcePanel', () => {

@@ -203,12 +203,49 @@ interface ReferenceDefinition {
 }
 
 /**
+ * Past the padding between a definition's `]:` and its destination, container
+ * markers included.
+ *
+ * The parser reports a definition's range in the text it was found in, and a
+ * block container's markers are not part of the node it carries — so the raw
+ * text inside that range still holds them, and a destination written on a
+ * continuation line sits after one. Skipping whitespace alone stopped on the
+ * '>', reported the marker itself as the destination, and so masked the marker
+ * while leaving the destination — already checked once, in the one spelling the
+ * raw scans below cannot accept — exposed to them. A reply whose only citation
+ * was its own evidence was discarded for it, at every spelling the parser
+ * decodes: `…?a=1&amp;b=2` and a destination ending in an escaped ')'.
+ *
+ * What a continuation prefix may hold is bounded by the grammar rather than
+ * guessed: indentation, then one '>' per open block quote, each with its own
+ * optional space. A list item contributes indentation only, so the nesting is
+ * covered by the same two rules. Exactly one line ending is stepped over,
+ * because a blank line ends the definition and the parser would not have
+ * reported one spanning it; and a '>' is skipped only at the start of a line,
+ * where the grammar has no other reading for it. Line endings are matched in
+ * both spellings even though every caller normalizes CRLF first, so the bound
+ * belongs to this function rather than to its callers.
+ */
+function continuationPadding(text: string, from: number, end: number): number {
+    let cursor = from;
+    while (cursor < end && /[^\S\r\n]/.test(text[cursor])) cursor++;
+    if (cursor >= end || (text[cursor] !== '\n' && text[cursor] !== '\r')) return cursor;
+    cursor += text.startsWith('\r\n', cursor) ? 2 : 1;
+    while (cursor < end && /[^\S\r\n]/.test(text[cursor])) cursor++;
+    while (cursor < end && text[cursor] === '>') {
+        cursor++;
+        while (cursor < end && /[^\S\r\n]/.test(text[cursor])) cursor++;
+    }
+    return cursor;
+}
+
+/**
  * Offsets of the destination inside a definition the parser has already
  * delimited. The parser reports the node's range and the decoded URL but not the
  * destination's own span, and the raw-URL scans below must skip exactly the text
  * the destination check already covered — no more, so that a URL written inside
- * a label stays subject to them. Returning nothing masks nothing, which leaves
- * those scans stricter rather than looser.
+ * a label or a title stays subject to them. Returning nothing masks nothing,
+ * which leaves those scans stricter rather than looser.
  */
 function destinationSpan(
     text: string,
@@ -218,14 +255,17 @@ function destinationSpan(
     let cursor = start + 1;
     while (cursor < end && text[cursor] !== ']') cursor += text[cursor] === '\\' ? 2 : 1;
     if (text[cursor] !== ']' || text[cursor + 1] !== ':') return undefined;
-    cursor += 2;
-    while (cursor < end && /\s/.test(text[cursor])) cursor++;
+    cursor = continuationPadding(text, cursor + 2, end);
     if (text[cursor] === '<') {
         for (let scan = cursor + 1; scan < end; scan++) {
             if (text[scan] === '\\') {
                 scan++;
                 continue;
             }
+            // An angle destination may not hold a line ending, so a '>' on a later
+            // line closes something else — a container marker, most often. Stopping
+            // here masks nothing rather than masking across it.
+            if (text[scan] === '\n' || text[scan] === '\r') break;
             if (text[scan] === '>') return { from: cursor, to: scan + 1 };
         }
     }
