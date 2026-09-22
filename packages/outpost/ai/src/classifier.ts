@@ -142,11 +142,59 @@ export class TicketClassifier {
         const hypotheticalIncidentPrefix = /\bhypothetical\s+(?:a|an|the)?\s*$/i;
         const denialRelationPrefix =
             /\b(?:(?:(?:do|does|did)\s+(?:not|never)|(?:do|does|did)n['’]t)\s+(?:represent|constitute)|(?:is|are|was|were)\s+unrelated\s+to)\s+(?:a|an|the)?\s*$/i;
+        // One verb class, two syntactic positions. A negation only cancels an
+        // incident mention when it negates the incident's own occurrence or
+        // observation; negating a remediation verb ("patched", "mitigated"),
+        // a property ("recoverable") or a different object ("the root cause")
+        // leaves the incident standing. Enumerate the class rather than
+        // accepting any negated predicate: a verb belongs when negating it
+        // asserts that the incident did not occur or was not observed, and does
+        // not belong when it describes what was done *about* an incident.
+        //
+        // Object position: the incident is what was not observed or not caused
+        // ("we have not found any data loss"), so transitive forms belong here.
+        const negatedIncidentObjectVerbs =
+            '(?:see|seen|observe|observed|detect|detected|find|found|receive|received|report|reported|experience|experienced|had|suffer|suffered|cause|caused|occur|occurred|happen|happened)';
+        // Subject position: the incident is what did not occur or was not
+        // observed ("data loss has not occurred"), so only intransitive and
+        // passive forms belong here. "cause"/"caused" is object-position only:
+        // "data loss was not caused by the migration" presupposes the data
+        // loss, and must not cancel it.
+        const negatedIncidentSubjectVerbs =
+            '(?:seen|observed|detected|found|reported|experienced|suffered|occur|occurred|happen|happened)';
         const negativeObservationPrefix = new RegExp(
-            `\\b(?:(?:(?:has|have|had|do|does|did|was|were|is|are)\\s+(?:not|never)|\\w+n['’]t)\\s+|never\\s+)(?:yet\\s+|already\\s+|any\\s+|customer\\s+|customers\\s+|reports?\\s+|reported\\s+|evidence\\s+|of\\s+)*(?:see|seen|find|found|receive|received|experience|experienced|had|suffer|suffered|cause|caused|occur|occurred|happen|happened)\\b(?:\\s+(?:yet|already|any|customer|customers|reports?|reported|evidence|of|(?:a|an|the)|${incidentMention})|\\s*[,/]\\s*|\\s+(?:and|or)\\s+)*\\s*$`,
+            `\\b(?:(?:(?:has|have|had|do|does|did|was|were|is|are)\\s+(?:not|never)|\\w+n['’]t)\\s+|never\\s+)(?:yet\\s+|already\\s+|any\\s+|customer\\s+|customers\\s+|reports?\\s+|reported\\s+|evidence\\s+|of\\s+)*${negatedIncidentObjectVerbs}\\b(?:\\s+(?:yet|already|any|customer|customers|reports?|reported|evidence|of|(?:a|an|the)|${incidentMention})|\\s*[,/]\\s*|\\s+(?:and|or)\\s+)*\\s*$`,
             'i',
         );
-        const hasNonIncidentPrefix = (prefix: string): boolean =>
+        // …and the incident has to be the head of that object, not a modifier
+        // inside it. "We have not found any data loss." is an absence report;
+        // "We have not found the data loss root cause." reports data loss
+        // whose cause is still open. The two differ by whether a further bare
+        // noun continues the object phrase, so the mention still heads it when
+        // what follows cannot be part of that noun phrase at all: the clause
+        // ends, or a closed-class word takes the phrase over.
+        const objectPhraseEnd = '\\s*(?:[.?!,;:/]|$)';
+        // Coordinators and prepositions end a noun phrase rather than
+        // continuing it; "reports", "evidence" and "incidents" head an absence
+        // report about the incident and are kept from the original list.
+        const objectPhraseHandoff =
+            '(?:and|or|nor|of|in|on|at|for|from|to|during|after|before|since|with|across|reports?|evidence|incidents?)';
+        // The post-object adverb slot is the one open position here, and it is
+        // narrowed by grammar rather than by listing adverbs as they turn up:
+        // negative-polarity items, which only a negation licenses and whose
+        // presence is therefore positive evidence that the object sits inside
+        // the negation's scope, plus the -ly adverb morpheme ("recently",
+        // "lately"). "so far"/"thus far" are listed because they carry the same
+        // post-object reading with no -ly form. This is a slot test, not a part
+        // of speech tagger: an adverb outside both still reads as a continuing
+        // noun, and a noun ending in -ly still reads as an adverb.
+        const postObjectAdverb =
+            '(?:any(?:where|more)|any\\s+more|at\\s+all|whatsoever|either|ever|yet|so\\s+far|thus\\s+far|\\w+ly)';
+        const negatedIncidentObjectHead = new RegExp(
+            `^(?:${objectPhraseEnd}|\\s+(?:${objectPhraseHandoff}|${postObjectAdverb})\\b)`,
+            'i',
+        );
+        const hasNonIncidentPrefix = (prefix: string, suffix: string): boolean =>
             !failedPreventionPrefix.test(prefix) &&
             (successfulPreventionPrefix.test(prefix) ||
                 withoutIncidentPrefix.test(prefix) ||
@@ -154,13 +202,18 @@ export class TicketClassifier {
                 copularNegationPrefix.test(prefix) ||
                 denialRelationPrefix.test(prefix) ||
                 noIncidentPrefix.test(prefix) ||
-                negativeObservationPrefix.test(prefix));
+                (negativeObservationPrefix.test(prefix) && negatedIncidentObjectHead.test(suffix)));
+        // A negated predicate in subject position, up to but not including the
+        // verb: "has not been", "did not", "hasn't", "were never yet". Shared
+        // so the two suffix guards below differ only in the verb class they
+        // accept, which is the whole distinction between them.
+        const negatedPredicateOpener = `(?:${auxiliaries}\\s+)*(?:not|never|\\w+n['’]t)\\s+(?:been\\s+|yet\\s+|ever\\s+|already\\s+)*`;
         const failedPassivePreventionSuffix = new RegExp(
-            `^${remainingIncidentList}\\s+(?:(?:(?:is|are|was|were|has|have|had)\\s+(?:not|never)|\\w+n['’]t)\\s+(?:been\\s+)?)(?:prevented|avoided)\\b`,
+            `^${remainingIncidentList}\\s+${negatedPredicateOpener}(?:prevented|avoided)\\b`,
             'i',
         );
         const nonIncidentSuffix = new RegExp(
-            `^${remainingIncidentList}\\s+(?:prevention\\b|(?:(?:(?:is|are|was|were)|(?:has|have|had)\\s+been)\\s+)(?:avoided|prevented)\\b|(?:avoided|prevented)(?:\\s+(?:by|during|before|after|through|with|via)\\b|[.?!,;:]|$)|(?:${auxiliaries}\\s+)*(?:not|never|\\w+n['’]t)\\b)`,
+            `^${remainingIncidentList}\\s+(?:prevention\\b|(?:(?:(?:is|are|was|were)|(?:has|have|had)\\s+been)\\s+)(?:avoided|prevented)\\b|(?:avoided|prevented)(?:\\s+(?:by|during|before|after|through|with|via)\\b|[.?!,;:]|$)|${negatedPredicateOpener}${negatedIncidentSubjectVerbs}\\b)`,
             'i',
         );
         const affirmativeNotOnly = /\bnot\s+only\b/gi;
@@ -230,7 +283,10 @@ export class TicketClassifier {
                     const suffix = clause.slice(match.index + match[0].length);
                     const prefixWithoutNotOnly = prefix.replace(affirmativeNotOnly, ' ');
                     const suffixWithoutNotOnly = suffix.replace(affirmativeNotOnly, ' ');
-                    const hasNonIncidentPrefixMatch = hasNonIncidentPrefix(prefixWithoutNotOnly);
+                    const hasNonIncidentPrefixMatch = hasNonIncidentPrefix(
+                        prefixWithoutNotOnly,
+                        suffixWithoutNotOnly,
+                    );
                     const hasNonIncidentSuffix =
                         !failedPassivePreventionSuffix.test(suffixWithoutNotOnly) &&
                         nonIncidentSuffix.test(suffixWithoutNotOnly);

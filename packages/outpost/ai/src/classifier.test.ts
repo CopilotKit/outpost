@@ -714,6 +714,16 @@ describe('critical incident context boundaries', () => {
         "Data loss hasn't been prevented.",
         "A security vulnerability hadn't been prevented.",
     ];
+    // Both suffix guards share one negated-predicate opener, so the adverb and
+    // auxiliary forms it accepts have to resolve by verb class alone: a negated
+    // prevention is still a failed prevention, a negated occurrence is still an
+    // absence. Pinning both arms keeps the opener from drifting for one guard.
+    const r13NegatedPredicateOpenerCases = [
+        { content: 'Data loss has not yet been prevented.', priority: TicketPriority.CRITICAL },
+        { content: 'A production outage could not be avoided.', priority: TicketPriority.CRITICAL },
+        { content: 'Data loss has not yet occurred.', priority: TicketPriority.HIGH },
+        { content: 'Data loss has never yet been reported.', priority: TicketPriority.HIGH },
+    ];
     const r6PreservationControls = [
         {
             content: 'This is a hypothetical data loss scenario.',
@@ -750,6 +760,7 @@ describe('critical incident context boundaries', () => {
             content,
             priority: TicketPriority.CRITICAL,
         })),
+        ...r13NegatedPredicateOpenerCases,
         ...r6PreservationControls,
         ...ownerNoPreservationControls.map((content) => ({
             content,
@@ -813,6 +824,156 @@ describe('critical incident context boundaries', () => {
         },
     ];
 
+    // Round-13 convergence lever L3 (audit class C3), incident-absence half:
+    // enumerate the predicates the incident guard is allowed to cancel on
+    // instead of widening it one alternative per round. Each row pairs a
+    // negation that leaves the incident standing with the absence statement it
+    // must not collapse into, and the pair is deliberately NOT asserted equal.
+    // Separator and conditional coverage is R13-AI-A07's half of this lever.
+    //
+    // The `absent` column doubles as the must-accept control for the
+    // subject-position lemmas the guard cancels on. `found`, `reported`,
+    // `occur`, `occurred` and `observed` are already pinned by the
+    // incidentContexts table above and are not restated here.
+    const incidentAbsenceVersusRemediationContrasts = [
+        {
+            rationale: 'remediation verb: the vulnerability exists and is unpatched',
+            unresolved: 'A security vulnerability has not been patched.',
+            absent: 'A security vulnerability has not been seen.',
+        },
+        {
+            rationale: 'remediation verb: the outage exists and is unmitigated',
+            unresolved: 'The production outage has not been mitigated.',
+            absent: 'The production outage has not been observed.',
+        },
+        {
+            rationale: 'contracted remediation verb, same scope as the spelled-out form',
+            unresolved: "The production outage hasn't been mitigated.",
+            absent: "The production outage hasn't happened.",
+        },
+        {
+            rationale: 'unresolved status, not an absent outage',
+            unresolved: 'Production outage is not resolved.',
+            absent: 'Production outage did not happen.',
+        },
+        {
+            rationale: 'property of an incident that already occurred',
+            unresolved: 'Data loss is not recoverable.',
+            absent: 'Data loss has not happened.',
+        },
+        {
+            rationale: 'negated discovery whose object is the root cause, not the data loss',
+            unresolved: 'We have not found the data loss root cause.',
+            absent: 'We have not found any data loss.',
+        },
+        {
+            rationale: 'remediation verb: the outage exists and is uncontained',
+            unresolved: 'The production outage has not been contained.',
+            absent: 'A production outage was not experienced by customers.',
+        },
+        {
+            rationale: 'remediation verb: the data loss exists and is unfixed',
+            unresolved: 'Data loss has not been fixed.',
+            absent: 'Data loss was not suffered by customers.',
+        },
+    ];
+    const incidentAbsenceContrastCases = incidentAbsenceVersusRemediationContrasts.flatMap(
+        ({ unresolved, absent }) => [
+            { content: unresolved, priority: TicketPriority.CRITICAL },
+            { content: absent, priority: TicketPriority.HIGH },
+        ],
+    );
+
+    // The other direction of the same guard, and the one the first pass of this
+    // fix got wrong: constraining cancellation to an enumerated verb class and
+    // to an object the incident heads must not turn an *ordinary* absence
+    // report into a CRITICAL. That error is unrecoverable — the floor never
+    // downgrades and no healthy model judgment can undo it — so each `absent`
+    // row here is pinned against the nearest phrasing that legitimately leaves
+    // the incident standing, and the pair is asserted not to collapse.
+    //
+    // Two decisions are covered. The verb class: "detect" is an observation
+    // verb, so negating it reports absence, while negating a repair verb does
+    // not. The object head: a negative-polarity or -ly adverb closes the
+    // negated object, while a further bare noun makes the incident a modifier
+    // of some other head.
+    const observedAbsenceVersusStandingIncidentContrasts = [
+        {
+            rationale: 'observation verb in subject position, passive',
+            absent: 'Data loss has not been detected.',
+            standing: 'Data loss has not been repaired.',
+        },
+        {
+            rationale: 'observation verb in subject position, present perfect',
+            absent: 'A production outage has not been detected.',
+            standing: 'A production outage has not been resolved.',
+        },
+        {
+            rationale: 'observation verb in subject position, simple past passive',
+            absent: 'Security vulnerabilities were not detected.',
+            standing: 'Security vulnerabilities were not patched.',
+        },
+        {
+            rationale: 'observation verb under "never", not a never-performed repair',
+            absent: 'Data loss has never been detected.',
+            standing: 'Data loss has never been mitigated.',
+        },
+        {
+            rationale: 'observation verb in object position, quantified object',
+            absent: 'We have not detected any data loss.',
+            standing: 'We have not detected the data loss root cause.',
+        },
+        {
+            rationale: 'observation verb in object position, contracted',
+            absent: "We haven't detected a production outage.",
+            standing: "We haven't detected the production outage root cause.",
+        },
+        {
+            rationale: 'negative-polarity adverb closes the object; a bare noun continues it',
+            absent: 'We have not seen data loss anywhere.',
+            standing: 'We have not seen the data loss root cause.',
+        },
+        {
+            rationale: '"anywhere" after a bare object, versus a compound the incident modifies',
+            absent: 'We have not found data loss anywhere.',
+            standing: 'We have not found the data loss mitigation plan.',
+        },
+        {
+            rationale: '-ly adverb closes the object; "postmortem" heads a different phrase',
+            absent: 'We have not seen a production outage recently.',
+            standing: 'We have not seen the production outage postmortem.',
+        },
+        {
+            rationale: '"so far" closes the object; "blast radius" heads a different phrase',
+            absent: 'We have not seen any data loss so far.',
+            standing: 'We have not observed the data loss blast radius.',
+        },
+        {
+            rationale: '"at all" closes the object; "exploit path" heads a different phrase',
+            absent: 'We have not observed any data loss at all.',
+            standing: 'We have not detected the security vulnerability exploit path.',
+        },
+    ];
+    const observedAbsenceContrastCases = observedAbsenceVersusStandingIncidentContrasts.flatMap(
+        ({ absent, standing }) => [
+            { content: absent, priority: TicketPriority.HIGH },
+            { content: standing, priority: TicketPriority.CRITICAL },
+        ],
+    );
+
+    // Adverbs in subject position reach the guard through the other suffix
+    // arm, which matches on the verb and never inspects what follows it. These
+    // rows hold that arm still while the object arm is being narrowed.
+    const observedAbsenceSubjectAdverbCases = [
+        { content: 'Data loss has not occurred anywhere.', priority: TicketPriority.HIGH },
+        {
+            content: 'A production outage has not been reported recently.',
+            priority: TicketPriority.HIGH,
+        },
+        { content: 'Data loss has not happened at all.', priority: TicketPriority.HIGH },
+        { content: 'Data loss has not been detected yet.', priority: TicketPriority.HIGH },
+    ];
+
     describe.each(['heuristic', 'model failure', 'healthy LOW model'] as const)(
         '%s',
         (boundary) => {
@@ -851,6 +1012,51 @@ describe('critical incident context boundaries', () => {
             describe('incident polarity contrasts', () => {
                 it.each(polarityContrastCases)('$priority: $content', checkPriority);
             });
+            describe('incident absence versus unresolved remediation', () => {
+                it.each(incidentAbsenceContrastCases)('$priority: $content', checkPriority);
+            });
+            describe('observed absence versus a standing incident', () => {
+                it.each(observedAbsenceContrastCases)('$priority: $content', checkPriority);
+                it.each(observedAbsenceSubjectAdverbCases)('$priority: $content', checkPriority);
+            });
         },
     );
+
+    // The relation itself, stated once: a negated remediation verb, property or
+    // foreign object must never land on the same priority as the absence
+    // statement it resembles. A future widening that buys one spelling by
+    // collapsing the pair fails here even if both rows are edited together.
+    describe('incident absence versus unresolved remediation', () => {
+        it.each(incidentAbsenceVersusRemediationContrasts)(
+            'does not collapse "$unresolved" into "$absent" ($rationale)',
+            ({ unresolved, absent }) => {
+                const classifier = new TicketClassifier({
+                    provider: 'anthropic',
+                    apiKey: 'test-key',
+                    baseURL: aimock().url,
+                });
+                expect(classifier.heuristicClassify(unresolved).priority).not.toBe(
+                    classifier.heuristicClassify(absent).priority,
+                );
+            },
+        );
+    });
+
+    // Same relation from the absence side: narrowing the guard must not be paid
+    // for by promoting an ordinary absence report to the irreversible floor.
+    describe('observed absence versus a standing incident', () => {
+        it.each(observedAbsenceVersusStandingIncidentContrasts)(
+            'does not collapse "$absent" into "$standing" ($rationale)',
+            ({ absent, standing }) => {
+                const classifier = new TicketClassifier({
+                    provider: 'anthropic',
+                    apiKey: 'test-key',
+                    baseURL: aimock().url,
+                });
+                expect(classifier.heuristicClassify(absent).priority).not.toBe(
+                    classifier.heuristicClassify(standing).priority,
+                );
+            },
+        );
+    });
 });
