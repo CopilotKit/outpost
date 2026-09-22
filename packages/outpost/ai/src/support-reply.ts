@@ -1,7 +1,7 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
-import type { Definition, Image, Link, Nodes } from 'mdast';
+import type { Definition, Image, InlineCode, Link, Nodes } from 'mdast';
 import { z } from 'zod';
 import type { SearchResult } from './types.js';
 
@@ -255,8 +255,6 @@ function publishesRawHtml(text: string): boolean {
 }
 
 interface InlineDestinationSpan {
-    /** Offset of the `]` whose `](` opened the destination. */
-    openerStart: number;
     /** Offsets the destination itself spans, any padding whitespace skipped. */
     start: number;
     end: number;
@@ -294,10 +292,9 @@ function inlineDestination(
         else if (text[cursor] === ']' && --depth === 0) break;
     }
     if (text[cursor] !== ']' || text[cursor + 1] !== '(') return undefined;
-    const openerStart = cursor;
     cursor += 2;
     while (cursor < end && /\s/.test(text[cursor])) cursor++;
-    return { openerStart, start: cursor, end: cursor + inlineDestinationEnd(text.slice(cursor)) };
+    return { start: cursor, end: cursor + inlineDestinationEnd(text.slice(cursor)) };
 }
 
 /** Inline links and images can sit at any depth, including inside a link label. */
@@ -369,27 +366,57 @@ function autolinkLiterals(text: string): AutolinkLiteral[] {
     });
 }
 
+interface CodeSpanContents {
+    /** Offsets the span encloses, relative to its own line, delimiters excluded. */
+    from: number;
+    to: number;
+}
+
+/** Code spans can sit at any depth, including inside a link label or a heading. */
+function collectInlineCode(node: Nodes, into: InlineCode[]): void {
+    if (node.type === 'inlineCode') into.push(node);
+    if ('children' in node) for (const child of node.children) collectInlineCode(child, into);
+}
+
 /**
- * The same answer per line and relative to the line's own start: the columns a
- * `](` really opens a destination at. The inline-code scan below runs a line at a
- * time, and a destination is not code — a backtick inside one is a literal the
- * renderer prints — so that scan has to skip destinations, and it had been finding
- * them by the same literal `](` this file no longer trusts anywhere else.
+ * Per line of `text`, what each code span the grammar both opens and closes on
+ * that line encloses — located with the parser the chat renderer runs, and
+ * reported relative to the line's own start because the mask below runs a line at
+ * a time.
+ *
+ * A span that closes on a later line is left out. Crossing a line can cross a
+ * Markdown block boundary, so those stay conservatively subject to the prose
+ * checks: deliberate, and unchanged.
+ *
+ * Offsets are taken from the node's own, not from its reported column, because a
+ * tab advances a column by more than one character.
  */
-function inlineDestinationColumns(text: string): ReadonlySet<number>[] {
+function sameLineCodeSpanContents(text: string): CodeSpanContents[][] {
     const lineStarts: number[] = [];
     let offset = 0;
     for (const line of text.split('\n')) {
         lineStarts.push(offset);
         offset += line.length + 1;
     }
-    const columns = lineStarts.map(() => new Set<number>());
-    for (const { openerStart } of inlineDestinations(text)) {
-        let line = lineStarts.length - 1;
-        while (line > 0 && lineStarts[line] > openerStart) line--;
-        columns[line].add(openerStart - lineStarts[line]);
+    const spans: CodeSpanContents[][] = lineStarts.map(() => []);
+    const nodes: InlineCode[] = [];
+    collectInlineCode(parseMarkdown(text), nodes);
+    for (const { position } of nodes) {
+        const start = position?.start.offset;
+        const end = position?.end.offset;
+        if (!position || start === undefined || end === undefined) continue;
+        if (position.start.line !== position.end.line) continue;
+        const lineStart = lineStarts[position.start.line - 1];
+        // Opening and closing runs are the same length, so one measurement sizes
+        // both, and what is left between them is exactly what the reader sees as
+        // code.
+        const delimiter = /^`+/.exec(text.slice(start, end))?.[0].length ?? 0;
+        spans[position.start.line - 1].push({
+            from: start - lineStart + delimiter,
+            to: end - lineStart - delimiter,
+        });
     }
-    return columns;
+    return spans;
 }
 
 function collectDestinations(node: Nodes, into: string[]): void {
@@ -453,72 +480,33 @@ function referenceDefinitions(text: string): ReferenceDefinition[] {
 }
 
 /**
- * Exclude same-line code spans only. Crossing a line can cross a Markdown block
- * boundary, so multiline spans remain conservatively subject to prose checks.
- * Closing runs must match the opening length; backslashes are literal in code.
+ * What the reader is shown as prose: `line` with the contents of every code span
+ * the grammar opens and closes on it blanked out.
  *
- * `destinationColumns` holds the columns a link or image destination is written
- * at, which are skipped because a backtick inside a destination opens nothing.
- * Everywhere else `](` is punctuation the reader sees as text, and skipping it
- * would step over a code span the renderer does form.
+ * Which backtick runs pair is the grammar's question, and answering it here by
+ * hand meant hand-parsing everything else that can hold a backtick without
+ * opening a span. Each of those skips answered a different question than the
+ * renderer's. Jumping from a '<' to the next '>' read `Compare <b, … and c>` as a
+ * tag — the grammar closes none there, and publishes the span written between
+ * them as <code> — so the scan stepped over that span and checked the example
+ * address inside it as a citation the reader could click. The same jump could
+ * land past a backtick instead, leaving the run after it to pair with a later
+ * one, and the span that mispairing invented covered raw HTML the renderer
+ * publishes as prose. A span the parser reports is neither, because a backtick
+ * inside an attribute or a destination opens nothing it reports.
+ *
+ * Only what a span encloses is blanked, never its delimiters. The raw-HTML check
+ * below re-reads this view, and `Use <b … > carefully.` — which the renderer
+ * escapes whole, publishing no tag — becomes `Use <b   > carefully.` if the
+ * backticks go with the contents, which the grammar does close into one. Blanking
+ * in place also leaves every other offset on the line where the grammar found it.
  */
-function proseOutsideInlineCode(line: string, destinationColumns: ReadonlySet<number>): string {
-    let cursor = 0;
-    let preserved = 0;
-    let prose = '';
-    while (cursor < line.length) {
-        if (line[cursor] === '\\') {
-            cursor += 2;
-            continue;
-        }
-        // A backtick inside a tag is an attribute character, not a code delimiter,
-        // so skip the tag. A '<' with no '>' after it on the line closes no tag, so
-        // there is nothing to skip: abandoning the rest of the line there left every
-        // code span after an inert '<vN' range unmasked, and read its contents —
-        // example URLs included — as prose.
-        if (/^<(?:!|\?|\/?[a-z])/i.test(line.slice(cursor))) {
-            const end = line.indexOf('>', cursor);
-            if (end < 0) {
-                cursor++;
-                continue;
-            }
-            cursor = end + 1;
-            continue;
-        }
-        if (line.startsWith('](', cursor) && destinationColumns.has(cursor)) {
-            cursor += 2;
-            const destination = line.slice(cursor);
-            const end = inlineDestinationEnd(destination);
-            cursor += end + (destination[end] === ')' ? 1 : 0);
-            continue;
-        }
-        if (line[cursor] !== '`') {
-            cursor++;
-            continue;
-        }
-        let openingEnd = cursor + 1;
-        while (line[openingEnd] === '`') openingEnd++;
-        const length = openingEnd - cursor;
-        let closing = line.indexOf('`', openingEnd);
-        let closingEnd = -1;
-        while (closing >= 0) {
-            let end = closing + 1;
-            while (line[end] === '`') end++;
-            if (end - closing === length) {
-                closingEnd = end;
-                break;
-            }
-            closing = line.indexOf('`', end);
-        }
-        if (closingEnd >= 0) {
-            prose += line.slice(preserved, cursor) + ' ';
-            preserved = closingEnd;
-            cursor = closingEnd;
-        } else {
-            cursor = openingEnd;
-        }
+function proseOutsideInlineCode(line: string, spans: readonly CodeSpanContents[]): string {
+    let prose = line;
+    for (const { from, to } of spans) {
+        prose = prose.slice(0, from) + ' '.repeat(to - from) + prose.slice(to);
     }
-    return prose + line.slice(preserved);
+    return prose;
 }
 
 function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
@@ -532,13 +520,11 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
             definitionLines.add(line);
         }
     }
-    const destinationColumns = inlineDestinationColumns(fenced);
+    const codeSpans = sameLineCodeSpanContents(fenced);
     const prose = fenced
         .split('\n')
         .map((line, index) =>
-            definitionLines.has(index)
-                ? line
-                : proseOutsideInlineCode(line, destinationColumns[index]),
+            definitionLines.has(index) ? line : proseOutsideInlineCode(line, codeSpans[index]),
         )
         .join('\n');
     const proseWithoutMarkdownDestinations = prose.split('');

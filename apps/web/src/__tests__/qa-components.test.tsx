@@ -305,6 +305,14 @@ describe('ChatMessage', () => {
             markdown: '~~Contact help@example.invalid~~',
             hrefs: ['mailto:help@example.invalid'],
         },
+        // An angle bracket the grammar closes no tag around does not stop GFM
+        // linkifying the address beside it, so this is the published anchor the
+        // validator refuses — the contrast to the same sentence with the address
+        // inside a code span, which publishes none.
+        {
+            markdown: 'Compare <b, https://example.invalid/steal, and c> here.',
+            hrefs: ['https://example.invalid/steal'],
+        },
         // A bracket pair is a link only where a label closed on it. The subscript
         // row is the one that matters: it looks like the punctuation rows above it
         // and publishes a real anchor, so neither can be decided by the `](` alone.
@@ -491,6 +499,60 @@ describe('ChatMessage', () => {
         expect(prose.textContent).toBe(markdown);
         expect(prose.querySelector('details, summary, img, script, br, div, span')).toBeNull();
         expect([...prose.children].map((node) => node.tagName)).toEqual(wrapped ? ['P'] : []);
+    });
+
+    // Where the two sides above meet on one line: an angle bracket the grammar
+    // closes no tag around, and a code span beside it. This configuration publishes
+    // the span as <code> with its contents inert — the example address in it is
+    // text, not an anchor — and escapes every angle bracket outside it, whether or
+    // not a '>' follows later on the line. The last two rows are the ones the
+    // validator's mask is sized by: what the span encloses is inert, and what sits
+    // outside it is not, including the escaped `<script>` and `<img>` the reader is
+    // shown as characters. A renderer change that reads either side differently
+    // fails here rather than moving the validator's boundary silently.
+    it.each([
+        {
+            markdown: 'Compare <b, `https://example.invalid/steal`, and c> here.',
+            text: 'Compare <b, https://example.invalid/steal, and c> here.',
+            code: ['https://example.invalid/steal'],
+        },
+        {
+            markdown: 'Compare a<b and `https://example.invalid/steal` > c.',
+            text: 'Compare a<b and https://example.invalid/steal > c.',
+            code: ['https://example.invalid/steal'],
+        },
+        {
+            markdown: 'Use <b `x` > carefully.',
+            text: 'Use <b x > carefully.',
+            code: ['x'],
+        },
+        {
+            markdown: 'Use <b `x`> carefully.',
+            text: 'Use <b x> carefully.',
+            code: ['x'],
+        },
+        {
+            markdown: '<b`> x `<script>alert(1)</script>` y',
+            text: '<b> x <script>alert(1)</script>` y',
+            code: ['> x '],
+        },
+        {
+            markdown: '<i`> a `<img src=x onerror=alert(1)>` b',
+            text: '<i> a <img src=x onerror=alert(1)>` b',
+            code: ['> a '],
+        },
+    ])('publishes $markdown with its code span inert', ({ markdown, text, code }) => {
+        const { container } = render(
+            <ChatMessage
+                message={{ id: 'span-mask-fixture', role: 'assistant', content: markdown }}
+            />,
+        );
+        const prose = container.querySelector('.prose') ?? container;
+
+        expect(prose.textContent).toBe(text);
+        expect([...prose.querySelectorAll('code')].map((node) => node.textContent)).toEqual(code);
+        expect(prose.querySelectorAll('a')).toHaveLength(0);
+        expect(prose.querySelector('script, img, b, i')).toBeNull();
     });
 
     // What the validator's unclosed-fence refusal protects: the footer

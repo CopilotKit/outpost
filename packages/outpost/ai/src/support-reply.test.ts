@@ -824,6 +824,57 @@ describe('support reply contract', () => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
     });
 
+    // The other half of that assumption: where a '>' did follow, the scanner jumped
+    // to it and called everything between the two a tag. Neither row below forms
+    // one — the renderer publishes `Compare &lt;b, <code>…</code>, and c&gt; here.`,
+    // recorded in apps/web/src/__tests__/qa-components.test.tsx — so the jump ran
+    // straight over a code span the renderer does publish, and the example URL
+    // inside it was read as a citation the reader could click.
+    it.each([
+        'Compare <b, `https://example.invalid/steal`, and c> here.',
+        'Compare a<b and `https://example.invalid/steal` > c.',
+    ])('keeps a code span between an inert "<" and a later ">" %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // The same jump in the other direction: it could land past a backtick, leaving
+    // the run after it to pair with a later one, and the span that mispairing
+    // invented covered raw HTML the renderer publishes as prose. The renderer
+    // escapes that HTML rather than mounting it, so what got through is the policy
+    // boundary this guard draws — HTML only inside code — and not markup that runs.
+    it.each(['<b`> x `<script>alert(1)</script>` y', '<i`> a `<img src=x onerror=alert(1)>` b'])(
+        'refuses raw HTML a mispaired code span covered %#',
+        (details) => {
+            expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/html/i);
+        },
+    );
+
+    // Masking replaces what a span encloses, not the span itself. Blanking its
+    // delimiters as well would leave `Use <b   > carefully.` where the reader is
+    // shown `Use <b x > carefully.`, and the raw-HTML check re-reads the masked
+    // view — so the mask would manufacture the tag it exists to see past.
+    it.each([
+        'Use <b `x` > carefully.',
+        'Use <b `x`> carefully.',
+        'Mount `<CopilotKit>` above the chat, then read the <v2 note.',
+    ])('does not manufacture a tag out of a masked code span %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // What stays refused around the rows above, so "inside a same-line code span"
+    // does not widen into "on a line that has one": the same address outside the
+    // span is a published link, a '<' the grammar does close is still raw HTML, and
+    // a span the grammar closes on a later line is still read as prose — the
+    // deliberately conservative multiline policy, unchanged.
+    it.each([
+        ['Compare <b, https://example.invalid/steal, and c> here.', /link|url/i],
+        ['Compare a<b and https://example.invalid/steal > c.', /link|url/i],
+        ['Mount <b>the provider</b> in your app.', /html/i],
+        ['A line boundary `literal\nhttps://example.invalid/steal\n`.', /link|url/i],
+    ] as const)('still refuses what sits outside a same-line code span %#', (details, error) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(error);
+    });
+
     it('preserves literal HTML and example endpoints inside fenced code', () => {
         const details = '```tsx\n<Provider runtimeUrl="http://localhost:4000" />\n```';
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
