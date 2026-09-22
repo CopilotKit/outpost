@@ -92,34 +92,74 @@ function inlineDestinationEnd(destination: string): number {
     return destination.length;
 }
 
-/** Preserve code verbatim for rendering, but do not interpret example URLs as citations. */
+/** The grammar the chat renderer runs: remark-parse plus the GFM extension. */
+function parseMarkdown(text: string): Nodes {
+    return fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
+}
+
+/** Line ranges of every code block, one-based and inclusive, at any depth. */
+function collectCodeBlocks(node: Nodes, into: Array<[number, number]>): void {
+    if (node.type === 'code' && node.position) {
+        into.push([node.position.start.line, node.position.end.line]);
+    }
+    if ('children' in node) for (const child of node.children) collectCodeBlocks(child, into);
+}
+
+/**
+ * A paragraph appended after a blank line, to ask the parser whether anything
+ * appended to the field would survive. `supportReplyDetails` appends the
+ * applicability, version and sources footer to `details`, and a fence still open
+ * at the end of the field absorbs all of it into the code block instead. Only a
+ * top-level fence can: a blank line closes every block container first, so a
+ * fence carried by a list item or a block quote ends with its container and the
+ * footer survives. Asking the parser settles that for every nesting at once,
+ * which tracking fence state by hand did not.
+ */
+const APPENDED_FOOTER_PROBE = 'outpost-appended-footer-probe';
+
+/**
+ * Preserve code verbatim for rendering, but do not interpret example URLs as
+ * citations.
+ *
+ * Which lines are code is block structure, not a line pattern: a fence opens
+ * wherever its container's content starts, so a fence inside a list item or a
+ * block quote begins past column three and four columns further in is indented
+ * code with no fence at all. Recognizing fences by their column answered a
+ * different question than the renderer's, and discarded correct answers whose
+ * examples were written inside a step or a quote. Asking the parser which nodes
+ * are code removes the column from the question.
+ */
 function proseOutsideFences(text: string): string {
-    let fence: string | undefined;
-    const prose: string[] = [];
-    for (const line of text.replace(/\r\n?/g, '\n').split('\n')) {
-        const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-        if (fence) {
-            if (
-                marker &&
-                marker[1][0] === fence[0] &&
-                marker[1].length >= fence.length &&
-                !marker[2].trim()
-            ) {
-                fence = undefined;
-            }
-            prose.push('');
-        } else if (marker) {
-            if (marker[1][0] === '`' && marker[2].includes('`')) {
-                throw new Error('Invalid code fence in support reply');
-            }
-            fence = marker[1];
-            prose.push('');
-        } else {
-            prose.push(line);
+    const normalized = text.replace(/\r\n?/g, '\n');
+    const lines = normalized.split('\n');
+    const codeBlocks: Array<[number, number]> = [];
+    collectCodeBlocks(parseMarkdown(normalized), codeBlocks);
+    const codeLines = new Set<number>();
+    for (const [start, end] of codeBlocks) {
+        for (let line = start; line <= end; line++) codeLines.add(line);
+    }
+
+    for (const [index, line] of lines.entries()) {
+        if (codeLines.has(index + 1)) continue;
+        // A backtick fence's info string may hold no backtick, so a line that looks
+        // like one opens something else. Refusing rather than guessing is deliberate
+        // and unchanged; it now applies only where the parser agrees the line is not
+        // already inside code.
+        const marker = /^ {0,3}(`{3,})(.*)$/.exec(line);
+        if (marker && marker[2].includes('`')) {
+            throw new Error('Invalid code fence in support reply');
         }
     }
-    if (fence) throw new Error('Unclosed code fence in support reply');
-    return prose.join('\n');
+    // Only a code block reaching the last line can still be open, so nothing else
+    // needs the probe parse.
+    if (codeLines.has(lines.length)) {
+        const probed = parseMarkdown(`${normalized}\n\n${APPENDED_FOOTER_PROBE}`);
+        if ('children' in probed && probed.children.at(-1)?.type === 'code') {
+            throw new Error('Unclosed code fence in support reply');
+        }
+    }
+
+    return lines.map((line, index) => (codeLines.has(index + 1) ? '' : line)).join('\n');
 }
 
 interface ReferenceDefinition {
@@ -192,10 +232,7 @@ function collectDestinations(node: Nodes, into: string[]): void {
  */
 function publishedDestinations(text: string): string[] {
     const destinations: string[] = [];
-    collectDestinations(
-        fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }),
-        destinations,
-    );
+    collectDestinations(parseMarkdown(text), destinations);
     return destinations;
 }
 

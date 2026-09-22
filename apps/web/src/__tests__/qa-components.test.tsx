@@ -255,6 +255,83 @@ describe('ChatMessage', () => {
             [...container.querySelectorAll('a')].map((anchor) => anchor.getAttribute('href')),
         ).toEqual(hrefs);
     });
+
+    // The same validator refuses to read code as prose, and a fence opens wherever
+    // its container's content starts rather than at column three. These rows record
+    // that this configuration publishes each of them as a code block whose body is
+    // inert: the JSX arrives as text rather than as a mounted element, and neither
+    // the bare address nor the `www.` host GFM linkifies elsewhere becomes a link.
+    // A renderer or remark-gfm change that starts publishing any of this fails here
+    // instead of quietly widening what an accepted reply can emit. Literal fixtures,
+    // so the web suite stays independent of the AI package's tests.
+    it.each([
+        {
+            markdown:
+                '- Example:\n\n    ```tsx\n    <CopilotKit runtimeUrl="/api/copilotkit" />\n    ```',
+            code: '<CopilotKit runtimeUrl="/api/copilotkit" />\n',
+        },
+        {
+            markdown: '> ```tsx\n> <CopilotKit runtimeUrl="/api/copilotkit" />\n> ```',
+            code: '<CopilotKit runtimeUrl="/api/copilotkit" />\n',
+        },
+        {
+            markdown:
+                '10. Example:\n\n    ```text\n    https://example.invalid/documented-example\n    ```',
+            code: 'https://example.invalid/documented-example\n',
+        },
+        {
+            markdown: '> > ```tsx\n> > <Provider />\n> > ```',
+            code: '<Provider />\n',
+        },
+        // No fence: four columns past the item's content column is indented code.
+        {
+            markdown: '- Example:\n\n      https://example.invalid/documented-example',
+            code: 'https://example.invalid/documented-example\n',
+        },
+        {
+            markdown: '> ```text\n> www.example.invalid/steal\n> ```',
+            code: 'www.example.invalid/steal\n',
+        },
+        {
+            markdown: '- Example:\n\n    ```text\n    help@example.invalid\n    ```',
+            code: 'help@example.invalid\n',
+        },
+    ])('publishes $markdown as inert code', ({ markdown, code }) => {
+        const { container } = render(
+            <ChatMessage message={{ id: 'code-fixture', role: 'assistant', content: markdown }} />,
+        );
+
+        expect([...container.querySelectorAll('pre code')].map((node) => node.textContent)).toEqual(
+            [code],
+        );
+        expect(container.querySelectorAll('a')).toHaveLength(0);
+        expect(container.querySelector('copilotkit, provider')).toBeNull();
+    });
+
+    // What the validator's unclosed-fence refusal protects: the footer
+    // supportReplyDetails appends to `details`. A top-level fence left open
+    // swallows it into the code block; a fence a block container carries does not,
+    // because the blank line closes the container first.
+    it.each([
+        { markdown: '```tsx\n<Provider />', swallowed: true },
+        { markdown: '> ```tsx\n> <Provider />', swallowed: false },
+        { markdown: '- Example:\n\n    ```tsx\n    <Provider />', swallowed: false },
+    ])('swallows the appended footer for $markdown: $swallowed', ({ markdown, swallowed }) => {
+        const { container } = render(
+            <ChatMessage
+                message={{
+                    id: 'footer-fixture',
+                    role: 'assistant',
+                    content: `${markdown}\n\n**API version:** v2`,
+                }}
+            />,
+        );
+
+        expect(container.querySelector('pre code')?.textContent).toContain('<Provider />');
+        expect(container.querySelector('strong')?.textContent ?? null).toEqual(
+            swallowed ? null : 'API version:',
+        );
+    });
 });
 
 describe('SourcePanel', () => {

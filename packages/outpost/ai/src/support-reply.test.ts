@@ -445,8 +445,10 @@ describe('support reply contract', () => {
         // Both render as literal paragraph text, so neither is a link to ground.
         '[documentation][a[b]\n\n[a[b]: //example.invalid/steal',
         '[documentation][ ]\n\n[ ]: //example.invalid/steal',
-        // A code fence carried by a block container is still code.
-        '> ```\n> [ref]: //example.invalid/steal\n> ```',
+        // A code fence carried by a block container is still code. Spelled with a
+        // scheme the raw-URL scan recognizes, so the row fails if the fence is
+        // read as prose instead of passing for want of anything to match.
+        '> ```\n> [ref]: https://example.invalid/steal\n> ```',
     ])('keeps prose that resolves to no reference definition %#', (details) => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
     });
@@ -515,6 +517,78 @@ describe('support reply contract', () => {
     it('does not treat an inner short fence as the end of a longer code fence', () => {
         const details = '````markdown\n```tsx\n<Provider />\n```\n````';
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // A fence opens where its container's content starts, not at column three, and
+    // four columns further in is an indented code block with no fence at all. The
+    // renderer publishes every shape below as <pre><code>: inert text that mounts
+    // no element and resolves no link, including the bare address and `www.` host
+    // GFM would otherwise linkify. A step or a quoted example is where a support
+    // answer puts its code, so reading these as prose discards correct answers.
+    // The published form is pinned against the app's real ReactMarkdown +
+    // remark-gfm in apps/web/src/__tests__/qa-components.test.tsx.
+    it.each([
+        '- Example:\n\n    ```tsx\n    <CopilotKit runtimeUrl="/api/copilotkit" />\n    ```',
+        '> ```tsx\n> <CopilotKit runtimeUrl="/api/copilotkit" />\n> ```',
+        '10. Example:\n\n    ```text\n    https://example.invalid/documented-example\n    ```',
+        '> ```tsx\n> <Provider runtimeUrl="http://localhost:4000" />\n> ```',
+        '- Example:\n\n    ~~~tsx\n    <Provider />\n    ~~~',
+        '> > ```tsx\n> > <Provider />\n> > ```',
+        '> - Example:\n>\n>   ```tsx\n>   <Provider />\n>   ```',
+        '- outer\n\n  - inner\n\n    ```tsx\n    <Provider />\n    ```',
+        'Example:\n\n    <Provider runtimeUrl="http://localhost:4000" />',
+        'Example:\n\n    https://example.invalid/documented-example',
+        '- Example:\n\n      <Provider />',
+        '- Example:\n\n      https://example.invalid/documented-example',
+        '- Example:\n\n    ```text\n    help@example.invalid\n    ```',
+        '> ```text\n> www.example.invalid/steal\n> ```',
+    ])('keeps code a block container carries out of prose validation %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // The container is not what exempts the text; the code is. The same containers
+    // carrying a paragraph stay validated, and so does anything following the fence
+    // they carry once it closes — including a line that continues the list item.
+    it.each([
+        ['> <script>alert(1)</script>', /html/i],
+        ['- <script>alert(1)</script>', /html/i],
+        ['> > <script>alert(1)</script>', /html/i],
+        ['> Read https://example.invalid/steal.', /link|url/i],
+        ['- Read https://example.invalid/steal.', /link|url/i],
+        ['- Example:\n\n    Read https://example.invalid/steal.', /link|url/i],
+        ['> ```tsx\n> <Provider />\n> ```\n\n<script>alert(1)</script>', /html/i],
+        [
+            '- Example:\n\n    ```text\n    example\n    ```\n\n  Read https://example.invalid/steal.',
+            /link|url/i,
+        ],
+    ] as const)('still validates prose a block container carries %#', (details, error) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(error);
+    });
+
+    // An open fence is refused for one reason: supportReplyDetails appends the
+    // applicability, version and sources footer to `details`, and the code block
+    // would swallow all of it. Only a top-level fence can. A blank line closes a
+    // block container before anything inside it, so the renderer ends a container's
+    // fence with the container and publishes the footer after it — which is why the
+    // second group must not inherit the refusal along with the fix above.
+    it.each([
+        '```tsx\n<Provider />',
+        '~~~tsx\n<Provider />',
+        '```tsx\n<Provider />\n~~~',
+        '````markdown\n<Provider />\n```',
+    ])('refuses an open fence that would swallow the appended footer %#', (details) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/fence/i);
+    });
+
+    it.each([
+        '> ```tsx\n> <Provider />',
+        '- Example:\n\n    ```tsx\n    <Provider />',
+        '> - Example:\n>\n>   ```tsx\n>   <Provider />',
+    ])('keeps a fence its block container closes for it %#', (details) => {
+        const value = reply({ details });
+        expect(validateSupportReply(value, sources).details).toBe(details);
+        // The footer the refusal exists to protect is present and outside the fence.
+        expect(supportReplyDetails(value)).toContain('\n\n**API version:** v2');
     });
 
     it('allows balanced parentheses in a retrieved link destination', () => {
