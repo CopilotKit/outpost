@@ -202,6 +202,57 @@ describe('support reply contract', () => {
         expect(validateSupportReply(published.value, published.retrieved)).toEqual(published.value);
     });
 
+    /** The evidence URL the `www.` host rows below are grounded on, in its published form. */
+    const wwwSourceUrl = 'http://www.copilotkit.ai/reference/provider';
+
+    // A host is the one part of a URL that is case-insensitive, and this renderer
+    // linkifies a scheme-less `www.` host in whatever case it was written: the anchor
+    // for `WWW.copilotkit.ai/reference/provider` carries
+    // `http://WWW.copilotkit.ai/reference/provider`, recorded against the app's real
+    // ReactMarkdown + remark-gfm in apps/web/src/__tests__/qa-components.test.tsx.
+    // Each row asserts that its published href resolves to the cited evidence URL, so
+    // a row is accepted because the reader clicks through to the validated source and
+    // not because case is folded somewhere it changes which resource is addressed.
+    //
+    // The scan that finds these addresses matches any case; the scheme it rebuilt
+    // before comparing was rebuilt only for a lowercase prefix. An investigator
+    // opening a sentence with a cited host — ordinary capitalization the schema
+    // permits — had a reply that quoted its evidence exactly discarded to a human.
+    // `wWw.` is in the table because the two halves have to agree on case in general,
+    // not on the two capitalizations a sentence happens to produce most often.
+    it.each([
+        // The shape that already passed, and the `www.` side of the existing
+        // http://-not-https:// contrast above: it is the control this table varies.
+        { host: 'www.', href: 'http://www.copilotkit.ai/reference/provider' },
+        { host: 'WWW.', href: 'http://WWW.copilotkit.ai/reference/provider' },
+        { host: 'Www.', href: 'http://Www.copilotkit.ai/reference/provider' },
+        { host: 'wWw.', href: 'http://wWw.copilotkit.ai/reference/provider' },
+    ])('grounds an evidence www autolink written as $host', ({ host, href }) => {
+        expect(new URL(href).href).toBe(wwwSourceUrl);
+
+        const details = `See ${host}copilotkit.ai/reference/provider for the option.`;
+        const { value, retrieved } = grounded(wwwSourceUrl, details);
+        expect(validateSupportReply(value, retrieved).details).toBe(details);
+    });
+
+    // The refusals the rows above must not take with them. Only the host folds: a
+    // host no evidence backs, a different path on the evidence host, and the bare
+    // evidence host with the path dropped each address a resource outside the
+    // evidence set, in every case they can be written in.
+    it.each([
+        'See www.example.invalid/steal for the option.',
+        'See WWW.example.invalid/steal for the option.',
+        'See Www.example.invalid/steal for the option.',
+        'See wWw.example.invalid/steal for the option.',
+        'See www.copilotkit.ai/reference/other for the option.',
+        'See WWW.copilotkit.ai/reference/other for the option.',
+        'See Www.copilotkit.ai/reference/Provider for the option.',
+        'See WWW.copilotkit.ai for the option.',
+    ])('still refuses an ungrounded www autolink whatever case its host is in %#', (details) => {
+        const { value, retrieved } = grounded(wwwSourceUrl, details);
+        expect(() => validateSupportReply(value, retrieved)).toThrow(/link|url/i);
+    });
+
     // Accept-direction controls for the same scan: this renderer linkifies no bare
     // ftp:// literal, and linkifies nothing inside code, so none of these publishes
     // a destination and none of them may be discarded as an ungrounded link.

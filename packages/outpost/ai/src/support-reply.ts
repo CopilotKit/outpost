@@ -555,7 +555,17 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
             const canonical = canonicalSourceUrl(
                 // GFM publishes a scheme-less `www.` host over http://, so that is
                 // the destination to compare against; https:// would be invented.
-                candidate.startsWith('www.') ? `http://${candidate}` : candidate,
+                //
+                // Which hosts carry that prefix is GFM's question, and it reads the
+                // prefix in any case — as do both scans below. Reading it here in
+                // lowercase alone left the two halves of this check disagreeing about
+                // which addresses exist: a host written `WWW.` or `Www.` was found as
+                // an address, reached this comparison with no scheme, parsed as
+                // nothing, and was refused, while the grammar-derived destination for
+                // the same sentence carried the http:// scheme and grounded. Only the
+                // host is folded, and it is folded by the URL parser rather than
+                // here, so a path or query that differs in case still differs.
+                /^www\./i.test(candidate) ? `http://${candidate}` : candidate,
             );
             if (canonical && knownUrls.has(canonical)) return;
             if (!allowProsePunctuation || !/[.,;:!?)\]}]$/.test(candidate)) break;

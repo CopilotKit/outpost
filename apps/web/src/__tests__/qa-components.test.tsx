@@ -226,6 +226,31 @@ describe('ChatMessage', () => {
             markdown: 'See www.copilotkit.ai/reference/provider for the option.',
             hrefs: ['http://www.copilotkit.ai/reference/provider'],
         },
+        // A scheme-less `www.` host is linkified in whatever case it was written, and
+        // the scheme prepended to it is http:// in every one of them. A host is
+        // case-insensitive, so each of these hrefs resolves to the lowercase row
+        // above — which is why the validator grounds all four on one evidence URL,
+        // and why it has to prepend that same scheme for a capitalized prefix too. A
+        // renderer or remark-gfm change that stops linkifying one of these spellings,
+        // or that normalizes the host it publishes, fails here.
+        {
+            markdown: 'See WWW.copilotkit.ai/reference/provider for the option.',
+            hrefs: ['http://WWW.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: 'See Www.copilotkit.ai/reference/provider for the option.',
+            hrefs: ['http://Www.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: 'See wWw.copilotkit.ai/reference/provider for the option.',
+            hrefs: ['http://wWw.copilotkit.ai/reference/provider'],
+        },
+        // The same spellings carry an ungrounded host just as clickably, which is why
+        // the validator still refuses those.
+        {
+            markdown: 'See WWW.example.invalid/steal for the option.',
+            hrefs: ['http://WWW.example.invalid/steal'],
+        },
         {
             markdown: 'Read https://docs.copilotkit.ai/reference/setup).',
             hrefs: ['https://docs.copilotkit.ai/reference/setup'],
