@@ -953,6 +953,25 @@ describe('critical incident context boundaries', () => {
             absent: 'We have not observed any data loss at all.',
             standing: 'We have not detected the security vulnerability exploit path.',
         },
+        // The same modifier-versus-head decision reached through the two
+        // determiner arms rather than through a negated verb's object. These
+        // three are the reported spellings; the systematic grid behind them is
+        // cancellingDeterminerVersusPresupposingHeadContrasts below.
+        {
+            rationale: '"no" negates a determiner phrase "root cause" heads, so the loss stands',
+            absent: 'No data loss has been reported.',
+            standing: 'No data loss root cause has been identified yet.',
+        },
+        {
+            rationale: '"no" again, with "postmortem" as the head that presupposes the outage',
+            absent: 'No production outage has been reported.',
+            standing: 'No production outage postmortem has been written.',
+        },
+        {
+            rationale: '"without" over the same head; the main clause asserts the loss outright',
+            absent: 'Without any data loss we can close the incident.',
+            standing: 'Without a data loss postmortem we cannot close the incident.',
+        },
     ];
     const observedAbsenceContrastCases = observedAbsenceVersusStandingIncidentContrasts.flatMap(
         ({ absent, standing }) => [
@@ -973,6 +992,75 @@ describe('critical incident context boundaries', () => {
         { content: 'Data loss has not happened at all.', priority: TicketPriority.HIGH },
         { content: 'Data loss has not been detected yet.', priority: TicketPriority.HIGH },
     ];
+
+    // Round-15 convergence lever: the object-head decision above, stated once
+    // for the two arms that cancel on a determiner ("no …", "without …")
+    // instead of on a negated verb's object. Those arms sit where a predicate
+    // legitimately follows the mention, so "a further bare noun" cannot be the
+    // test there; only the enumerated heads that presuppose an instance end
+    // the cancellation. The grid is deliberately closed - the three heads the
+    // suite already pins (root cause, postmortem, mitigation plan) crossed
+    // with the two determiners and the three incident terms - and not an open
+    // list of phrasings, so a later round extends the head enumeration rather
+    // than this table.
+    //
+    // Every row pairs the standing incident with a genuine absence report
+    // reached through the same determiner, and the pair is asserted below not
+    // to collapse: narrowing these arms must not promote a real absence report
+    // to the irreversible floor.
+    const cancellingDeterminerVersusPresupposingHeadContrasts = [
+        {
+            rationale: '"no" + "root cause": the outage is what the open cause belongs to',
+            absent: 'No production outage was reported by customers.',
+            standing: 'No production outage root cause has been shared with customers.',
+        },
+        {
+            rationale: '"no" + "postmortem": the write-up is missing, the loss is not',
+            absent: 'No data loss was observed overnight.',
+            standing: 'No data loss postmortem has been scheduled.',
+        },
+        {
+            rationale: '"no" + "mitigation plan": an unmitigated loss, not an absent one',
+            absent: 'No data loss occurred during the migration.',
+            standing: 'No data loss mitigation plan exists yet.',
+        },
+        {
+            rationale: '"no" + "root cause" over the vulnerability spelling',
+            absent: 'No security vulnerability was detected.',
+            standing: 'No security vulnerability root cause has been identified.',
+        },
+        {
+            rationale: '"there was no" spelling of the same determiner arm',
+            absent: 'There was no production outage last night.',
+            standing: 'There was no production outage mitigation plan in place.',
+        },
+        {
+            rationale: '"without" + "root cause", counterfactual over the head only',
+            absent: 'Without a production outage we can ship on Friday.',
+            standing: 'Without a production outage root cause we cannot close the ticket.',
+        },
+        {
+            rationale: '"without any" against "without a", same arm and same head class',
+            absent: 'Without any production outage we stay on the current release.',
+            standing: 'Without a production outage mitigation plan we cannot resume the rollout.',
+        },
+        {
+            rationale:
+                '"without the" definite determiner; the loss is presupposed, not hypothesised',
+            absent: 'Without any data loss we can finish the migration.',
+            standing: 'Without the data loss root cause we cannot reopen the ticket.',
+        },
+        {
+            rationale: 'hyphenated "post-mortem" is the same head as the solid spelling',
+            absent: 'Without a security vulnerability we ship on schedule.',
+            standing: 'Without a security vulnerability post-mortem we cannot reopen the release.',
+        },
+    ];
+    const cancellingDeterminerContrastCases =
+        cancellingDeterminerVersusPresupposingHeadContrasts.flatMap(({ absent, standing }) => [
+            { content: absent, priority: TicketPriority.HIGH },
+            { content: standing, priority: TicketPriority.CRITICAL },
+        ]);
 
     // An incident term can appear in a clause that reports no incident at all,
     // in two shapes under one contract. A planned action spells the outage
@@ -1429,6 +1517,9 @@ describe('critical incident context boundaries', () => {
                 it.each(observedAbsenceContrastCases)('$priority: $content', checkPriority);
                 it.each(observedAbsenceSubjectAdverbCases)('$priority: $content', checkPriority);
             });
+            describe('cancelling determiner versus a presupposing head', () => {
+                it.each(cancellingDeterminerContrastCases)('$priority: $content', checkPriority);
+            });
             describe('incident mention without a reporting role', () => {
                 it.each(mentionWithoutReportingRoleCases)('$priority: $content', checkPriority);
             });
@@ -1564,6 +1655,25 @@ describe('critical incident context boundaries', () => {
     // for by promoting an ordinary absence report to the irreversible floor.
     describe('observed absence versus a standing incident', () => {
         it.each(observedAbsenceVersusStandingIncidentContrasts)(
+            'does not collapse "$absent" into "$standing" ($rationale)',
+            ({ absent, standing }) => {
+                const classifier = new TicketClassifier({
+                    provider: 'anthropic',
+                    apiKey: 'test-key',
+                    baseURL: aimock().url,
+                });
+                expect(classifier.heuristicClassify(absent).priority).not.toBe(
+                    classifier.heuristicClassify(standing).priority,
+                );
+            },
+        );
+    });
+
+    // The determiner arms carry the same relation, and it is the one direction
+    // this class fails in: an absence report reached through "no"/"without"
+    // must keep its priority when the presupposing-head reading is added.
+    describe('cancelling determiner versus a presupposing head', () => {
+        it.each(cancellingDeterminerVersusPresupposingHeadContrasts)(
             'does not collapse "$absent" into "$standing" ($rationale)',
             ({ absent, standing }) => {
                 const classifier = new TicketClassifier({

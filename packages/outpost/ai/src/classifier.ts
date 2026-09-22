@@ -213,14 +213,38 @@ export class TicketClassifier {
             `^(?:${objectPhraseEnd}|\\s+(?:${objectPhraseHandoff}|${postObjectAdverb})\\b)`,
             'i',
         );
+        // `no`/`without` negate a determiner phrase rather than a verb's
+        // object, so the same modifier-versus-head decision reaches them from
+        // the other side. A predicate legitimately follows the mention here -
+        // "No data loss has been reported." is an absence report and stays
+        // cancelled - so "a further bare noun continues the phrase" cannot be
+        // the test the way it is above. What ends the cancellation instead is
+        // the complement of `incidentToolingHeads` below: a head that
+        // presupposes an instance. Naming a root cause, a postmortem or a
+        // mitigation plan refers back to an incident that happened, so the
+        // determiner negates that head and leaves the incident standing ("No
+        // production outage postmortem has been written." reports the outage).
+        //
+        // Enumerated, not inferred from "some noun follows": the complement of
+        // this set is every predicate these two arms must keep cancelling, so
+        // an unlisted continuation keeps the absence reading. "report" and
+        // "incident" are named as presupposing below but stay out of this set
+        // deliberately - `objectPhraseHandoff` already reads them as heading an
+        // absence report about the incident ("no data loss reports"), and
+        // splitting those two readings is a separate decision.
+        const incidentPresupposingHeads = '(?:root\\s+causes?|post[\\s-]?mortems?|mitigations?)';
+        const incidentPresupposingHeadSuffix = new RegExp(
+            `^\\s+${incidentPresupposingHeads}\\b`,
+            'i',
+        );
         const hasNonIncidentPrefix = (prefix: string, suffix: string): boolean =>
             !failedPreventionPrefix.test(prefix) &&
             (successfulPreventionPrefix.test(prefix) ||
-                withoutIncidentPrefix.test(prefix) ||
                 hypotheticalIncidentPrefix.test(prefix) ||
                 copularNegationPrefix.test(prefix) ||
                 denialRelationPrefix.test(prefix) ||
-                noIncidentPrefix.test(prefix) ||
+                ((withoutIncidentPrefix.test(prefix) || noIncidentPrefix.test(prefix)) &&
+                    !incidentPresupposingHeadSuffix.test(suffix)) ||
                 (negativeObservationPrefix.test(prefix) && negatedIncidentObjectHead.test(suffix)));
         // A negated predicate in subject position, up to but not including the
         // verb: "has not been", "did not", "hasn't", "were never yet". Shared
@@ -332,7 +356,9 @@ export class TicketClassifier {
         // it presupposes an instance: "postmortem", "root cause", "report",
         // "incident" and "mitigation" all refer back to an incident that
         // happened and must leave it standing, so adjacency alone never
-        // cancels a mention.
+        // cancels a mention. The three of those with no absence-report reading
+        // are enumerated as `incidentPresupposingHeads` above, which is what
+        // holds them standing under a cancelling determiner.
         const incidentToolingHeads =
             '(?:scan(?:s|ner|ners|ning)?|tool(?:s|ing)?|check(?:s|ing)?|test(?:s|ing)?|monitoring|detection|protection|training|drills?|polic(?:y|ies)|guidelines?|checklists?|documentation)';
         const incidentToolingSuffix = new RegExp(`^\\s+${incidentToolingHeads}\\b`, 'i');
