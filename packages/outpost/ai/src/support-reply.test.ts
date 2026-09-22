@@ -520,6 +520,39 @@ describe('support reply contract', () => {
         expect(() => validateSupportReply(reply({ details }), sources)).toThrow(error);
     });
 
+    // A span does not have to close on the line that opened it. Where it does not,
+    // every later line it covers is its content or its closing run, so a backtick run
+    // that begins one of those lines is inside code rather than opening a fence: the
+    // renderer publishes one <code> element and no fence at all. Recording only where
+    // each span opens left those lines looking like an ambiguous fence, and discarded
+    // an answer quoting a literal that carries a fence across a line break — which is
+    // how a support answer shows what a fenced example is spelled like. The published
+    // form is pinned against the app's real ReactMarkdown + remark-gfm in
+    // apps/web/src/__tests__/qa-components.test.tsx.
+    it.each([
+        'Use `` a\n```b `` here.',
+        // The run that begins the second line is the closer itself, not content.
+        'Quote ``` a\n``` b ``` here.',
+        'Render ``<Provider />\n```tsx literal`` verbatim.',
+    ])('preserves a code span the grammar closes on a later line %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // What the rows above must not take with them. A line is exempt because the
+    // grammar placed its start inside a span, not because a span sits somewhere on
+    // it: a run left open on a line that also carries a closed span is still the
+    // ambiguity the refusal exists for. And the contents of a span crossing a line
+    // are still read as prose — the deliberately conservative policy, unchanged: an
+    // ungrounded address inside one is refused by the check that owns that question
+    // rather than by the fence guard.
+    it.each([
+        ['Intro text\n```b `` x `` c', /fence/i],
+        ['Use `` a\n```b https://example.invalid/steal `` here.', /link|url/i],
+        ['Quote ``` a\n``` b www.example.invalid/steal ``` here.', /link|url/i],
+    ] as const)('still refuses what a later-line span does not cover %#', (details, error) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(error);
+    });
+
     it.each([
         'An unmatched opener `<script>alert(1)</script>.',
         'An escaped opener \\`<script>alert(1)</script>`.',

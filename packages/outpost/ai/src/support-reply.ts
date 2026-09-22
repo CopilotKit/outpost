@@ -98,6 +98,11 @@ interface CodeNodes {
     blocks: Array<[number, number]>;
     /** `line:column` of each code span's opening run, one-based, at any depth. */
     spanStarts: Set<string>;
+    /**
+     * Lines a code span already covers where they begin, one-based: every line of a
+     * span after the one that opened it, through the line its closing run is on.
+     */
+    spanContinuations: Set<number>;
 }
 
 function collectCodeNodes(node: Nodes, into: CodeNodes): void {
@@ -106,6 +111,9 @@ function collectCodeNodes(node: Nodes, into: CodeNodes): void {
     }
     if (node.type === 'inlineCode' && node.position) {
         into.spanStarts.add(`${node.position.start.line}:${node.position.start.column}`);
+        for (let line = node.position.start.line + 1; line <= node.position.end.line; line++) {
+            into.spanContinuations.add(line);
+        }
     }
     if ('children' in node) for (const child of node.children) collectCodeNodes(child, into);
 }
@@ -135,15 +143,21 @@ const APPENDED_FOOTER_PROBE = 'outpost-appended-footer-probe';
  * are code removes the column from the question.
  *
  * Nor is a run of backticks at the start of a line a fence marker by itself. The
- * same run closed later on the same line is a code span — how an answer quotes a
- * literal already holding a backtick, up to and including a fence — and the
- * renderer publishes it inline, with its body inert. Only a run left open is the
- * ambiguity the refusal below exists for.
+ * same run closed later — on that line or a later one — is a code span, how an
+ * answer quotes a literal already holding a backtick, up to and including a
+ * fence, and the renderer publishes it inline with its body inert. Only a run
+ * left open is the ambiguity the refusal below exists for.
+ *
+ * Which lines a span covers is the whole answer to that, not where each one
+ * opens. A span closing on a later line leaves every line between inside code,
+ * and a line beginning inside one opens nothing: its backtick run is the span's
+ * content or its own closing run. Recording openings alone refused the
+ * continuation lines of spans the renderer had already closed.
  */
 function proseOutsideFences(text: string): string {
     const normalized = text.replace(/\r\n?/g, '\n');
     const lines = normalized.split('\n');
-    const code: CodeNodes = { blocks: [], spanStarts: new Set() };
+    const code: CodeNodes = { blocks: [], spanStarts: new Set(), spanContinuations: new Set() };
     collectCodeNodes(parseMarkdown(normalized), code);
     const codeLines = new Set<number>();
     for (const [start, end] of code.blocks) {
@@ -155,7 +169,9 @@ function proseOutsideFences(text: string): string {
         // A backtick fence's info string may hold no backtick, so a line that looks
         // like one and is not a code span opens something else. Refusing rather than
         // guessing is deliberate and unchanged; it now applies only where the parser
-        // agrees the line is neither already inside code nor opening a span here.
+        // agrees the line is neither already inside code, nor continuing a span
+        // opened above it, nor opening one here.
+        if (code.spanContinuations.has(index + 1)) continue;
         const marker = /^ {0,3}(`{3,})(.*)$/.exec(line);
         if (!marker || !marker[2].includes('`')) continue;
         const column = line.length - marker[1].length - marker[2].length + 1;

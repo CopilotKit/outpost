@@ -446,6 +446,44 @@ describe('ChatMessage', () => {
         expect(container.querySelector('script, provider')).toBeNull();
     });
 
+    // Nor does a span have to close on the line that opened it. Each row below is
+    // published as one inline <code> inside a single paragraph — no <pre>, no fence —
+    // even though its second line begins with a run of three backticks, which is the
+    // spelling a support answer uses to quote what a fenced example looks like. The
+    // validator reads those lines as the span's content or its closing run on the
+    // strength of this; a renderer or remark-gfm change that starts publishing one of
+    // them as a block, an element or a link fails here rather than quietly widening
+    // what an accepted reply can emit. Literal fixtures, so the web suite stays
+    // independent of the AI package's tests.
+    // The line ending inside the span reaches the reader as a space, which is the
+    // one place the published text differs from what was written.
+    it.each([
+        { markdown: 'Use `` a\n```b `` here.', code: 'a ```b', text: 'Use a ```b here.' },
+        // The run opening the second line is the closing run itself.
+        { markdown: 'Quote ``` a\n``` b ``` here.', code: 'a', text: 'Quote a b ``` here.' },
+        {
+            markdown: 'Render ``<Provider />\n```tsx literal`` verbatim.',
+            code: '<Provider /> ```tsx literal',
+            text: 'Render <Provider /> ```tsx literal verbatim.',
+        },
+    ])('publishes $markdown as one span across a line break', ({ markdown, code, text }) => {
+        const { container } = render(
+            <ChatMessage
+                message={{ id: 'multiline-span-fixture', role: 'assistant', content: markdown }}
+            />,
+        );
+        const prose = container.querySelector('.prose') ?? container;
+
+        expect([...prose.querySelectorAll('p > code')].map((node) => node.textContent)).toEqual([
+            code,
+        ]);
+        expect(prose.textContent).toBe(text);
+        expect(prose.querySelectorAll('p')).toHaveLength(1);
+        expect(prose.querySelectorAll('pre')).toHaveLength(0);
+        expect(prose.querySelectorAll('a')).toHaveLength(0);
+        expect(prose.querySelector('provider')).toBeNull();
+    });
+
     // The boundary the row above stops at, and the reason the validator still
     // refuses these. A run left open on its line is not a span, and a backtick in a
     // fence's info string means it is not a fence either, so the renderer commits to
