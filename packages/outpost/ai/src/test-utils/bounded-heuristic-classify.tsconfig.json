@@ -1,0 +1,21 @@
+{
+    // Resolution config for the out-of-process heuristic probe ONLY. It exists so the
+    // probe can be spawned from a test run with no build step in front of it.
+    //
+    // `../../../tsconfig.base.json` maps `@copilotkit/outpost/shared` to
+    // `shared/dist/index.d.ts`, which is right for `tsc` and wrong for a running
+    // process: `dist/` is not guaranteed to exist when `vitest run` starts (the turbo
+    // `test` task depends on `^build`, and shared/db/ai/queue are all the SAME package,
+    // so that dependency never builds them). Vitest itself sidesteps this with the
+    // alias in `packages/outpost/vitest.config.ts`; a child process gets no such alias,
+    // so it is restated here against source.
+    //
+    // Keep this in step with the `resolve.alias` block of vitest.config.ts — a probe
+    // that loads a different `shared` than the suite is not measuring the suite's code.
+    "compilerOptions": {
+        "baseUrl": "../../..",
+        "paths": {
+            "@copilotkit/outpost/shared": ["./shared/src/index.ts"]
+        }
+    }
+}

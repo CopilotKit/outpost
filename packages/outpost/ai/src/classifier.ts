@@ -162,8 +162,27 @@ export class TicketClassifier {
         // loss, and must not cancel it.
         const negatedIncidentSubjectVerbs =
             '(?:seen|observed|detected|found|reported|experienced|suffered|occur|occurred|happen|happened)';
+        // The object phrase runs to the end of the prefix as a repeated group, so
+        // each gap inside it needs exactly one consumer. Where two arms of a
+        // repeated group can both consume the same whitespace, the engine has a
+        // free choice per gap and enumerates 2^gaps partitions before reporting a
+        // failure — on ticket text this is unbounded work for an unbounded input,
+        // so the discipline below is a runtime-safety property, not a style one.
+        //
+        // The discipline: an arm consumes the whitespace that *precedes* its own
+        // token and never the whitespace that follows it. A token is never
+        // whitespace, so each leading `\s+`/`\s*` is pinned to the whole gap and
+        // cannot be split.
+        //
+        // `and`/`or` is the one arm that must still assert a following gap — it
+        // may not sit at the very end of the object phrase — so it consumes a
+        // single `\s` rather than `\s+`, leaving any remainder to the next arm's
+        // leading run. That keeps the accepted language identical: the original
+        // `\s+…\s+` needed one whitespace for itself plus whatever the next arm
+        // required, which is exactly `\s` plus the next arm's leading run.
+        const separatedObjectToken = `(?:yet|already|any|customer|customers|reports?|reported|evidence|of|(?:a|an|the)|${incidentMention})`;
         const negativeObservationPrefix = new RegExp(
-            `\\b(?:(?:(?:has|have|had|do|does|did|was|were|is|are)\\s+(?:not|never)|\\w+n['’]t)\\s+|never\\s+)(?:yet\\s+|already\\s+|any\\s+|customer\\s+|customers\\s+|reports?\\s+|reported\\s+|evidence\\s+|of\\s+)*${negatedIncidentObjectVerbs}\\b(?:\\s+(?:yet|already|any|customer|customers|reports?|reported|evidence|of|(?:a|an|the)|${incidentMention})|\\s*[,/]\\s*|\\s+(?:and|or)\\s+)*\\s*$`,
+            `\\b(?:(?:(?:has|have|had|do|does|did|was|were|is|are)\\s+(?:not|never)|\\w+n['’]t)\\s+|never\\s+)(?:yet\\s+|already\\s+|any\\s+|customer\\s+|customers\\s+|reports?\\s+|reported\\s+|evidence\\s+|of\\s+)*${negatedIncidentObjectVerbs}\\b(?:\\s+${separatedObjectToken}|\\s*[,/]|\\s+(?:and|or)\\s)*\\s*$`,
             'i',
         );
         // …and the incident has to be the head of that object, not a modifier
