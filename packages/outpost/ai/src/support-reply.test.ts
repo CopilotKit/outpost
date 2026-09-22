@@ -545,6 +545,60 @@ describe('support reply contract', () => {
         expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/html/i);
     });
 
+    // A '<' is a tag only where the grammar closes one. Every row below is text the
+    // renderer escapes to a literal '<' inside a paragraph — recorded against the
+    // app's real ReactMarkdown + remark-gfm in
+    // apps/web/src/__tests__/qa-components.test.tsx — so no markup reaches the
+    // reader and there is nothing to refuse. `appliesTo` is the field the schema
+    // dedicates to version applicability, which makes a '<vN' range that field's
+    // own vocabulary; refusing it discarded otherwise valid replies. The numeric
+    // spelling was already accepted, so the guard's own boundary sat between two
+    // spellings of one sentence.
+    it.each([
+        { field: 'appliesTo', value: 'Runtimes on <v2 releases' },
+        { field: 'appliesTo', value: 'React applications on <v2 patch releases.' },
+        { field: 'details', value: 'The option is ignored on <v2 runtimes of the provider.' },
+        { field: 'details', value: 'Set a <n threshold before the provider mounts.' },
+        { field: 'summary', value: 'Upgrade runtimes on <v2 before mounting the provider.' },
+        // Two spellings of the same range, one already accepted before this guard
+        // learned the difference. Both must stay accepted together.
+        { field: 'appliesTo', value: 'CopilotKit <1.9' },
+        { field: 'appliesTo', value: 'CopilotKit <v1.9' },
+        // The autolink and the inert '<' in one field: the guard used to strip
+        // autolinks before testing for '<', so the autolink survived and the range
+        // did not. Both are the renderer's own reading now, and the autolink is
+        // still held to the evidence set by the link checks above.
+        {
+            field: 'appliesTo',
+            value: `Runtimes on <v2 releases; see <${sourceUrl}>.`,
+        },
+    ] as const)('accepts a literal "<" the renderer escapes in $field', ({ field, value }) => {
+        expect(validateSupportReply(reply({ [field]: value }), sources)[field]).toBe(value);
+    });
+
+    // The contrast that keeps the row above from becoming "anything after '<' is
+    // prose": the same '<vN' opening becomes a real tag as soon as the grammar can
+    // close one, and an unquoted attribute value is enough to close it. These are
+    // refused before and after, for the reason the guard states.
+    it.each([
+        'Runtimes on <v2 releases> are affected.',
+        'Compare <v2 and >v3.',
+        'Upgrade <v2 runtimes/> before mounting.',
+    ])('rejects a "<vN" opening the grammar closes into a tag %#', (details) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/html/i);
+    });
+
+    // Same assumption, second site: the code-span scanner skipped from '<' to the
+    // end of the line whenever no '>' followed, so every code span after an inert
+    // '<vN' range went unmasked and its contents were read as prose. An example URL
+    // inside a same-line code span is exactly what that scanner exists to exempt.
+    it.each([
+        'Runtimes on <v2 releases use `https://example.invalid/steal` in examples.',
+        'Set a <n threshold, then read `www.example.invalid/steal` from the log.',
+    ])('keeps a code span readable after an inert "<" %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
     it('preserves literal HTML and example endpoints inside fenced code', () => {
         const details = '```tsx\n<Provider runtimeUrl="http://localhost:4000" />\n```';
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);

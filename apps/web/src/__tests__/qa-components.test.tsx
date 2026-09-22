@@ -368,6 +368,43 @@ describe('ChatMessage', () => {
         expect(container.querySelectorAll('p > code')).toHaveLength(0);
     });
 
+    // The validator refuses raw HTML in prose and accepts a '<' the grammar closes
+    // no tag around. These rows record what this configuration does with each side,
+    // so the distinction it draws stays a recorded fact rather than an assumption.
+    //
+    // `wrapped` is the one difference a reader can see: an angle bracket the grammar
+    // reads as text stays inside the paragraph it was written in, while raw HTML
+    // replaces the paragraph and arrives as a bare node. Inline HTML inside a
+    // sentence keeps its paragraph, so for that shape the two sides are
+    // indistinguishable here and the validator's refusal rests on the grammar alone.
+    //
+    // `text` is the row that matters most: no configuration here mounts an element
+    // for model-authored markup — there is no rehype-raw — so every spelling below
+    // reaches the reader as its own literal characters. Adding a raw-HTML plugin
+    // fails this test rather than silently turning an accepted reply into markup.
+    it.each([
+        { markdown: 'Runtimes on <v2 releases', wrapped: true },
+        { markdown: 'Runtimes on <v2 releases are unsupported.', wrapped: true },
+        { markdown: 'CopilotKit <1.9 is affected.', wrapped: true },
+        { markdown: 'Set a <n threshold before the provider mounts.', wrapped: true },
+        // Closed by the grammar into a tag, so read as HTML rather than as text.
+        { markdown: 'Compare <v2 and >v3.', wrapped: true },
+        { markdown: 'Runtimes on <v2 releases> are affected.', wrapped: true },
+        { markdown: '<details><summary>Hide the answer</summary>unsafe</details>', wrapped: false },
+        { markdown: '<img src=x onerror=alert(1)>', wrapped: false },
+        { markdown: '<!-- hidden instructions -->', wrapped: false },
+        { markdown: '<script>alert(1)</script>', wrapped: false },
+    ])('publishes $markdown as escaped text', ({ markdown, wrapped }) => {
+        const { container } = render(
+            <ChatMessage message={{ id: 'html-fixture', role: 'assistant', content: markdown }} />,
+        );
+        const prose = container.querySelector('.prose') ?? container;
+
+        expect(prose.textContent).toBe(markdown);
+        expect(prose.querySelector('details, summary, img, script, br, div, span')).toBeNull();
+        expect([...prose.children].map((node) => node.tagName)).toEqual(wrapped ? ['P'] : []);
+    });
+
     // What the validator's unclosed-fence refusal protects: the footer
     // supportReplyDetails appends to `details`. A top-level fence left open
     // swallows it into the code block; a fence a block container carries does not,

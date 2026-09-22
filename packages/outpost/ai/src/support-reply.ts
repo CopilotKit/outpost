@@ -228,6 +228,36 @@ function collectDefinitions(node: Nodes, into: Definition[]): void {
     if ('children' in node) for (const child of node.children) collectDefinitions(child, into);
 }
 
+/** Raw HTML the grammar resolves, at any depth — block level and inline alike. */
+function collectHtml(node: Nodes, into: string[]): void {
+    if (node.type === 'html') into.push(node.value);
+    if ('children' in node) for (const child of node.children) collectHtml(child, into);
+}
+
+/**
+ * Whether the renderer resolves any raw HTML out of `text`.
+ *
+ * A '<' is the start of a tag only where the grammar can close one: a tag name,
+ * well-formed attributes and a '>', or a comment, processing instruction,
+ * declaration or CDATA section with its own terminator. Everything else is text
+ * the renderer escapes to a literal '<' — `appliesTo: 'Runtimes on <v2 releases'`
+ * publishes `<p>Runtimes on &lt;v2 releases</p>`, markup-free.
+ *
+ * Treating every '<' before a letter as a tag drew the line in the wrong place.
+ * It put the two spellings of one version range on opposite sides — `<1.9` was
+ * prose because a digit is not a tag name, `<v1.9` was refused — and `appliesTo`
+ * is the field the schema dedicates to version applicability, so a range is that
+ * field's own vocabulary rather than an injection attempt. Asking the grammar
+ * moves the line to where the reader's renderer actually puts it, and keeps the
+ * comment, processing-instruction and closing-tag forms the pattern covered: it
+ * reports those as HTML too.
+ */
+function publishesRawHtml(text: string): boolean {
+    const html: string[] = [];
+    collectHtml(parseMarkdown(text), html);
+    return html.length > 0;
+}
+
 function collectDestinations(node: Nodes, into: string[]): void {
     if (node.type === 'link' || node.type === 'image' || node.type === 'definition') {
         into.push(node.url);
@@ -299,9 +329,18 @@ function proseOutsideInlineCode(line: string): string {
             cursor += 2;
             continue;
         }
+        // A backtick inside a tag is an attribute character, not a code delimiter,
+        // so skip the tag. A '<' with no '>' after it on the line closes no tag, so
+        // there is nothing to skip: abandoning the rest of the line there left every
+        // code span after an inert '<vN' range unmasked, and read its contents —
+        // example URLs included — as prose.
         if (/^<(?:!|\?|\/?[a-z])/i.test(line.slice(cursor))) {
             const end = line.indexOf('>', cursor);
-            cursor = end < 0 ? line.length : end + 1;
+            if (end < 0) {
+                cursor++;
+                continue;
+            }
+            cursor = end + 1;
             continue;
         }
         if (line.startsWith('](', cursor)) {
@@ -415,8 +454,13 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     // is a link and what is inert prose the reader can never click.
     for (const destination of publishedDestinations(text)) checkUrl(destination);
 
-    const withoutAutolinks = prose.replace(/<https?:\/\/[^\s<>]+>/gi, '');
-    if (/<(?:!|\?|\/?[a-z])/i.test(withoutAutolinks)) {
+    // Run over the masked prose, not the original text: the masking above is what
+    // implements "only inside code", and it is deliberately stricter than the
+    // grammar for a span that crosses a line. The grammar decides the one question
+    // left — tag or literal '<'. An autolink is a link to it, not HTML, so the
+    // pre-strip that used to exempt `<https://…>` from the pattern is gone with the
+    // pattern; the destination checks above still hold that autolink to evidence.
+    if (publishesRawHtml(prose)) {
         throw new Error('Raw HTML is only allowed inside code in a support reply');
     }
 }
