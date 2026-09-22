@@ -97,12 +97,21 @@ function parseMarkdown(text: string): Nodes {
     return fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
 }
 
-/** Line ranges of every code block, one-based and inclusive, at any depth. */
-function collectCodeBlocks(node: Nodes, into: Array<[number, number]>): void {
+interface CodeNodes {
+    /** Line ranges of every code block, one-based and inclusive, at any depth. */
+    blocks: Array<[number, number]>;
+    /** `line:column` of each code span's opening run, one-based, at any depth. */
+    spanStarts: Set<string>;
+}
+
+function collectCodeNodes(node: Nodes, into: CodeNodes): void {
     if (node.type === 'code' && node.position) {
-        into.push([node.position.start.line, node.position.end.line]);
+        into.blocks.push([node.position.start.line, node.position.end.line]);
     }
-    if ('children' in node) for (const child of node.children) collectCodeBlocks(child, into);
+    if (node.type === 'inlineCode' && node.position) {
+        into.spanStarts.add(`${node.position.start.line}:${node.position.start.column}`);
+    }
+    if ('children' in node) for (const child of node.children) collectCodeNodes(child, into);
 }
 
 /**
@@ -128,25 +137,33 @@ const APPENDED_FOOTER_PROBE = 'outpost-appended-footer-probe';
  * different question than the renderer's, and discarded correct answers whose
  * examples were written inside a step or a quote. Asking the parser which nodes
  * are code removes the column from the question.
+ *
+ * Nor is a run of backticks at the start of a line a fence marker by itself. The
+ * same run closed later on the same line is a code span — how an answer quotes a
+ * literal already holding a backtick, up to and including a fence — and the
+ * renderer publishes it inline, with its body inert. Only a run left open is the
+ * ambiguity the refusal below exists for.
  */
 function proseOutsideFences(text: string): string {
     const normalized = text.replace(/\r\n?/g, '\n');
     const lines = normalized.split('\n');
-    const codeBlocks: Array<[number, number]> = [];
-    collectCodeBlocks(parseMarkdown(normalized), codeBlocks);
+    const code: CodeNodes = { blocks: [], spanStarts: new Set() };
+    collectCodeNodes(parseMarkdown(normalized), code);
     const codeLines = new Set<number>();
-    for (const [start, end] of codeBlocks) {
+    for (const [start, end] of code.blocks) {
         for (let line = start; line <= end; line++) codeLines.add(line);
     }
 
     for (const [index, line] of lines.entries()) {
         if (codeLines.has(index + 1)) continue;
         // A backtick fence's info string may hold no backtick, so a line that looks
-        // like one opens something else. Refusing rather than guessing is deliberate
-        // and unchanged; it now applies only where the parser agrees the line is not
-        // already inside code.
+        // like one and is not a code span opens something else. Refusing rather than
+        // guessing is deliberate and unchanged; it now applies only where the parser
+        // agrees the line is neither already inside code nor opening a span here.
         const marker = /^ {0,3}(`{3,})(.*)$/.exec(line);
-        if (marker && marker[2].includes('`')) {
+        if (!marker || !marker[2].includes('`')) continue;
+        const column = line.length - marker[1].length - marker[2].length + 1;
+        if (!code.spanStarts.has(`${index + 1}:${column}`)) {
             throw new Error('Invalid code fence in support reply');
         }
     }

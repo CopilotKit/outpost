@@ -249,14 +249,50 @@ describe('support reply contract', () => {
         expect(validateSupportReply(value, sources)).toEqual(value);
     });
 
+    // A run of three or more backticks that opens and closes on one line is a code
+    // span, not a fence: the renderer publishes `<p><code>…</code></p>`, with the
+    // body inert — the JSX arrives as text, and neither the bare address nor the
+    // `www.` host GFM linkifies in prose becomes a link. Three backticks is how an
+    // answer quotes something already holding a backtick, so refusing the run
+    // discarded correct answers. The published form is pinned against the app's
+    // real ReactMarkdown + remark-gfm in apps/web/src/__tests__/qa-components.test.tsx.
     it.each([
         'Use `http://localhost:4000` for local testing.',
         'Render ``<Provider label=`chat` />``.',
         'Render ``<Provider />` literal backtick``.',
         'Render `<Provider />\\`.',
         'A literal backslash \\\\`<Provider />`.',
+        '```literal code```',
+        'Run ```https://example.invalid/steal``` locally.',
+        'Render ```<script>alert(1)</script>``` verbatim.',
+        'Mail ```help@example.invalid``` please.',
+        'Host ```www.example.invalid/steal``` only.',
+        '```a `b` c```',
+        '````literal code````',
+        // Four backticks is how a fence itself is quoted inline.
+        '```` ```tsx ````',
+        // Up to three leading spaces is still a paragraph, so still a span.
+        '   ```literal code```',
+        '```one``` and ```two```',
     ])('preserves valid same-line code spans %#', (details) => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // The refusal the rows above must not take with them. A run of three or more
+    // backticks that does not close on its line opens something the renderer will
+    // not commit to: a fence whose info string holds a backtick is no fence at all,
+    // so the line is published as literal paragraph text and every following line
+    // is prose. Refusing rather than guessing which is deliberate and unchanged.
+    it.each([
+        ['```a`b\n<script>alert(1)</script>\n```', /fence/i],
+        ['```tsx`\n<Provider />\n```', /fence/i],
+        // Opener of three, closer of four: neither a span nor a fence.
+        ['```literal code````', /fence/i],
+        // A span does not exempt the rest of its line.
+        ['```literal code``` then <script>alert(1)</script>.', /html/i],
+        ['```literal code``` then read https://example.invalid/steal.', /link|url/i],
+    ] as const)('refuses a backtick run that opens without closing %#', (details, error) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(error);
     });
 
     it.each([

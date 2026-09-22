@@ -308,6 +308,66 @@ describe('ChatMessage', () => {
         expect(container.querySelector('copilotkit, provider')).toBeNull();
     });
 
+    // Three backticks are not always a fence. A run of three or more that closes on
+    // the same line is a code span, which this configuration publishes inline as
+    // <code> inside a paragraph rather than as a <pre><code> block — and whose body
+    // is just as inert: the JSX arrives as text, and neither the bare address nor
+    // the `www.` host GFM linkifies in prose becomes a link. The validator accepts
+    // these rows on the strength of that; a renderer or remark-gfm change that turns
+    // one of them into a block, an element or a link fails here rather than quietly
+    // widening what an accepted reply can emit. Literal fixtures, so the web suite
+    // stays independent of the AI package's tests.
+    it.each([
+        { markdown: '```literal code```', code: 'literal code' },
+        {
+            markdown: 'Run ```https://example.invalid/steal``` locally.',
+            code: 'https://example.invalid/steal',
+        },
+        {
+            markdown: 'Render ```<script>alert(1)</script>``` verbatim.',
+            code: '<script>alert(1)</script>',
+        },
+        { markdown: 'Mail ```help@example.invalid``` please.', code: 'help@example.invalid' },
+        {
+            markdown: 'Host ```www.example.invalid/steal``` only.',
+            code: 'www.example.invalid/steal',
+        },
+        { markdown: '```a `b` c```', code: 'a `b` c' },
+        { markdown: '````literal code````', code: 'literal code' },
+        // Four backticks is how a fence itself is quoted inline.
+        { markdown: '```` ```tsx ````', code: '```tsx' },
+        // Up to three leading spaces is still a paragraph, so still a span.
+        { markdown: '   ```literal code```', code: 'literal code' },
+    ])('publishes $markdown as an inline code span', ({ markdown, code }) => {
+        const { container } = render(
+            <ChatMessage message={{ id: 'span-fixture', role: 'assistant', content: markdown }} />,
+        );
+
+        const spans = [...container.querySelectorAll('p > code')];
+        expect(spans.map((node) => node.textContent)).toEqual([code]);
+        expect(container.querySelectorAll('pre')).toHaveLength(0);
+        expect(container.querySelectorAll('a')).toHaveLength(0);
+        expect(container.querySelector('script, provider')).toBeNull();
+    });
+
+    // The boundary the row above stops at, and the reason the validator still
+    // refuses these. A run left open on its line is not a span, and a backtick in a
+    // fence's info string means it is not a fence either, so the renderer commits to
+    // neither: it publishes the marker as literal paragraph text and reads every
+    // following line as prose.
+    it.each([
+        { markdown: '```a`b\n<script>alert(1)</script>\n```', text: '```a`b' },
+        { markdown: '```tsx`\n<Provider />\n```', text: '```tsx`\n<Provider />' },
+        { markdown: '```literal code````', text: '```literal code````' },
+    ])('publishes $markdown as literal text, not code', ({ markdown, text }) => {
+        const { container } = render(
+            <ChatMessage message={{ id: 'open-fixture', role: 'assistant', content: markdown }} />,
+        );
+
+        expect(container.querySelector('p')?.textContent).toBe(text);
+        expect(container.querySelectorAll('p > code')).toHaveLength(0);
+    });
+
     // What the validator's unclosed-fence refusal protects: the footer
     // supportReplyDetails appends to `details`. A top-level fence left open
     // swallows it into the code block; a fence a block container carries does not,
