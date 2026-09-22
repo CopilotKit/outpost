@@ -1365,4 +1365,198 @@ describe('published form of a validated reply', () => {
             `**Applies to:** See [the guide](${guideUrl}).\n`,
         );
     });
+
+    const cited = (appliesTo: string) =>
+        reply({ appliesTo, evidence: [{ sourceUrl: guideUrl, quote }] });
+
+    // Escaping between the preserved spans is not free of them. A delimiter run
+    // closing on a bare address is published outside the anchor — that is where the
+    // grammar ends a GFM autolink literal, and why the field-level check grounds
+    // this reply on the address alone — but the escape writes that run as a
+    // backslash pair, and a backslash is not a character the literal ends on. The
+    // grammar read it as more of the address, so the composed check refused a reply
+    // whose only citation was its own evidence: the escalation removed one commit
+    // earlier, reintroduced one transform later. The `<…>` autolink publishes the
+    // same destination and the same visible address and closes on its own '>'.
+    it.each([
+        { appliesTo: `**Read ${guideUrl}**`, published: `\\*\\*Read <${guideUrl}>\\*\\*` },
+        { appliesTo: `~~Read ${guideUrl}~~`, published: `\\~\\~Read <${guideUrl}>\\~\\~` },
+        { appliesTo: `Read ${guideUrl}*`, published: `Read <${guideUrl}>\\*` },
+    ])(
+        'publishes a cited applicability autolink a delimiter run closes on %#',
+        ({ appliesTo, published }) => {
+            const value = cited(appliesTo);
+
+            expect(validateSupportReply(value, guideSources)).toEqual(value);
+            expect(supportReplyDetails(value)).toContain(`**Applies to:** ${published}\n`);
+        },
+    );
+
+    // One row per character the escape emits, which is the closed set that can reach
+    // an address this way. In these five the grammar keeps the character out of the
+    // address — it is trailing punctuation the literal discards, or it ends the
+    // literal outright — so the field cites the evidence URL and publication has to
+    // go on citing it.
+    it.each(['*', '_', ']', '<', '~'])(
+        'publishes a cited applicability address an escaped %s follows',
+        (escaped) => {
+            const value = cited(`Read ${guideUrl}${escaped} here.`);
+
+            expect(validateSupportReply(value, guideSources)).toEqual(value);
+            expect(supportReplyDetails(value)).toContain(
+                `**Applies to:** Read <${guideUrl}>\\${escaped} here.\n`,
+            );
+        },
+    );
+
+    // The other half of that closed set, and the boundary this correction must not
+    // cross. Here the grammar reads the character as part of the address, so the
+    // field itself cites an address no evidence backs; the field-level check refuses
+    // it before publication is reached, unchanged by this fix in either direction.
+    it.each(['\\', '`', '[', '>', '|'])(
+        'still refuses a cited applicability address an escaped %s extends',
+        (escaped) => {
+            expect(() =>
+                validateSupportReply(cited(`Read ${guideUrl}${escaped} here.`), guideSources),
+            ).toThrow(/link|url/i);
+        },
+    );
+
+    // The bounded spelling is written where the escape would otherwise reach the
+    // address and nowhere else, so an applicability that already published its
+    // citation correctly still publishes it exactly as before. The bare address
+    // alone and the `[label](…)` form are pinned by the two rows above.
+    it.each([`Read ${guideUrl}.`, `<${guideUrl}>`])(
+        'leaves a cited applicability address no escape reaches as written %#',
+        (appliesTo) => {
+            const value = cited(appliesTo);
+
+            expect(validateSupportReply(value, guideSources)).toEqual(value);
+            expect(supportReplyDetails(value)).toContain(`**Applies to:** ${appliesTo}\n`);
+        },
+    );
+
+    // Applicability metadata publishes no image. Copying through every span the
+    // grammar resolves copied image spans too, which handed the reader an <img> and
+    // the remote fetch that comes with it — a surface this field never published,
+    // pinned against the renderer in apps/web/src/__tests__/qa-components.test.tsx.
+    // Escaping the image's own syntax keeps it out; copying its destination through
+    // is what keeps the cited address from being rewritten, which is the whole
+    // reason the spans are preserved at all.
+    it.each([
+        { appliesTo: `![diagram](${guideUrl})`, published: `!\\[diagram\\](${guideUrl})` },
+        {
+            appliesTo: `![diagram](${guideUrl})*x*`,
+            published: `!\\[diagram\\](<${guideUrl}>)\\*x\\*`,
+        },
+    ])('publishes cited applicability image syntax as text %#', ({ appliesTo, published }) => {
+        const value = cited(appliesTo);
+
+        expect(validateSupportReply(value, guideSources)).toEqual(value);
+        expect(supportReplyDetails(value)).toContain(`**Applies to:** ${published}\n`);
+    });
+
+    const diagramUrl = `${guideUrl}/diagram`;
+
+    // The outer node's type is not the whole answer. A link wrapping an image is one
+    // resolved span whose own node is a link, so the rule above — which asked only
+    // what the span itself was — copied it through as written, and the reader
+    // received the <img> nested inside it along with the remote fetch the row above
+    // exists to prevent. Pinned against the renderer in
+    // apps/web/src/__tests__/qa-components.test.tsx. Every destination such a span
+    // publishes is still the reader's to click, so the nested one is copied through
+    // too, in the spelling the evidence check approved and no other.
+    it.each([
+        {
+            urls: [guideUrl],
+            appliesTo: `[![diagram](${guideUrl})](${guideUrl})`,
+            published: `\\[!\\[diagram\\](<${guideUrl}>)\\](<${guideUrl}>)`,
+        },
+        {
+            urls: [guideUrl, diagramUrl],
+            appliesTo: `[![diagram](${diagramUrl})](${guideUrl})`,
+            published: `\\[!\\[diagram\\](<${diagramUrl}>)\\](<${guideUrl}>)`,
+        },
+    ])(
+        'publishes cited applicability image syntax nested in a link as text %#',
+        ({ urls, appliesTo, published }) => {
+            const value = reply({
+                appliesTo,
+                evidence: urls.map((sourceUrl) => ({ sourceUrl, quote })),
+            });
+            const retrieved = urls.map((sourceUrl) => ({ ...sources[0], sourceUrl }));
+
+            expect(validateSupportReply(value, retrieved)).toEqual(value);
+            expect(supportReplyDetails(value)).toContain(`**Applies to:** ${published}\n`);
+        },
+    );
+
+    // The third way this field published an image, and the one that comes from no
+    // span at all. `\![label](…)` is a *link*: the escaped '!' is literal text, so
+    // the span is preserved as written — and escaping the backslash that was
+    // protecting that '!' handed it back to the grammar, which read it together with
+    // the preserved span's own '[' as an image. '!' is the one character outside a
+    // span that changes what the span publishes, and it can only reach that position
+    // written '\!'. Found by auditing this same escape across every character it
+    // emits in every position around a span.
+    it.each([
+        {
+            appliesTo: `Read \\![diagram](${guideUrl}) here.`,
+            published: `Read \\\\\\![diagram](${guideUrl}) here.`,
+        },
+        {
+            appliesTo: `Read \\![diagram](${guideUrl})\\ here.`,
+            published: `Read \\\\\\![diagram](${guideUrl})\\\\ here.`,
+        },
+    ])(
+        'publishes an escaped bang beside a cited applicability link as text %#',
+        ({ appliesTo, published }) => {
+            const value = cited(appliesTo);
+
+            expect(validateSupportReply(value, guideSources)).toEqual(value);
+            expect(supportReplyDetails(value)).toContain(`**Applies to:** ${published}\n`);
+        },
+    );
+
+    const wwwHost = 'www.copilotkit.ai/reference/provider';
+    const wwwUrl = `http://${wwwHost}`;
+    const wwwSources = sources.map((source) => ({ ...source, sourceUrl: wwwUrl }));
+
+    // The same contract for the other address form this grammar links. A scheme-less
+    // `www.` host cannot be written as a `<…>` autolink — angle brackets around one
+    // publish as part of the destination — so an escape written against a *grounded*
+    // one refused the reply: the same correct, fully cited answer escalated to a
+    // human, one address form later. What the autolink does carry is the destination
+    // the grammar publishes for that host, and this renderer publishes it over
+    // http://. That destination is the parser's answer, never an invented https://,
+    // and it reaches the reader as the visible address — pinned against the renderer
+    // in apps/web/src/__tests__/qa-components.test.tsx. The third row is the boundary:
+    // where no escape reaches the address, nothing is rewritten.
+    it.each([
+        { appliesTo: `**Read ${wwwHost}**`, published: `\\*\\*Read <${wwwUrl}>\\*\\*` },
+        { appliesTo: `Read ${wwwHost}* here.`, published: `Read <${wwwUrl}>\\* here.` },
+        { appliesTo: `Read ${wwwHost} now.`, published: `Read ${wwwHost} now.` },
+    ])(
+        'publishes a cited scheme-less applicability address as the grammar links it %#',
+        ({ appliesTo, published }) => {
+            const value = reply({ appliesTo, evidence: [{ sourceUrl: wwwUrl, quote }] });
+
+            expect(validateSupportReply(value, wwwSources)).toEqual(value);
+            expect(supportReplyDetails(value)).toContain(`**Applies to:** ${published}\n`);
+        },
+    );
+
+    // The refusals none of the above may take with them. A delimiter run around an
+    // address no evidence backs changes nothing a reader can click. The `www.` rows
+    // are refused on the grounding, not on the spelling: the bounded form above is
+    // written for them too, and the published destination it carries is held to the
+    // evidence set exactly as a bare literal's is.
+    it.each([
+        '**Read www.example.invalid/steal**',
+        'Read www.example.invalid/steal* here.',
+        'Read help@example.invalid* here.',
+        '**Read https://docs.copilotkit.ai/invented**',
+    ])('still refuses an applicability address no evidence backs %#', (appliesTo) => {
+        expect(() => validateSupportReply(cited(appliesTo), guideSources)).toThrow(/link|url/i);
+    });
 });

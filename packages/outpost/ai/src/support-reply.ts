@@ -720,32 +720,165 @@ function escapeMarkdown(text: string): string {
     return text.replace(/[\\`*_[\]<>~|]/g, '\\$&');
 }
 
+interface ResolvedSpan {
+    /** Offsets the whole link or image spans in the applicability line. */
+    start: number;
+    end: number;
+    /** Every destination the span publishes, in order, nested ones included. */
+    urls: string[];
+    /**
+     * Whether publishing the span hands the reader an `<img>`, which applicability
+     * metadata never may — as an image, or by containing one at any depth.
+     */
+    image: boolean;
+    /** Where the span writes its destinations, its nested ones included, in order. */
+    destinations: InlineDestinationSpan[];
+}
+
 /**
  * Spans of every link and image the grammar resolves, in order and outermost
- * only. A nested node already sits inside the span that contains it, and the
- * caller copies these spans through verbatim, so copying one twice would
- * duplicate the text around it.
+ * only, each with the destinations it publishes and the offsets it writes them at.
+ *
+ * A nested node already sits inside the span that contains it, and the caller
+ * publishes a span as one piece, so returning one twice would duplicate the text
+ * around it. What it publishes is still the enclosing span's to answer for: its
+ * destinations belong to that span's `urls`, its offsets to that span's
+ * `destinations`, and an image nested at any depth makes the whole span one that
+ * publishes an `<img>`.
+ *
+ * That last part is why the node's own type is not the question. `[![d](a)](b)` is
+ * one span whose outermost node is a link, and copying it through as a link
+ * published the image inside it — the surface this field never publishes, reached
+ * past a check that had only ever asked what the outermost node was.
  */
-function resolvedLinkSpans(text: string): [number, number][] {
+function resolvedSpans(text: string): ResolvedSpan[] {
     const nodes: (Link | Image)[] = [];
     collectInlineLinks(parseMarkdown(text), nodes);
-    const spans = nodes.flatMap<[number, number]>(({ position }) => {
-        const start = position?.start.offset;
-        const end = position?.end.offset;
-        return start === undefined || end === undefined ? [] : [[start, end]];
+    const located = nodes.flatMap((node) => {
+        const start = node.position?.start.offset;
+        const end = node.position?.end.offset;
+        return start === undefined || end === undefined ? [] : [{ node, start, end }];
     });
-    spans.sort((first, second) => first[0] - second[0] || second[1] - first[1]);
-    const outermost: [number, number][] = [];
-    for (const span of spans) {
-        if (span[0] >= (outermost.at(-1)?.[1] ?? 0)) outermost.push(span);
+    located.sort((first, second) => first.start - second.start || second.end - first.end);
+    const outermost: ResolvedSpan[] = [];
+    for (const { node, start, end } of located) {
+        const destination = inlineDestination(text, start, end);
+        const enclosing = outermost.at(-1);
+        if (enclosing !== undefined && start < enclosing.end) {
+            if (node.type === 'image') enclosing.image = true;
+            if (destination) enclosing.destinations.push(destination);
+            continue;
+        }
+        const urls: string[] = [];
+        collectDestinations(node, urls);
+        outermost.push({
+            start,
+            end,
+            urls,
+            image: node.type === 'image',
+            destinations: destination ? [destination] : [],
+        });
+    }
+    // An outer node is reported before the nodes inside it, so its own destination
+    // is collected first while it is written last. The caller walks the span from
+    // left to right, which is the order it needs them in.
+    for (const span of outermost) {
+        span.destinations.sort((first, second) => first.start - second.start);
     }
     return outermost;
+}
+
+/** The `<…>` autolink's own production: it carries an absolute URI and nothing else. */
+const ABSOLUTE_URI = /^[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*$/;
+
+/**
+ * A bare address written so the grammar closes its extent for us: the CommonMark
+ * `<…>` autolink, which ends on its own '>' rather than at the next space, and
+ * publishes the destination it carries as both href and visible text.
+ *
+ * An address that is already an absolute URI goes inside the brackets as written,
+ * so both stay exactly what the reply cited. A scheme-less `www.` host cannot —
+ * angle brackets around one publish as part of the address — and leaving it at
+ * that refused a reply whose only citation was its own evidence, which is the
+ * escalation this whole transform exists to stop. So the address is put back to
+ * the grammar: the destination it publishes for a `www.` host is that host over
+ * http://, an absolute URI the autolink does carry. The scheme is the parser's
+ * answer and never an invented https://, and the reader sees that published
+ * destination rather than the scheme-less spelling — the one fidelity this form
+ * cannot keep, and the reason it is used only where the address needs bounding.
+ *
+ * The `[address](<destination>)` spelling would have kept it, and is refused by
+ * this module's own final validation: the label puts a bare address immediately
+ * against the `](` that follows it, and the raw-URL scan reads the pair as part of
+ * the address. Preferring it would mean loosening that scan, so it is not written.
+ *
+ * Anything else — a relative destination, an address the grammar publishes no
+ * single absolute destination for — is returned unchanged, which leaves the
+ * composed check to refuse it rather than publishing a rewrite.
+ */
+function boundedAutolink(address: string): string {
+    if (ABSOLUTE_URI.test(address)) return `<${address}>`;
+    const [published, ...rest] = publishedDestinations(address);
+    return rest.length === 0 && published !== undefined && ABSOLUTE_URI.test(published)
+        ? `<${published}>`
+        : address;
+}
+
+/**
+ * One candidate spelling of the applicability line: the spans the grammar
+ * resolves published as links, the text between them escaped, and — when
+ * `boundAddresses` is set — every bare address rewritten into the form whose
+ * extent the grammar closes.
+ *
+ * A span that publishes an image is not published as one, whether it is the image
+ * or merely holds it. Its syntax is escaped like any other structure the model
+ * wrote, so no `<img>` and no remote fetch reaches the reader, but every
+ * destination written inside it is copied through — the nested one included —
+ * because escaping the address is what rewrote a cited URL in the first place.
+ */
+function composeAppliesTo(line: string, spans: ResolvedSpan[], boundAddresses: boolean): string {
+    const address = (text: string) => (boundAddresses ? boundedAutolink(text) : text);
+    let published = '';
+    let cursor = 0;
+    for (const span of spans) {
+        const whole = line.slice(span.start, span.end);
+        // A span published as a link keeps its own '[', and '!' immediately before
+        // one is what makes it an image — the single adjacency where a character
+        // outside a span changes what the span publishes. '!' is not structure on
+        // its own, so the escape leaves it alone, and it can only arrive in this
+        // position written '\!', whose protecting backslash the escape has just
+        // turned into a literal one. Escaped here, it publishes as the '!' it is.
+        const prefix = escapeMarkdown(line.slice(cursor, span.start));
+        published +=
+            !span.image && whole.startsWith('[') && prefix.endsWith('!')
+                ? `${prefix.slice(0, -1)}\\!`
+                : prefix;
+        if (!span.image) {
+            // `[label](…)` and `<…>` close on their own delimiter; a bare literal
+            // runs to the next space, so it is the only form that needs bounding.
+            published += whole.startsWith('[') || whole.startsWith('<') ? whole : address(whole);
+        } else {
+            // Escaped, the destinations stop being destinations: they are bare text
+            // the grammar relinkifies, so each one needs the same bounding a bare
+            // address does. A span writing none is escaped whole.
+            let inner = span.start;
+            for (const destination of span.destinations) {
+                published +=
+                    escapeMarkdown(line.slice(inner, destination.start)) +
+                    address(line.slice(destination.start, destination.end));
+                inner = destination.end;
+            }
+            published += escapeMarkdown(line.slice(inner, span.end));
+        }
+        cursor = span.end;
+    }
+    return published + escapeMarkdown(line.slice(cursor));
 }
 
 /**
  * The applicability sentence in the exact form the reply publishes it: normalized
  * onto the single line it renders on, its Markdown structure escaped, and the
- * links and images the grammar resolves left as the model wrote them.
+ * links the grammar resolves left as the model wrote them.
  *
  * The escape used to run over every character, and an address is spelled out of
  * the characters Markdown punctuates with. A cited URL came out rewritten — the
@@ -754,19 +887,30 @@ function resolvedLinkSpans(text: string): [number, number][] {
  * that same rewritten address, so escaping a link neither removed it nor kept it.
  * A span the grammar already publishes as a link is therefore copied through
  * untouched, and the escape runs between those spans, where a stray '[' or '`'
- * really would invent structure a reader can act on. `validateSupportReply`
- * checks this composed result, so a destination preserved here is still held to
- * the evidence set.
+ * really would invent structure a reader can act on.
+ *
+ * Escaping between the spans is not free of them, though, and that is what this
+ * function has to settle. A backslash escape is not a character a GFM autolink
+ * literal ends on, so the grammar reads one written against an address as more of
+ * the address: the emphasis run the renderer publishes outside the anchor came
+ * back inside it once escaped, and `…/reference/my-guide` published as
+ * `…/reference/my-guide\*\`. Rather than decide which escapes the literal's
+ * trailing-punctuation rule happens to discard — the punctuation class this file
+ * has already removed twice — the composed line is handed back to the grammar: if
+ * it no longer publishes the destinations its spans do, every bare address is
+ * rewritten into the `<…>` autolink the grammar closes for us, and nothing else
+ * moves. `validateSupportReply` checks the result either way, so a line that
+ * still does not agree is refused rather than published as a rewrite.
  */
 function publishedAppliesTo(text: string): string {
     const line = text.replace(/\s+/g, ' ').trim();
-    let published = '';
-    let cursor = 0;
-    for (const [start, end] of resolvedLinkSpans(line)) {
-        published += escapeMarkdown(line.slice(cursor, start)) + line.slice(start, end);
-        cursor = end;
-    }
-    return published + escapeMarkdown(line.slice(cursor));
+    const spans = resolvedSpans(line);
+    const cited = spans.flatMap((span) => span.urls);
+    const published = composeAppliesTo(line, spans, false);
+    const destinations = publishedDestinations(published);
+    const agrees =
+        destinations.length === cited.length && destinations.every((url, at) => url === cited[at]);
+    return agrees ? published : composeAppliesTo(line, spans, true);
 }
 
 /**

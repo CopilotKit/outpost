@@ -731,6 +731,116 @@ describe('ChatMessage', () => {
             code,
         );
     });
+
+    // The applicability line alone, in the four spellings publication has to choose
+    // between. `srcs` is as much of the contract as `hrefs` here: this renderer
+    // passes a Markdown image straight through to an <img>, so a spelling that keeps
+    // the image syntax intact publishes a remote fetch, and one that escapes it does
+    // not. The second and fourth rows are the spellings publication used to emit,
+    // recorded because they are why the first and third are worth asserting: a
+    // backslash escape written against a bare address is read as more of the
+    // address, and preserving an image span published the image. Literal fixtures,
+    // so the web suite stays independent of the AI package's tests.
+    it.each([
+        {
+            form: 'an emphasis run escaped around a bounded address',
+            content: `**Applies to:** \\*\\*Read <${guideUrl}>\\*\\*`,
+            hrefs: [guideUrl],
+            srcs: [],
+        },
+        {
+            form: 'the same run escaped around a bare address',
+            content: `**Applies to:** \\*\\*Read ${guideUrl}\\*\\*`,
+            hrefs: ['https://docs.copilotkit.ai/reference/my-guide%5C*%5C'],
+            srcs: [],
+        },
+        {
+            form: 'cited image syntax escaped to text',
+            content: `**Applies to:** !\\[diagram\\](${guideUrl})`,
+            hrefs: [guideUrl],
+            srcs: [],
+        },
+        {
+            form: 'the same image syntax preserved',
+            content: `**Applies to:** ![diagram](${guideUrl})`,
+            hrefs: [],
+            srcs: [guideUrl],
+        },
+    ])('publishes an applicability line holding $form', ({ content, hrefs, srcs }) => {
+        const { container } = render(
+            <ChatMessage message={{ id: 'applies-fixture', role: 'assistant', content }} />,
+        );
+
+        expect(
+            [...container.querySelectorAll('a')].map((node) => node.getAttribute('href')),
+        ).toEqual(hrefs);
+        expect(
+            [...container.querySelectorAll('img')].map((node) => node.getAttribute('src')),
+        ).toEqual(srcs);
+    });
+
+    // The two spellings above left open, each recorded next to the one publication
+    // used to emit for it. `texts` is part of the contract here rather than only
+    // `hrefs`: a bounded spelling is only faithful if the reader still sees the
+    // address the reply cited, so the anchor's own text is asserted beside its href.
+    //
+    // Rows 1–2: an image nested inside a link. The outer node is a link, so the span
+    // reached the reader intact and with it a live <img> — the surface this field
+    // never publishes, and one the `srcs` column of row 2 records.
+    // Rows 3–4: a scheme-less `www.` host. Angle brackets around one publish as part
+    // of the address, so the bounded spelling carries the destination the grammar
+    // publishes for it; row 4 is what the bare address published instead once an
+    // escape was written against it.
+    const wwwHost = 'www.copilotkit.ai/reference/provider';
+    const wwwUrl = `http://${wwwHost}`;
+
+    it.each([
+        {
+            form: 'cited image syntax nested in a link, escaped to text',
+            content: `**Applies to:** \\[!\\[diagram\\](<${guideUrl}>)\\](<${guideUrl}>)`,
+            hrefs: [guideUrl, guideUrl],
+            texts: [guideUrl, guideUrl],
+            srcs: [],
+        },
+        {
+            form: 'the same nested image syntax preserved',
+            content: `**Applies to:** [![diagram](${guideUrl})](${guideUrl})`,
+            hrefs: [guideUrl],
+            texts: [''],
+            srcs: [guideUrl],
+        },
+        {
+            form: 'an emphasis run escaped around a bounded scheme-less address',
+            content: `**Applies to:** \\*\\*Read <${wwwUrl}>\\*\\*`,
+            hrefs: [wwwUrl],
+            texts: [wwwUrl],
+            srcs: [],
+        },
+        {
+            form: 'the same run escaped around the bare scheme-less address',
+            content: `**Applies to:** \\*\\*Read ${wwwHost}\\*\\*`,
+            hrefs: [`${wwwUrl}%5C*%5C`],
+            texts: [`${wwwHost}\\*\\`],
+            srcs: [],
+        },
+    ])('publishes an applicability line holding $form', ({ content, hrefs, texts, srcs }) => {
+        const { container } = render(
+            <ChatMessage message={{ id: 'applies-nested-fixture', role: 'assistant', content }} />,
+        );
+
+        expect(
+            [...container.querySelectorAll('a')].map((node) => node.getAttribute('href')),
+        ).toEqual(hrefs);
+        expect([...container.querySelectorAll('a')].map((node) => node.textContent)).toEqual(texts);
+        // The <img> is asserted rather than the `<link rel="preload" as="image">`
+        // the renderer emits beside it: the preload exists only to prefetch that
+        // element's src, and it is hoisted out of the container — not observable
+        // here — so the element itself is the one that decides whether the reader's
+        // browser fetches a remote resource.
+        expect(
+            [...container.querySelectorAll('img')].map((node) => node.getAttribute('src')),
+        ).toEqual(srcs);
+    });
 });
 
 describe('SourcePanel', () => {
