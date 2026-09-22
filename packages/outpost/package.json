@@ -55,6 +55,8 @@
         "bcryptjs": "^3.0.3",
         "discord.js": "^14.16.0",
         "mdast-util-from-markdown": "^2.0.3",
+        "mdast-util-gfm": "^3.1.0",
+        "micromark-extension-gfm": "^3.0.0",
         "postmark": "^4.0.0",
         "zod": "^4.3.6"
     },

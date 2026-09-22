@@ -165,8 +165,40 @@ describe('support reply contract', () => {
         `[documentation](${sourceUrl}!)`,
         `[documentation][guide]\n\n[guide]: ${sourceUrl}!`,
         `<${sourceUrl}!>`,
+        // GFM autolink literals: the renderer publishes a mailto: anchor for each
+        // of these, so each is a destination that has to come from the evidence.
+        'Contact help@example.invalid for instructions.',
+        'Contact mailto:help@example.invalid for instructions.',
+        'Contact xmpp:help@example.invalid for instructions.',
     ])('rejects invented or unsafe prose links %#', (details) => {
         expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
+    });
+
+    // A bare `www.` literal is published with an http:// scheme, so the https://
+    // spelling of the same host does not ground it and the http:// spelling does.
+    it('grounds a bare www autolink against the destination the renderer publishes', () => {
+        const details = 'See www.copilotkit.ai/reference/provider for the option.';
+        const citing = (sourceUrl: string) => ({
+            value: reply({ details, evidence: [{ sourceUrl, quote }] }),
+            retrieved: sources.map((source) => ({ ...source, sourceUrl })),
+        });
+
+        const invented = citing('https://www.copilotkit.ai/reference/provider');
+        expect(() => validateSupportReply(invented.value, invented.retrieved)).toThrow(/link|url/i);
+
+        const published = citing('http://www.copilotkit.ai/reference/provider');
+        expect(validateSupportReply(published.value, published.retrieved)).toEqual(published.value);
+    });
+
+    // Accept-direction controls for the same scan: this renderer linkifies no bare
+    // ftp:// literal, and linkifies nothing inside code, so none of these publishes
+    // a destination and none of them may be discarded as an ungrounded link.
+    it.each([
+        'Use ftp://example.invalid/pub for the archive.',
+        'Contact `help@example.invalid` for instructions.',
+        '```text\nhelp@example.invalid\n```',
+    ])('keeps prose the renderer publishes no link for %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
     });
 
     it.each([
@@ -514,7 +546,6 @@ describe('support reply contract', () => {
             'Read [Doc](<https://docs.copilotkit.ai/reference/setup\\)>).',
             'Read [Doc][setup].\n\n[setup]: https://docs.copilotkit.ai/reference/setup\\)',
             'Read <https://docs.copilotkit.ai/reference/setup)>.',
-            'Read https://docs.copilotkit.ai/reference/setup).',
         ]) {
             expect(validateSupportReply({ ...base, details }, parenthesizedSources).details).toBe(
                 details,
@@ -527,6 +558,10 @@ describe('support reply contract', () => {
             'Read [Doc](https://user:pass@docs.copilotkit.ai/reference/setup\\)).',
             'Read [Doc](https://docs.copilotkit.ai/reference/bad path\\)).',
             'Read <details>hidden</details>.',
+            // The one spelling that is not equivalent: a GFM autolink literal drops
+            // an unmatched trailing ')', so this publishes .../setup, not the
+            // retrieved .../setup) — a destination no evidence backs.
+            'Read https://docs.copilotkit.ai/reference/setup).',
         ]) {
             expect(() => validateSupportReply({ ...base, details }, parenthesizedSources)).toThrow(
                 /html|link|url/i,
@@ -624,6 +659,24 @@ describe('support reply contract', () => {
         { field: 'summary', value: '<details>Injected</details>', error: /html|summary/i },
         { field: 'details', value: '<details>Injected</details>', error: /html/i },
         { field: 'appliesTo', value: '<details>Injected</details>', error: /html/i },
+        // Every field reaches the same prose scan, and the applicability line is
+        // escaped for Markdown structure only — never for the `@` and `.` a GFM
+        // autolink literal is built from — so the scan is its only defense.
+        {
+            field: 'summary',
+            value: 'Contact help@example.invalid for instructions.',
+            error: /link|url/i,
+        },
+        {
+            field: 'details',
+            value: 'Contact help@example.invalid for instructions.',
+            error: /link|url/i,
+        },
+        {
+            field: 'appliesTo',
+            value: 'Contact help@example.invalid for instructions.',
+            error: /link|url/i,
+        },
     ] as const)('keeps public prose validation strict for $field diagnostics', (testCase) => {
         expect(() =>
             validateSupportReply(reply({ [testCase.field]: testCase.value }), sources),

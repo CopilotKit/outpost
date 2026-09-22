@@ -1,4 +1,6 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { gfm } from 'micromark-extension-gfm';
 import type { Definition, Nodes } from 'mdast';
 import { z } from 'zod';
 import type { SearchResult } from './types.js';
@@ -169,6 +171,34 @@ function collectDefinitions(node: Nodes, into: Definition[]): void {
     if ('children' in node) for (const child of node.children) collectDefinitions(child, into);
 }
 
+function collectDestinations(node: Nodes, into: string[]): void {
+    if (node.type === 'link' || node.type === 'image' || node.type === 'definition') {
+        into.push(node.url);
+    }
+    if ('children' in node) for (const child of node.children) collectDestinations(child, into);
+}
+
+/**
+ * Every destination `text` resolves to under the renderer the chat surface runs:
+ * `react-markdown` with `remark-gfm`, whose parser and GFM extension are the ones
+ * imported here at the versions the app resolves.
+ *
+ * The scans below find URLs by pattern, which answers a different question than
+ * the renderer's. GFM linkifies a bare address, a `www.` host and a `mailto:` or
+ * `xmpp:` prefix that no raw-URL pattern here matches, and it publishes a `www.`
+ * host over http:// rather than the https:// a pattern match would have to guess.
+ * Asking the grammar for the destinations instead removes the guesswork: what is
+ * checked is exactly what the reader can click, in the form they will click it.
+ */
+function publishedDestinations(text: string): string[] {
+    const destinations: string[] = [];
+    collectDestinations(
+        fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }),
+        destinations,
+    );
+    return destinations;
+}
+
 /**
  * Every link reference definition in `text`, located with the parser the chat
  * renderer itself runs on — `mdast-util-from-markdown`, which is what
@@ -285,7 +315,9 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
         // Try the full URL first, so a retrieved URL ending in ')' still works.
         while (candidate) {
             const canonical = canonicalSourceUrl(
-                candidate.startsWith('www.') ? `https://${candidate}` : candidate,
+                // GFM publishes a scheme-less `www.` host over http://, so that is
+                // the destination to compare against; https:// would be invented.
+                candidate.startsWith('www.') ? `http://${candidate}` : candidate,
             );
             if (canonical && knownUrls.has(canonical)) return;
             if (!allowProsePunctuation || !/[.,;:!?)\]}]$/.test(candidate)) break;
@@ -322,6 +354,12 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     for (const match of proseRawUrlView.matchAll(/\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi)) {
         checkUrl(match[0], true);
     }
+    // The scans above look for URLs the model wrote; this one asks the renderer's
+    // own grammar which destinations the published Markdown resolves to, and holds
+    // every one of them to the same evidence. It runs over the original text, not
+    // the masked view, because the grammar decides on its own what is code, what
+    // is a link and what is inert prose the reader can never click.
+    for (const destination of publishedDestinations(text)) checkUrl(destination);
 
     const withoutAutolinks = prose.replace(/<https?:\/\/[^\s<>]+>/gi, '');
     if (/<(?:!|\?|\/?[a-z])/i.test(withoutAutolinks)) {

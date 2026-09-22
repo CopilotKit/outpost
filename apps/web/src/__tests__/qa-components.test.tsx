@@ -205,6 +205,56 @@ describe('ChatMessage', () => {
         const strong = screen.getByText('Bold text');
         expect(strong.tagName).toBe('STRONG');
     });
+
+    // The support-reply validator in packages/outpost/ai only grounds a reply
+    // against the links this configuration actually publishes. These rows record
+    // that published set for the link spellings it reasons about, so a renderer or
+    // remark-gfm change that moves a destination fails here rather than quietly
+    // widening what an unvalidated reply can link to. Kept as literal fixtures so
+    // the web suite stays independent of the AI package's tests.
+    it.each([
+        { markdown: 'Contact help@example.invalid now.', hrefs: ['mailto:help@example.invalid'] },
+        {
+            markdown: 'Contact mailto:help@example.invalid now.',
+            hrefs: ['mailto:help@example.invalid'],
+        },
+        {
+            markdown: 'Contact xmpp:help@example.invalid now.',
+            hrefs: ['mailto:help@example.invalid'],
+        },
+        {
+            markdown: 'See www.copilotkit.ai/reference/provider for the option.',
+            hrefs: ['http://www.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: 'Read https://docs.copilotkit.ai/reference/setup).',
+            hrefs: ['https://docs.copilotkit.ai/reference/setup'],
+        },
+        {
+            markdown: 'Read <https://docs.copilotkit.ai/reference/setup)>.',
+            hrefs: ['https://docs.copilotkit.ai/reference/setup)'],
+        },
+        {
+            markdown: 'Read [Doc](https://docs.copilotkit.ai/reference/provider).',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider'],
+        },
+        {
+            markdown: 'Read [Doc][g].\n\n[g]: https://docs.copilotkit.ai/reference/provider',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider'],
+        },
+        // Inert under this configuration: no anchor is published at all.
+        { markdown: 'Use ftp://example.invalid/pub for the archive.', hrefs: [] },
+        { markdown: 'Contact `help@example.invalid` now.', hrefs: [] },
+        { markdown: '```text\nhelp@example.invalid\n```', hrefs: [] },
+    ])('publishes the recorded link destinations for $markdown', ({ markdown, hrefs }) => {
+        const { container } = render(
+            <ChatMessage message={{ id: 'link-fixture', role: 'assistant', content: markdown }} />,
+        );
+
+        expect(
+            [...container.querySelectorAll('a')].map((anchor) => anchor.getAttribute('href')),
+        ).toEqual(hrefs);
+    });
 });
 
 describe('SourcePanel', () => {
