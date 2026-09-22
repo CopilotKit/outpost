@@ -201,6 +201,74 @@ describe('support reply contract', () => {
         expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
     });
 
+    // `](` is a destination opener only where a link label closed on it. In each of
+    // these the renderer publishes no anchor at all and prints the brackets as
+    // ordinary punctuation, so reading every `](` as a destination discards a reply
+    // whose reader would only ever have seen plain text.
+    it.each([
+        'The literal punctuation ](not a link) is part of this sentence.',
+        'Compare a](b) and c](d) in one line.',
+        'Multi\nline ](not a link) prose.',
+        '> Quoted ](not a link) prose.',
+        '- Item ](not a link) prose.',
+        `See [docs](${sourceUrl}) and ](not a link) together.`,
+    ])('keeps literal bracket punctuation that opens no link %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // The inline-code scan reads the same `](` to decide where a destination runs,
+    // and a destination is not code — so a literal `](` made it skip over a code
+    // span the renderer does form, leaving the example URL inside it exposed to the
+    // raw-URL scans as though the reader could click it.
+    it.each([
+        'See ](`https://example.com/steal`) here.',
+        'Compare a](`https://example.com/steal`) and b in one line.',
+        '> Quoted ](`https://example.com/steal`) prose.',
+        '- Item ](`https://example.com/steal`) prose.',
+        `See [docs](${sourceUrl}) and ](\`https://example.com/steal\`) together.`,
+        // The same skipped span reached the raw HTML check too. The rule there is
+        // unchanged — HTML is allowed inside code — this span is now seen as the
+        // code it is rendered as.
+        'See ](`<script>alert(1)</script>`) here.',
+    ])('keeps a code span that no link label opened %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // The two spellings either side of it, which already passed: the same span with
+    // no bracket before it, and one the bracket cannot reach across a space.
+    it.each([
+        'See (`https://example.com/steal`) here.',
+        'See ] (`https://example.com/steal`) here.',
+    ])('keeps the code spans the literal bracket is neighboured by %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
+    // The same punctuation does open a link in each of these — an array subscript
+    // the renderer linkifies, an image, an image nested in a link label, and labels
+    // no single-line pattern delimits — so the destination still has to be evidence.
+    it.each([
+        'Array access arr[i](x) in pseudocode.',
+        '![diagram](https://docs.copilotkit.ai/invented.png)',
+        `[![diagram](https://cdn.example.invalid/a.png)](${sourceUrl})`,
+        '[lab [nest] el](https://docs.copilotkit.ai/invented)',
+        '[esc\\]aped](https://docs.copilotkit.ai/invented)',
+        '[multi\nline label](https://docs.copilotkit.ai/invented)',
+        `See [docs](${sourceUrl}) and [more](https://docs.copilotkit.ai/invented).`,
+    ])('still grounds a destination a real link label opened %#', (details) => {
+        expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
+    });
+
+    // Every destination the link grammar accounts for must stay masked from the raw
+    // URL scans below it, including one nested inside another link's label, or the
+    // same evidence URL is scanned again in a spelling those scans cannot accept.
+    it.each([
+        `[![diagram](${sourceUrl})](${sourceUrl})`,
+        `[docs](  ${sourceUrl}  )`,
+        `[docs](${sourceUrl} "the provider reference")`,
+    ])('masks a nested, padded or titled destination from the raw URL scans %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
     it.each([
         `[documentation](${sourceUrl}#runtime)`,
         `Read ${sourceUrl}.`,

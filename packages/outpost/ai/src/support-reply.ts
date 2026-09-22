@@ -1,7 +1,7 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
-import type { Definition, Nodes } from 'mdast';
+import type { Definition, Image, Link, Nodes } from 'mdast';
 import { z } from 'zod';
 import type { SearchResult } from './types.js';
 
@@ -258,6 +258,103 @@ function publishesRawHtml(text: string): boolean {
     return html.length > 0;
 }
 
+interface InlineDestination {
+    /** Offset of the `]` whose `](` opened the destination. */
+    openerStart: number;
+    /** Offset the destination itself begins at, any padding whitespace skipped. */
+    start: number;
+}
+
+/**
+ * Where an inline link's or image's destination sits in `text`, given the node
+ * range the parser reported. The node carries its decoded URL but not the
+ * destination's own span, and the raw-URL scans below must skip exactly the text
+ * the destination check already covered. The label ends at its own matching right
+ * bracket — labels nest and escape, which is why the bracket is counted rather
+ * than searched for — and `(` must follow it, which a reference or collapsed link
+ * has instead of a destination. Returning nothing checks and masks nothing for
+ * that node, which leaves the scans below stricter rather than looser.
+ */
+function inlineDestination(
+    text: string,
+    start: number,
+    end: number,
+): InlineDestination | undefined {
+    let cursor = text[start] === '!' ? start + 1 : start;
+    if (text[cursor] !== '[') return undefined;
+    let depth = 0;
+    for (; cursor < end; cursor++) {
+        if (text[cursor] === '\\') {
+            cursor++;
+            continue;
+        }
+        if (text[cursor] === '[') depth++;
+        else if (text[cursor] === ']' && --depth === 0) break;
+    }
+    if (text[cursor] !== ']' || text[cursor + 1] !== '(') return undefined;
+    const openerStart = cursor;
+    cursor += 2;
+    while (cursor < end && /\s/.test(text[cursor])) cursor++;
+    return { openerStart, start: cursor };
+}
+
+/** Inline links and images can sit at any depth, including inside a link label. */
+function collectInlineLinks(node: Nodes, into: (Link | Image)[]): void {
+    if (node.type === 'link' || node.type === 'image') into.push(node);
+    if ('children' in node) for (const child of node.children) collectInlineLinks(child, into);
+}
+
+/**
+ * Offsets in `text` of the destination of every link or image written in the
+ * `[label](destination)` form, found with the parser the renderer runs rather
+ * than by looking for `](`.
+ *
+ * Those two questions have different answers. `](` is a destination opener only
+ * where a link label closed on it; everywhere else the renderer prints it as
+ * punctuation and publishes nothing a reader can click. Scanning for the literal
+ * pair reads `The literal punctuation ](not a link) …` as a citation of `not` and
+ * discards the reply, while a real subscript such as `arr[i](x)` — which this
+ * renderer does publish as a link — looks like the same punctuation. Asking the
+ * grammar separates them the way the reader's browser will.
+ */
+function inlineDestinations(text: string): InlineDestination[] {
+    const nodes: (Link | Image)[] = [];
+    collectInlineLinks(
+        fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }),
+        nodes,
+    );
+    return nodes.flatMap(({ position }) => {
+        const start = position?.start.offset;
+        const end = position?.end.offset;
+        if (start === undefined || end === undefined) return [];
+        const destination = inlineDestination(text, start, end);
+        return destination === undefined ? [] : [destination];
+    });
+}
+
+/**
+ * The same answer per line and relative to the line's own start: the columns a
+ * `](` really opens a destination at. The inline-code scan below runs a line at a
+ * time, and a destination is not code — a backtick inside one is a literal the
+ * renderer prints — so that scan has to skip destinations, and it had been finding
+ * them by the same literal `](` this file no longer trusts anywhere else.
+ */
+function inlineDestinationColumns(text: string): ReadonlySet<number>[] {
+    const lineStarts: number[] = [];
+    let offset = 0;
+    for (const line of text.split('\n')) {
+        lineStarts.push(offset);
+        offset += line.length + 1;
+    }
+    const columns = lineStarts.map(() => new Set<number>());
+    for (const { openerStart } of inlineDestinations(text)) {
+        let line = lineStarts.length - 1;
+        while (line > 0 && lineStarts[line] > openerStart) line--;
+        columns[line].add(openerStart - lineStarts[line]);
+    }
+    return columns;
+}
+
 function collectDestinations(node: Nodes, into: string[]): void {
     if (node.type === 'link' || node.type === 'image' || node.type === 'definition') {
         into.push(node.url);
@@ -319,8 +416,13 @@ function referenceDefinitions(text: string): ReferenceDefinition[] {
  * Exclude same-line code spans only. Crossing a line can cross a Markdown block
  * boundary, so multiline spans remain conservatively subject to prose checks.
  * Closing runs must match the opening length; backslashes are literal in code.
+ *
+ * `destinationColumns` holds the columns a link or image destination is written
+ * at, which are skipped because a backtick inside a destination opens nothing.
+ * Everywhere else `](` is punctuation the reader sees as text, and skipping it
+ * would step over a code span the renderer does form.
  */
-function proseOutsideInlineCode(line: string): string {
+function proseOutsideInlineCode(line: string, destinationColumns: ReadonlySet<number>): string {
     let cursor = 0;
     let preserved = 0;
     let prose = '';
@@ -343,7 +445,7 @@ function proseOutsideInlineCode(line: string): string {
             cursor = end + 1;
             continue;
         }
-        if (line.startsWith('](', cursor)) {
+        if (line.startsWith('](', cursor) && destinationColumns.has(cursor)) {
             cursor += 2;
             const destination = line.slice(cursor);
             const end = inlineDestinationEnd(destination);
@@ -390,9 +492,14 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
             definitionLines.add(line);
         }
     }
+    const destinationColumns = inlineDestinationColumns(fenced);
     const prose = fenced
         .split('\n')
-        .map((line, index) => (definitionLines.has(index) ? line : proseOutsideInlineCode(line)))
+        .map((line, index) =>
+            definitionLines.has(index)
+                ? line
+                : proseOutsideInlineCode(line, destinationColumns[index]),
+        )
         .join('\n');
     const proseWithoutMarkdownDestinations = prose.split('');
     const maskMarkdownDestination = (start: number, end: number): void => {
@@ -420,9 +527,10 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     };
 
     // Validate destinations separately so relative, protocol-relative, and
-    // non-HTTP links cannot bypass the checks for raw URLs below.
-    for (const match of prose.matchAll(/\]\(\s*/g)) {
-        const destinationStart = match.index + match[0].length;
+    // non-HTTP links cannot bypass the checks for raw URLs below. Each is read
+    // as the reply spells it, not as the parser decodes it, so a destination the
+    // renderer resolves through a character reference stays subject to them too.
+    for (const { start: destinationStart } of inlineDestinations(prose)) {
         const destination = prose.slice(destinationStart);
         if (destination.startsWith('<')) {
             const end = inlineDestinationEnd(destination);

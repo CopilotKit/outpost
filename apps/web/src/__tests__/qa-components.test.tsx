@@ -242,7 +242,32 @@ describe('ChatMessage', () => {
             markdown: 'Read [Doc][g].\n\n[g]: https://docs.copilotkit.ai/reference/provider',
             hrefs: ['https://docs.copilotkit.ai/reference/provider'],
         },
+        // A bracket pair is a link only where a label closed on it. The subscript
+        // row is the one that matters: it looks like the punctuation rows above it
+        // and publishes a real anchor, so neither can be decided by the `](` alone.
+        { markdown: 'Array access arr[i](x) in pseudocode.', hrefs: ['x'] },
+        {
+            markdown: '[![alt](https://cdn.example.invalid/a.png)](https://docs.example.invalid)',
+            hrefs: ['https://docs.example.invalid'],
+        },
+        {
+            // No label opened this one, but GFM still linkifies the bare URL in it.
+            markdown: 'A stray ](https://docs.example.invalid) after nothing.',
+            hrefs: ['https://docs.example.invalid'],
+        },
+        // A backtick run is a code span everywhere except inside a destination, so
+        // this one is not code: an anchor is published, and the href it carries is
+        // whatever the destination spells.
+        { markdown: '[guide](`https://example.invalid/steal`)', hrefs: [''] },
         // Inert under this configuration: no anchor is published at all.
+        {
+            markdown: 'The literal punctuation ](not a link) is part of this sentence.',
+            hrefs: [],
+        },
+        { markdown: 'Compare a](b) and c](d) in one line.', hrefs: [] },
+        // The same backtick run as the `[guide]` row, with no label to open the
+        // bracket, so it stays code and the address in it is text, not a link.
+        { markdown: 'See ](`https://example.invalid/steal`) here.', hrefs: [] },
         { markdown: 'Use ftp://example.invalid/pub for the archive.', hrefs: [] },
         { markdown: 'Contact `help@example.invalid` now.', hrefs: [] },
         { markdown: '```text\nhelp@example.invalid\n```', hrefs: [] },
