@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, requireAdmin } from '@/lib/require-admin';
 import { prisma } from '@copilotkit/outpost/db';
 import type { Prisma } from '@copilotkit/outpost/db';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@copilotkit/outpost/shared';
 
 /**
  * GET /api/docs/articles
  *
- * List articles with optional filters.
- * Query params: category, status, search
+ * List articles with optional filters and pagination.
+ * Query params: category, status, search, page, pageSize
  */
 export async function GET(request: NextRequest) {
     const { error } = await requireSession();
@@ -17,6 +18,15 @@ export async function GET(request: NextRequest) {
     const categoryId = searchParams.get('category');
     const status = searchParams.get('status')?.toUpperCase() as 'DRAFT' | 'PUBLISHED' | null;
     const search = searchParams.get('search');
+
+    const rawPage = Number.parseInt(searchParams.get('page') ?? '', 10);
+    const rawPageSize = Number.parseInt(searchParams.get('pageSize') ?? '', 10);
+    const MAX_PAGE = 10000;
+    const page =
+        Number.isSafeInteger(rawPage) && rawPage >= 1 && rawPage <= MAX_PAGE ? rawPage : 1;
+    const pageSize = Number.isFinite(rawPageSize)
+        ? Math.min(MAX_PAGE_SIZE, Math.max(1, rawPageSize))
+        : DEFAULT_PAGE_SIZE;
 
     const where: Prisma.DocArticleWhereInput = {};
 
@@ -35,13 +45,18 @@ export async function GET(request: NextRequest) {
         ];
     }
 
-    const articles = await prisma.docArticle.findMany({
-        where,
-        include: { category: true },
-        orderBy: { updatedAt: 'desc' },
-    });
+    const [articles, total] = await Promise.all([
+        prisma.docArticle.findMany({
+            where,
+            include: { category: true },
+            orderBy: { updatedAt: 'desc' },
+            take: pageSize,
+            skip: (page - 1) * pageSize,
+        }),
+        prisma.docArticle.count({ where }),
+    ]);
 
-    return NextResponse.json({ articles, total: articles.length });
+    return NextResponse.json({ articles, total, page, pageSize });
 }
 
 /**

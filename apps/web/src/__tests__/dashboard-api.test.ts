@@ -244,6 +244,31 @@ describe('Dashboard API', () => {
             expect(countArgs?.where?.createdAt?.lte).toEqual(new Date(2026, 5, 30, 23, 59, 59, 999));
         });
 
+        it('scopes the first-response and resolution scans to the selected month', async () => {
+            mockTicketFindFirst.mockResolvedValue({ createdAt: new Date(2026, 5, 4) });
+            mockTicketCount
+                .mockResolvedValueOnce(4)
+                .mockResolvedValueOnce(1)
+                .mockResolvedValueOnce(0);
+            mockTicketFindMany
+                .mockResolvedValueOnce([])
+                .mockResolvedValueOnce([])
+                .mockResolvedValueOnce([]);
+
+            const res = await statsGet(statsRequest('2026-06'));
+            expect(res.status).toBe(200);
+
+            // findMany calls: [ticketsWithFirstResponse, resolvedTickets, monthlyTickets]
+            expect(mockTicketFindMany).toHaveBeenCalledTimes(3);
+            for (const index of [0, 1]) {
+                const args = mockTicketFindMany.mock.calls[index][0] as {
+                    where?: { createdAt?: { gte: Date; lte: Date } };
+                };
+                expect(args?.where?.createdAt?.gte).toEqual(new Date(2026, 5, 1, 0, 0, 0, 0));
+                expect(args?.where?.createdAt?.lte).toEqual(new Date(2026, 5, 30, 23, 59, 59, 999));
+            }
+        });
+
         it('falls back to the newest month with tickets for a malformed month param', async () => {
             // Both findFirst calls (oldest, newest) resolve to January 2026, so
             // the newest month with data IS January — not the calendar month.

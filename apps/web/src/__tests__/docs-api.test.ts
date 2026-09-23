@@ -6,6 +6,7 @@ const mockDocArticleFindMany = vi.fn();
 const mockDocArticleFindUnique = vi.fn();
 const mockDocArticleCreate = vi.fn();
 const mockDocArticleUpdate = vi.fn();
+const mockDocArticleCount = vi.fn();
 const mockDocCategoryFindMany = vi.fn();
 const mockDocCategoryFindUnique = vi.fn();
 const mockDocCategoryFindFirst = vi.fn();
@@ -17,6 +18,7 @@ vi.mock('@copilotkit/outpost/db', () => ({
             findUnique: (...args: unknown[]) => mockDocArticleFindUnique(...args),
             create: (...args: unknown[]) => mockDocArticleCreate(...args),
             update: (...args: unknown[]) => mockDocArticleUpdate(...args),
+            count: (...args: unknown[]) => mockDocArticleCount(...args),
         },
         docCategory: {
             findMany: (...args: unknown[]) => mockDocCategoryFindMany(...args),
@@ -111,6 +113,7 @@ describe('GET /api/docs/articles', () => {
 
     it('returns all articles', async () => {
         mockDocArticleFindMany.mockResolvedValue([MOCK_ARTICLE]);
+        mockDocArticleCount.mockResolvedValue(1);
 
         const req = makeGetRequest('http://localhost:3000/api/docs/articles');
         const res = await getArticles(req as never);
@@ -118,10 +121,13 @@ describe('GET /api/docs/articles', () => {
 
         expect(body.articles).toHaveLength(1);
         expect(body.total).toBe(1);
+        expect(body.page).toBe(1);
+        expect(body.pageSize).toBe(25);
     });
 
     it('returns empty when no articles exist', async () => {
         mockDocArticleFindMany.mockResolvedValue([]);
+        mockDocArticleCount.mockResolvedValue(0);
 
         const req = makeGetRequest('http://localhost:3000/api/docs/articles');
         const res = await getArticles(req as never);
@@ -132,6 +138,7 @@ describe('GET /api/docs/articles', () => {
 
     it('filters by search', async () => {
         mockDocArticleFindMany.mockResolvedValue([]);
+        mockDocArticleCount.mockResolvedValue(0);
 
         const req = makeGetRequest('http://localhost:3000/api/docs/articles?search=quick');
         await getArticles(req as never);
@@ -145,6 +152,36 @@ describe('GET /api/docs/articles', () => {
                 }),
             }),
         );
+    });
+
+    it('paginates with take/skip and reports the total from count', async () => {
+        mockDocArticleFindMany.mockResolvedValue([MOCK_ARTICLE]);
+        mockDocArticleCount.mockResolvedValue(57);
+
+        const req = makeGetRequest('http://localhost:3000/api/docs/articles?page=2&pageSize=10');
+        const res = await getArticles(req as never);
+        const body = await res.json();
+
+        expect(mockDocArticleFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({ take: 10, skip: 10 }),
+        );
+        expect(body.total).toBe(57);
+        expect(body.page).toBe(2);
+        expect(body.pageSize).toBe(10);
+    });
+
+    it('clamps pageSize to 100', async () => {
+        mockDocArticleFindMany.mockResolvedValue([]);
+        mockDocArticleCount.mockResolvedValue(0);
+
+        const req = makeGetRequest('http://localhost:3000/api/docs/articles?pageSize=9999');
+        const res = await getArticles(req as never);
+        const body = await res.json();
+
+        expect(mockDocArticleFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({ take: 100 }),
+        );
+        expect(body.pageSize).toBe(100);
     });
 });
 

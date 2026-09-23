@@ -2,14 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, requireAdmin } from '@/lib/require-admin';
 import { prisma } from '@copilotkit/outpost/db';
 import type { Prisma, BroadcastStatus } from '@copilotkit/outpost/db';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@copilotkit/outpost/shared';
 
 const MAX_BROADCAST_LENGTH = 500;
 
 /**
  * GET /api/broadcasts
  *
- * List broadcasts with optional status filter.
- * Query params: status (DRAFT | SENT)
+ * List broadcasts with optional status filter and pagination.
+ * Query params: status (DRAFT | SENT), page, pageSize
  */
 export async function GET(request: NextRequest) {
     const { error } = await requireSession();
@@ -18,17 +19,31 @@ export async function GET(request: NextRequest) {
     const { searchParams } = request.nextUrl;
     const status = searchParams.get('status')?.toUpperCase() as BroadcastStatus | null;
 
+    const rawPage = Number.parseInt(searchParams.get('page') ?? '', 10);
+    const rawPageSize = Number.parseInt(searchParams.get('pageSize') ?? '', 10);
+    const MAX_PAGE = 10000;
+    const page =
+        Number.isSafeInteger(rawPage) && rawPage >= 1 && rawPage <= MAX_PAGE ? rawPage : 1;
+    const pageSize = Number.isFinite(rawPageSize)
+        ? Math.min(MAX_PAGE_SIZE, Math.max(1, rawPageSize))
+        : DEFAULT_PAGE_SIZE;
+
     const where: Prisma.BroadcastWhereInput = {};
     if (status && (status === 'DRAFT' || status === 'SENT')) {
         where.status = status;
     }
 
-    const broadcasts = await prisma.broadcast.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-    });
+    const [broadcasts, total] = await Promise.all([
+        prisma.broadcast.findMany({
+            where,
+            orderBy: { createdAt: 'desc' },
+            take: pageSize,
+            skip: (page - 1) * pageSize,
+        }),
+        prisma.broadcast.count({ where }),
+    ]);
 
-    return NextResponse.json({ broadcasts, total: broadcasts.length });
+    return NextResponse.json({ broadcasts, total, page, pageSize });
 }
 
 /**

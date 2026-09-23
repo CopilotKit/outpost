@@ -6,6 +6,7 @@ const mockBroadcastFindMany = vi.fn();
 const mockBroadcastFindUnique = vi.fn();
 const mockBroadcastCreate = vi.fn();
 const mockBroadcastUpdate = vi.fn();
+const mockBroadcastCount = vi.fn();
 
 vi.mock('@copilotkit/outpost/db', () => ({
     prisma: {
@@ -14,6 +15,7 @@ vi.mock('@copilotkit/outpost/db', () => ({
             findUnique: (...args: unknown[]) => mockBroadcastFindUnique(...args),
             create: (...args: unknown[]) => mockBroadcastCreate(...args),
             update: (...args: unknown[]) => mockBroadcastUpdate(...args),
+            count: (...args: unknown[]) => mockBroadcastCount(...args),
         },
     },
 }));
@@ -93,6 +95,7 @@ describe('GET /api/broadcasts', () => {
 
     it('returns all broadcasts', async () => {
         mockBroadcastFindMany.mockResolvedValue([MOCK_BROADCAST]);
+        mockBroadcastCount.mockResolvedValue(1);
 
         const req = makeGetRequest('http://localhost:3000/api/broadcasts');
         const res = await GET(req as never);
@@ -100,10 +103,13 @@ describe('GET /api/broadcasts', () => {
 
         expect(body.broadcasts).toHaveLength(1);
         expect(body.total).toBe(1);
+        expect(body.page).toBe(1);
+        expect(body.pageSize).toBe(25);
     });
 
     it('returns empty array when no broadcasts exist', async () => {
         mockBroadcastFindMany.mockResolvedValue([]);
+        mockBroadcastCount.mockResolvedValue(0);
 
         const req = makeGetRequest('http://localhost:3000/api/broadcasts');
         const res = await GET(req as never);
@@ -114,6 +120,7 @@ describe('GET /api/broadcasts', () => {
 
     it('filters by status', async () => {
         mockBroadcastFindMany.mockResolvedValue([]);
+        mockBroadcastCount.mockResolvedValue(0);
 
         const req = makeGetRequest('http://localhost:3000/api/broadcasts?status=DRAFT');
         await GET(req as never);
@@ -123,6 +130,36 @@ describe('GET /api/broadcasts', () => {
                 where: expect.objectContaining({ status: 'DRAFT' }),
             }),
         );
+    });
+
+    it('paginates with take/skip and reports the total from count', async () => {
+        mockBroadcastFindMany.mockResolvedValue([MOCK_BROADCAST]);
+        mockBroadcastCount.mockResolvedValue(42);
+
+        const req = makeGetRequest('http://localhost:3000/api/broadcasts?page=3&pageSize=10');
+        const res = await GET(req as never);
+        const body = await res.json();
+
+        expect(mockBroadcastFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({ take: 10, skip: 20 }),
+        );
+        expect(body.total).toBe(42);
+        expect(body.page).toBe(3);
+        expect(body.pageSize).toBe(10);
+    });
+
+    it('clamps pageSize to 100', async () => {
+        mockBroadcastFindMany.mockResolvedValue([]);
+        mockBroadcastCount.mockResolvedValue(0);
+
+        const req = makeGetRequest('http://localhost:3000/api/broadcasts?pageSize=9999');
+        const res = await GET(req as never);
+        const body = await res.json();
+
+        expect(mockBroadcastFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({ take: 100 }),
+        );
+        expect(body.pageSize).toBe(100);
     });
 });
 

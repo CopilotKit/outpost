@@ -24,6 +24,7 @@ interface CategoryPageProps {
 export default function CategoryPage({ params }: CategoryPageProps) {
     const { category: categoryId } = use(params);
     const [articles, setArticles] = useState<DocArticle[]>([]);
+    const [total, setTotal] = useState<number | null>(null);
     const [categoryName, setCategoryName] = useState<string | null>(null);
     const [categoryDescription, setCategoryDescription] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
@@ -33,13 +34,14 @@ export default function CategoryPage({ params }: CategoryPageProps) {
         async function fetchData() {
             try {
                 // Fetch articles for this category
-                const artRes = await fetch(`/api/docs/articles?category=${categoryId}`);
+                const artRes = await fetch(`/api/docs/articles?category=${categoryId}&pageSize=100`);
                 if (!artRes.ok) {
                     setNotFound(true);
                     return;
                 }
                 const artData = await artRes.json();
                 setArticles(artData.articles);
+                setTotal(typeof artData.total === 'number' ? artData.total : null);
 
                 // Extract category info from articles if available
                 if (artData.articles.length > 0 && artData.articles[0].category) {
@@ -95,6 +97,11 @@ export default function CategoryPage({ params }: CategoryPageProps) {
             />
 
             <ArticleList articles={articles} categoryId={categoryId} />
+            {total !== null && total > articles.length && (
+                <p className="mt-4 text-sm text-muted-foreground">
+                    Showing {articles.length} of {total} articles.
+                </p>
+            )}
         </div>
     );
 }
