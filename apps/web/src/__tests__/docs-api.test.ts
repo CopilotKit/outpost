@@ -24,6 +24,44 @@ vi.mock('@copilotkit/outpost/db', () => ({
             findFirst: (...args: unknown[]) => mockDocCategoryFindFirst(...args),
         },
     },
+    TicketStatus: {
+        OPEN: 'OPEN',
+        IN_PROGRESS: 'IN_PROGRESS',
+        WAITING_ON_CUSTOMER: 'WAITING_ON_CUSTOMER',
+        WAITING_ON_TEAM: 'WAITING_ON_TEAM',
+        RESOLVED: 'RESOLVED',
+        CLOSED: 'CLOSED',
+    },
+    TicketPriority: { CRITICAL: 'CRITICAL', HIGH: 'HIGH', MEDIUM: 'MEDIUM', LOW: 'LOW' },
+    TicketType: {
+        BUG: 'BUG',
+        FEATURE_REQUEST: 'FEATURE_REQUEST',
+        QUESTION: 'QUESTION',
+        INTEGRATION_HELP: 'INTEGRATION_HELP',
+        ACCOUNT_ISSUE: 'ACCOUNT_ISSUE',
+        OTHER: 'OTHER',
+    },
+    TicketSource: {
+        DISCORD: 'DISCORD',
+        SLACK: 'SLACK',
+        GITHUB_ISSUE: 'GITHUB_ISSUE',
+        GITHUB_DISCUSSION: 'GITHUB_DISCUSSION',
+        WEB: 'WEB',
+        EMAIL: 'EMAIL',
+        LINEAR: 'LINEAR',
+        MANUAL: 'MANUAL',
+        ORCA: 'ORCA',
+        TEAMS: 'TEAMS',
+    },
+    BroadcastAudience: {
+        ALL_ACCOUNTS: 'ALL_ACCOUNTS',
+        SELECTED_ACCOUNTS: 'SELECTED_ACCOUNTS',
+        BY_SENTIMENT: 'BY_SENTIMENT',
+    },
+    BroadcastStatus: {
+        DRAFT: 'DRAFT',
+        SENT: 'SENT',
+    },
 }));
 
 // ─── Mock next-auth ─────────────────────────────────────────────────────────
@@ -140,7 +178,9 @@ describe('GET /api/docs/articles', () => {
             expect.objectContaining({
                 where: expect.objectContaining({
                     OR: expect.arrayContaining([
-                        expect.objectContaining({ title: expect.objectContaining({ contains: 'quick' }) }),
+                        expect.objectContaining({
+                            title: expect.objectContaining({ contains: 'quick' }),
+                        }),
                     ]),
                 }),
             }),
@@ -202,7 +242,9 @@ describe('GET /api/docs/articles/[id]', () => {
         mockDocArticleFindUnique.mockResolvedValue(MOCK_ARTICLE);
 
         const req = makeGetRequest('http://localhost:3000/api/docs/articles/art-1');
-        const res = await getArticleById(req as never, { params: Promise.resolve({ id: 'art-1' }) });
+        const res = await getArticleById(req as never, {
+            params: Promise.resolve({ id: 'art-1' }),
+        });
         const body = await res.json();
 
         expect(body.title).toBe('Quick Start Guide');
@@ -228,7 +270,11 @@ describe('PATCH /api/docs/articles/[id]', () => {
         mockDocArticleFindUnique.mockResolvedValue(MOCK_ARTICLE);
         mockDocArticleUpdate.mockResolvedValue({ ...MOCK_ARTICLE, title: 'Updated Title' });
 
-        const req = makeJsonRequest('http://localhost:3000/api/docs/articles/art-1', { title: 'Updated Title' }, 'PATCH');
+        const req = makeJsonRequest(
+            'http://localhost:3000/api/docs/articles/art-1',
+            { title: 'Updated Title' },
+            'PATCH',
+        );
         const res = await patchArticle(req as never, { params: Promise.resolve({ id: 'art-1' }) });
         const body = await res.json();
 
@@ -238,7 +284,11 @@ describe('PATCH /api/docs/articles/[id]', () => {
     it('returns 404 for non-existent article', async () => {
         mockDocArticleFindUnique.mockResolvedValue(null);
 
-        const req = makeJsonRequest('http://localhost:3000/api/docs/articles/nope', { title: 'Test' }, 'PATCH');
+        const req = makeJsonRequest(
+            'http://localhost:3000/api/docs/articles/nope',
+            { title: 'Test' },
+            'PATCH',
+        );
         const res = await patchArticle(req as never, { params: Promise.resolve({ id: 'nope' }) });
 
         expect(res.status).toBe(404);

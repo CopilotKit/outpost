@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, requireAdmin } from '@/lib/require-admin';
 import { prisma } from '@copilotkit/outpost/db';
 import type { Prisma } from '@copilotkit/outpost/db';
+import { articleCreateSchema, formatZodError, sanitizeSearch } from '@/lib/validate';
 
 /**
  * GET /api/docs/articles
@@ -16,7 +17,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = request.nextUrl;
     const categoryId = searchParams.get('category');
     const status = searchParams.get('status')?.toUpperCase() as 'DRAFT' | 'PUBLISHED' | null;
-    const search = searchParams.get('search');
+    const search = sanitizeSearch(searchParams.get('search'));
 
     const where: Prisma.DocArticleWhereInput = {};
 
@@ -56,41 +57,57 @@ export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
 
-        if (!body.title || !body.categoryId || !body.content) {
-            return NextResponse.json(
-                { error: 'title, categoryId, and content are required' },
-                { status: 400 },
+        const parsed = articleCreateSchema.safeParse(body);
+        if (!parsed.success) {
+            // body may be null (valid JSON); derive the legacy message from
+            // the Zod issues instead of reading body.title first.
+            const missingRequired = parsed.error.issues.some(
+                (i) =>
+                    (i.path[0] === 'title' ||
+                        i.path[0] === 'categoryId' ||
+                        i.path[0] === 'content') &&
+                    (i.code === 'invalid_type' || i.code === 'too_small'),
             );
+            if (missingRequired) {
+                const hasAllFields =
+                    body !== null &&
+                    typeof body === 'object' &&
+                    (body as Record<string, unknown>).title !== undefined &&
+                    (body as Record<string, unknown>).categoryId !== undefined &&
+                    (body as Record<string, unknown>).content !== undefined;
+                if (!hasAllFields) {
+                    return NextResponse.json(
+                        { error: 'title, categoryId, and content are required' },
+                        { status: 400 },
+                    );
+                }
+            }
+            return NextResponse.json({ error: formatZodError(parsed.error) }, { status: 400 });
         }
+        const input = parsed.data;
 
         // Verify the category exists
         const category = await prisma.docCategory.findUnique({
-            where: { id: body.categoryId },
+            where: { id: input.categoryId },
         });
 
         if (!category) {
-            return NextResponse.json(
-                { error: 'Category not found' },
-                { status: 404 },
-            );
+            return NextResponse.json({ error: 'Category not found' }, { status: 404 });
         }
 
         const newArticle = await prisma.docArticle.create({
             data: {
-                title: body.title,
-                content: body.content,
+                title: input.title,
+                content: input.content,
                 status: 'DRAFT',
-                sourceUrl: body.sourceUrl || null,
-                categoryId: body.categoryId,
+                sourceUrl: input.sourceUrl || null,
+                categoryId: input.categoryId,
             },
             include: { category: true },
         });
 
         return NextResponse.json(newArticle, { status: 201 });
     } catch {
-        return NextResponse.json(
-            { error: 'Invalid request body' },
-            { status: 400 },
-        );
+        return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
 }

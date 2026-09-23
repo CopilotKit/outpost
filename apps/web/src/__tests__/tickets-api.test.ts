@@ -66,6 +66,15 @@ vi.mock('@copilotkit/outpost/db', () => ({
         BOT: 'BOT',
         SYSTEM: 'SYSTEM',
     },
+    BroadcastAudience: {
+        ALL_ACCOUNTS: 'ALL_ACCOUNTS',
+        SELECTED_ACCOUNTS: 'SELECTED_ACCOUNTS',
+        BY_SENTIMENT: 'BY_SENTIMENT',
+    },
+    BroadcastStatus: {
+        DRAFT: 'DRAFT',
+        SENT: 'SENT',
+    },
     Prisma: {},
 }));
 
@@ -102,7 +111,10 @@ import { GET as messagesGet, POST as messagesPost } from '@/app/api/tickets/[id]
 function makeNextRequest(url: string, options?: Record<string, unknown>): NextRequest {
     // Cast through unknown to bridge standard RequestInit and Next.js's narrower RequestInit
     // (Next.js omits `null` from signal's union type)
-    return new NextRequest(new URL(url, 'http://localhost:3000'), options as unknown as ConstructorParameters<typeof NextRequest>[1]);
+    return new NextRequest(
+        new URL(url, 'http://localhost:3000'),
+        options as unknown as ConstructorParameters<typeof NextRequest>[1],
+    );
 }
 
 function jsonNextRequest(url: string, body: unknown, method = 'POST'): NextRequest {
@@ -178,9 +190,7 @@ describe('Tickets API', () => {
             mockTicketFindMany.mockResolvedValue([sampleTicket]);
             mockTicketCount.mockResolvedValue(1);
 
-            const res = await ticketsListGet(
-                makeNextRequest('http://localhost:3000/api/tickets'),
-            );
+            const res = await ticketsListGet(makeNextRequest('http://localhost:3000/api/tickets'));
 
             expect(res.status).toBe(200);
             const body = await res.json();
@@ -228,15 +238,15 @@ describe('Tickets API', () => {
             mockTicketFindMany.mockResolvedValue([]);
             mockTicketCount.mockResolvedValue(0);
 
-            await ticketsListGet(
-                makeNextRequest('http://localhost:3000/api/tickets?search=crash'),
-            );
+            await ticketsListGet(makeNextRequest('http://localhost:3000/api/tickets?search=crash'));
 
             expect(mockTicketFindMany).toHaveBeenCalledWith(
                 expect.objectContaining({
                     where: expect.objectContaining({
                         OR: expect.arrayContaining([
-                            expect.objectContaining({ title: { contains: 'crash', mode: 'insensitive' } }),
+                            expect.objectContaining({
+                                title: { contains: 'crash', mode: 'insensitive' },
+                            }),
                         ]),
                     }),
                 }),
@@ -263,9 +273,7 @@ describe('Tickets API', () => {
             mockTicketFindMany.mockResolvedValue([]);
             mockTicketCount.mockResolvedValue(0);
 
-            await ticketsListGet(
-                makeNextRequest('http://localhost:3000/api/tickets?pageSize=500'),
-            );
+            await ticketsListGet(makeNextRequest('http://localhost:3000/api/tickets?pageSize=500'));
 
             expect(mockTicketFindMany).toHaveBeenCalledWith(
                 expect.objectContaining({
@@ -278,9 +286,7 @@ describe('Tickets API', () => {
             mockTicketFindMany.mockRejectedValue(new Error('DB connection failed'));
             mockTicketCount.mockRejectedValue(new Error('DB connection failed'));
 
-            const res = await ticketsListGet(
-                makeNextRequest('http://localhost:3000/api/tickets'),
-            );
+            const res = await ticketsListGet(makeNextRequest('http://localhost:3000/api/tickets'));
 
             expect(res.status).toBe(500);
             const body = await res.json();
@@ -421,10 +427,9 @@ describe('Tickets API', () => {
         it('searches by displayId as well', async () => {
             mockTicketFindFirst.mockResolvedValue(sampleTicket);
 
-            await ticketGet(
-                makeNextRequest('http://localhost:3000/api/tickets/TKT-TESTID01'),
-                { params: Promise.resolve({ id: 'TKT-TESTID01' }) },
-            );
+            await ticketGet(makeNextRequest('http://localhost:3000/api/tickets/TKT-TESTID01'), {
+                params: Promise.resolve({ id: 'TKT-TESTID01' }),
+            });
 
             expect(mockTicketFindFirst).toHaveBeenCalledWith(
                 expect.objectContaining({

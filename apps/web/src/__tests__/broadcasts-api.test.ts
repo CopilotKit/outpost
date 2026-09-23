@@ -16,6 +16,44 @@ vi.mock('@copilotkit/outpost/db', () => ({
             update: (...args: unknown[]) => mockBroadcastUpdate(...args),
         },
     },
+    BroadcastAudience: {
+        ALL_ACCOUNTS: 'ALL_ACCOUNTS',
+        SELECTED_ACCOUNTS: 'SELECTED_ACCOUNTS',
+        BY_SENTIMENT: 'BY_SENTIMENT',
+    },
+    BroadcastStatus: {
+        DRAFT: 'DRAFT',
+        SENT: 'SENT',
+    },
+    TicketStatus: {
+        OPEN: 'OPEN',
+        IN_PROGRESS: 'IN_PROGRESS',
+        WAITING_ON_CUSTOMER: 'WAITING_ON_CUSTOMER',
+        WAITING_ON_TEAM: 'WAITING_ON_TEAM',
+        RESOLVED: 'RESOLVED',
+        CLOSED: 'CLOSED',
+    },
+    TicketPriority: { CRITICAL: 'CRITICAL', HIGH: 'HIGH', MEDIUM: 'MEDIUM', LOW: 'LOW' },
+    TicketType: {
+        BUG: 'BUG',
+        FEATURE_REQUEST: 'FEATURE_REQUEST',
+        QUESTION: 'QUESTION',
+        INTEGRATION_HELP: 'INTEGRATION_HELP',
+        ACCOUNT_ISSUE: 'ACCOUNT_ISSUE',
+        OTHER: 'OTHER',
+    },
+    TicketSource: {
+        DISCORD: 'DISCORD',
+        SLACK: 'SLACK',
+        GITHUB_ISSUE: 'GITHUB_ISSUE',
+        GITHUB_DISCUSSION: 'GITHUB_DISCUSSION',
+        WEB: 'WEB',
+        EMAIL: 'EMAIL',
+        LINEAR: 'LINEAR',
+        MANUAL: 'MANUAL',
+        ORCA: 'ORCA',
+        TEAMS: 'TEAMS',
+    },
 }));
 
 // ─── Mock next-auth ─────────────────────────────────────────────────────────
@@ -197,7 +235,11 @@ describe('PATCH /api/broadcasts/[id]', () => {
         mockBroadcastFindUnique.mockResolvedValue(MOCK_BROADCAST);
         mockBroadcastUpdate.mockResolvedValue({ ...MOCK_BROADCAST, message: 'Updated' });
 
-        const req = makeJsonRequest('http://localhost:3000/api/broadcasts/bc-1', { message: 'Updated' }, 'PATCH');
+        const req = makeJsonRequest(
+            'http://localhost:3000/api/broadcasts/bc-1',
+            { message: 'Updated' },
+            'PATCH',
+        );
         const res = await PATCH(req as never, { params: Promise.resolve({ id: 'bc-1' }) });
         const body = await res.json();
 
@@ -207,7 +249,11 @@ describe('PATCH /api/broadcasts/[id]', () => {
     it('rejects updating a sent broadcast', async () => {
         mockBroadcastFindUnique.mockResolvedValue({ ...MOCK_BROADCAST, status: 'SENT' });
 
-        const req = makeJsonRequest('http://localhost:3000/api/broadcasts/bc-1', { message: 'Updated' }, 'PATCH');
+        const req = makeJsonRequest(
+            'http://localhost:3000/api/broadcasts/bc-1',
+            { message: 'Updated' },
+            'PATCH',
+        );
         const res = await PATCH(req as never, { params: Promise.resolve({ id: 'bc-1' }) });
 
         expect(res.status).toBe(400);
@@ -216,7 +262,11 @@ describe('PATCH /api/broadcasts/[id]', () => {
     it('returns 404 for non-existent broadcast', async () => {
         mockBroadcastFindUnique.mockResolvedValue(null);
 
-        const req = makeJsonRequest('http://localhost:3000/api/broadcasts/nope', { message: 'Updated' }, 'PATCH');
+        const req = makeJsonRequest(
+            'http://localhost:3000/api/broadcasts/nope',
+            { message: 'Updated' },
+            'PATCH',
+        );
         const res = await PATCH(req as never, { params: Promise.resolve({ id: 'nope' }) });
 
         expect(res.status).toBe(404);
@@ -225,7 +275,11 @@ describe('PATCH /api/broadcasts/[id]', () => {
     it('rejects empty message', async () => {
         mockBroadcastFindUnique.mockResolvedValue(MOCK_BROADCAST);
 
-        const req = makeJsonRequest('http://localhost:3000/api/broadcasts/bc-1', { message: '' }, 'PATCH');
+        const req = makeJsonRequest(
+            'http://localhost:3000/api/broadcasts/bc-1',
+            { message: '' },
+            'PATCH',
+        );
         const res = await PATCH(req as never, { params: Promise.resolve({ id: 'bc-1' }) });
 
         expect(res.status).toBe(400);
