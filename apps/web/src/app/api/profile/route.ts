@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@copilotkit/outpost/db';
-import { hashPassword, verifyPassword } from '@copilotkit/outpost/shared';
+import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH, MAX_PASSWORD_BYTES, passwordByteLength } from '@copilotkit/outpost/shared';
 
 export async function GET() {
     const session = await getServerSession(authOptions);
@@ -61,8 +61,12 @@ export async function PUT(request: Request) {
         }
         if (!newPassword || typeof newPassword !== 'string') {
             errors.push('New password is required.');
-        } else if (newPassword.length < 8) {
-            errors.push('New password must be at least 8 characters.');
+        } else if (newPassword.length < MIN_PASSWORD_LENGTH) {
+            errors.push(`New password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+        } else if (passwordByteLength(newPassword) > MAX_PASSWORD_BYTES) {
+            errors.push(
+                `New password must be at most ${MAX_PASSWORD_BYTES} bytes; bcrypt ignores anything beyond that.`,
+            );
         }
         if (newPassword !== confirmNewPassword) {
             errors.push('New passwords do not match.');

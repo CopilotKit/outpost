@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@copilotkit/outpost/db';
-import { hashPassword } from '@copilotkit/outpost/shared';
+import { hashPassword, validatePassword } from '@copilotkit/outpost/shared';
 
 export async function GET(request: Request) {
     const url = new URL(request.url);
@@ -53,8 +53,9 @@ export async function POST(request: Request) {
 
     if (!password || typeof password !== 'string') {
         errors.push('Password is required.');
-    } else if (password.length < 8) {
-        errors.push('Password must be at least 8 characters.');
+    } else {
+        const policyError = validatePassword(password);
+        if (policyError) errors.push(policyError);
     }
 
     if (password !== confirmPassword) {

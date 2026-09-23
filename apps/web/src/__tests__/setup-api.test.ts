@@ -18,6 +18,15 @@ vi.mock('@copilotkit/outpost/db', () => ({
 
 vi.mock('@copilotkit/outpost/shared', () => ({
     hashPassword: vi.fn().mockResolvedValue('hashed-password-123'),
+    // Faithful mirror of the real policy (min 8 chars, max 72 UTF-8 bytes).
+    validatePassword: (pw: unknown) => {
+        if (typeof pw !== 'string' || pw.length === 0) return 'Password is required.';
+        if (pw.length < 8) return 'Password must be at least 8 characters.';
+        if (new TextEncoder().encode(pw).length > 72) {
+            return 'Password must be at most 72 bytes; bcrypt ignores anything beyond that.';
+        }
+        return null;
+    },
 }));
 
 // Import after mocks
@@ -161,6 +170,28 @@ describe('POST /api/setup', () => {
         expect(body.errors).toEqual(
             expect.arrayContaining([
                 expect.stringContaining('8 characters'),
+            ]),
+        );
+    });
+
+    it('rejects passwords longer than bcrypts 72-byte limit', async () => {
+        mockCount.mockResolvedValue(0);
+
+        const longPassword = 'a'.repeat(73);
+        const res = await POST(makeRequest({
+            orgName: 'Acme',
+            orgEmail: 'support@acme.com',
+            name: 'Test',
+            email: 'test@example.com',
+            password: longPassword,
+            confirmPassword: longPassword,
+        }));
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.errors).toEqual(
+            expect.arrayContaining([
+                expect.stringContaining('at most 72 bytes'),
             ]),
         );
     });

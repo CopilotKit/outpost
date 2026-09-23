@@ -4,6 +4,13 @@ import { prisma } from '@copilotkit/outpost/db';
 import { requireAdmin } from '@/lib/require-admin';
 import { sendEmail } from '@copilotkit/outpost/shared/server';
 
+/**
+ * Minimum time between two invite (re)sends to the same member.
+ * Without this, a compromised admin session (or a retry loop) can emit an
+ * unbounded stream of invite emails.
+ */
+const INVITE_RESEND_COOLDOWN_MS = 60_000;
+
 export async function POST(request: Request) {
     const { error } = await requireAdmin();
     if (error) return error;
@@ -28,6 +35,24 @@ export async function POST(request: Request) {
 
         if (!member || member.status !== 'INVITED') {
             return NextResponse.json({ error: 'No pending invitation found for this member' }, { status: 404 });
+        }
+
+        // Throttle resends per member: the latest token's creation time is
+        // the last (re)send. InviteToken.memberId is unique, so at most one
+        // row exists per member.
+        const latestToken = await prisma.inviteToken.findUnique({
+            where: { memberId },
+            select: { createdAt: true },
+        });
+        if (latestToken) {
+            const elapsedMs = Date.now() - latestToken.createdAt.getTime();
+            if (elapsedMs < INVITE_RESEND_COOLDOWN_MS) {
+                const retryAfterSec = Math.ceil((INVITE_RESEND_COOLDOWN_MS - elapsedMs) / 1000);
+                return NextResponse.json(
+                    { error: `Invite was sent recently. Try again in ${retryAfterSec} seconds.` },
+                    { status: 429, headers: { 'Retry-After': String(retryAfterSec) } },
+                );
+            }
         }
 
         const token = randomBytes(32).toString('hex');
