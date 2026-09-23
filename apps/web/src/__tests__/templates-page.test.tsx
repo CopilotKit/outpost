@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import TemplatesPage from '@/app/settings/templates/page';
 
 /**
- * Template editor: preview containment and draft fidelity (outpost#226).
+ * Template editor: preview containment and draft fidelity.
  *
  * The preview rendered author-authored HTML through `dangerouslySetInnerHTML` with no
  * sanitisation. Templates are dashboard-editable, so that is a STORED sink — whatever
@@ -80,7 +80,7 @@ async function openPreview() {
     await waitFor(() => expect(screen.getByTitle(/preview/i)).toBeTruthy());
 }
 
-describe('template preview containment (outpost#226)', () => {
+describe('template preview containment', () => {
     beforeEach(() => {
         mockApiFetch.mockReset();
         routeApiFetch();
@@ -123,7 +123,7 @@ describe('template preview containment (outpost#226)', () => {
     });
 });
 
-describe('the editor reports what the server actually said (outpost#226)', () => {
+describe('the editor reports what the server actually said', () => {
     beforeEach(() => {
         mockApiFetch.mockReset();
     });
@@ -187,7 +187,7 @@ describe('the editor reports what the server actually said (outpost#226)', () =>
 // "Template saved successfully" was true about the row and false about the thing
 // the author cared about. These pin the honest copy, because the dishonest version
 // is the shorter and more natural string to write.
-describe('the editor does not claim more than a save delivers (outpost#226)', () => {
+describe('the editor does not claim more than a save delivers', () => {
     beforeEach(() => {
         mockApiFetch.mockReset();
     });
@@ -224,7 +224,7 @@ describe('the editor does not claim more than a save delivers (outpost#226)', ()
     });
 });
 
-describe('reset gives the author feedback (outpost#226)', () => {
+describe('reset gives the author feedback', () => {
     beforeEach(() => {
         mockApiFetch.mockReset();
     });
@@ -261,7 +261,7 @@ describe('reset gives the author feedback (outpost#226)', () => {
     });
 });
 
-describe('preview shows the unsaved draft (outpost#226)', () => {
+describe('preview shows the unsaved draft', () => {
     beforeEach(() => {
         mockApiFetch.mockReset();
         routeApiFetch();
