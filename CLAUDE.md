@@ -2,6 +2,25 @@
 
 Outpost — AI-powered customer support operations platform. See [README](./README.md) for the product overview.
 
+## This repository is public
+
+`CopilotKit/outpost` is public as of 2026-09-15. Everything written into it — PR titles and bodies,
+issue text, review comments, commit messages — is world-readable and indexed.
+
+Before writing any of those, check what belongs there:
+
+- Security findings carry **what and verification**, not a reproduction. Name the surface and the
+  fix; leave working payloads and bypass sequences out.
+- An **unfixed** hole gets a minimal tracking issue, with the detail in Linear rather than in the
+  issue body. If it warrants disclosure handling, use a private security advisory.
+- No customer names, revenue, headcount, roadmap dates, incident specifics, staging URLs, env var
+  values, or internal service topology.
+- Write for a stranger: no internal ticket shorthand, no "as discussed", no references to private
+  threads.
+
+Note this also changes contributor expectations — outside PRs now arrive from forks, so their CI
+runs need maintainer approval before anything goes green.
+
 ## Code review before push
 
 Before pushing any non-trivial code change or opening a PR, run `copilotkit-internal:cr-loop` (the CopilotKit-internal 7-agent review-fix loop) on the diff first. This is a standing rule, not case-by-case. If the `pr-review-toolkit` plugin it depends on isn't installed, ask before falling back to a lighter review — don't silently skip it. Exception: mechanical-only diffs (lockfile regen, whitespace) don't need it, per the skill's own scope rules.
