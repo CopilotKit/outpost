@@ -1675,7 +1675,7 @@ describe('Postmark inbound webhook', () => {
 
         // ── MailboxHash is not a capability token (issue #189) ───────────────
         //
-        // `generateTicketId()` is 8 chars of Math.random(), and the Discord/Slack
+        // `generateTicketId()` is short (8 chars) and the Discord/Slack
         // bots posted "Ticket TKT-XXXXXXXX created" into public threads. Display
         // IDs are therefore harvestable, so the plus-address path is gated the
         // same way the header path is: EMAIL-sourced ticket, participating sender.

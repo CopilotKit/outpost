@@ -17,8 +17,8 @@
  * BOTH signals are attacker-supplied, so both paths resolve through the same
  * two gates: the ticket must be `source: 'EMAIL'`, and the sender must already
  * be a participant on it. `MailboxHash` is a token we mint, but minting it does
- * not make it a secret — `generateTicketId()` is 8 characters of `Math.random()`
- * and the Discord/Slack bots published "Ticket TKT-XXXXXXXX created" into public
+ * not make it a secret — `generateTicketId()` is short (8 characters) and the
+ * Discord/Slack bots published "Ticket TKT-XXXXXXXX created" into public
  * threads, so display IDs are harvestable. Without the gates, anyone holding one
  * could append to (and reopen) any ticket on any channel.
  *
@@ -66,7 +66,7 @@ const REPLY_TARGET_SELECT = {
  * Resolve a plus-addressed `MailboxHash` to the ticket it names.
  *
  * A display ID is not a secret. `generateTicketId()` draws 8 characters from a
- * 32-character alphabet with `Math.random()`, and the Discord/Slack bots posted
+ * 32-character alphabet, and the Discord/Slack bots posted
  * "Ticket TKT-XXXXXXXX created" into public threads — those threads still carry
  * the IDs. So naming a ticket is not evidence of belonging to it, and this path
  * gets exactly the gates the header path has:
