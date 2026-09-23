@@ -35,7 +35,30 @@ import {
     handleGithubReactionPoll,
     handlePendingResponseSweep,
 } from '@copilotkit/outpost/queue';
+import { isShadowMode } from '@copilotkit/outpost/shared';
 import { buildSyncEngine } from './build-sync-engine.js';
+
+// ─── Announce the resolved posting mode ───────────────────────────────────
+
+// One line, at boot, next to the other fail-fast-at-boot decision below.
+//
+// Without it an operator has no way to answer "which mode am I in?" except to
+// wait for a job and infer it from which line got printed. That is a bad way to
+// learn the answer for the one flag standing between a parallel-run window and
+// machine-generated text arriving in a stranger's support thread.
+//
+// Deliberately a log and not a throw. Throwing when SHADOW_MODE is absent in
+// production is a real behaviour change — staging is documented as
+// `SHADOW_MODE=true`, so a variable that fails to carry to a new replica is a
+// silent fail-open that this log makes visible but does not prevent. That
+// stronger version belongs with the startup-assertion work, not here.
+console.log(
+    isShadowMode()
+        ? '[Worker] SHADOW MODE ON — responses are generated and recorded, never posted.'
+        : `[Worker] SHADOW MODE OFF — responses WILL post to real community surfaces (SHADOW_MODE=${
+              process.env.SHADOW_MODE ?? 'unset'
+          }).`,
+);
 
 // ─── Build SyncEngine for TRACKER_SYNC handler ────────────────────────────
 

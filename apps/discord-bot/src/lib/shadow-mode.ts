@@ -13,9 +13,10 @@ import type { ThreadChannel, Message } from 'discord.js';
  *
  * This enables a parallel-run validation period before full cutover.
  */
-export function isShadowMode(): boolean {
-    return process.env.SHADOW_MODE === 'true';
-}
+// Re-exported rather than reimplemented. Three copies of this predicate existed
+// and all three compared `=== 'true'`; a shared one is the only version of this
+// that stays fixed.
+export { isShadowMode } from '@copilotkit/outpost/shared';
 
 export interface ShadowResponse {
     ticketId: string;
@@ -48,7 +49,7 @@ export async function logShadowResponse(response: ShadowResponse): Promise<void>
 
     console.log(
         `[Shadow Mode] Logged response for ticket ${response.ticketId} ` +
-        `(${response.responseTimeMs}ms)`,
+            `(${response.responseTimeMs}ms)`,
     );
 }
 
@@ -115,10 +116,7 @@ export async function handleShadowThreadCreate(
 
         return ticket.id;
     } catch (error) {
-        console.error(
-            `[Shadow Mode] Failed to create ticket for thread ${thread.id}:`,
-            error,
-        );
+        console.error(`[Shadow Mode] Failed to create ticket for thread ${thread.id}:`, error);
         return null;
     }
 }

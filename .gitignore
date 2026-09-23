@@ -70,3 +70,9 @@ yarn.lock
 
 # Local AI review pipeline session state (create-review / review-changes)
 .chalk/
+
+# Compose auto-loads this exact filename and it is per-developer by convention.
+# One was committed by accident: `ports: !override` REPLACES the base list, so
+# postgres stopped publishing 5432 and the README's setup path (db:push against
+# localhost:5432) failed on a fresh clone.
+docker-compose.override.yml

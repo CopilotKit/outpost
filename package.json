@@ -15,6 +15,9 @@
         "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
         "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\""
     },
+    "dependencies": {
+        "@copilotkit/outpost": "workspace:*"
+    },
     "devDependencies": {
         "@eslint/js": "^9.39.4",
         "@linear/sdk": "^81.0.0",
