@@ -288,6 +288,7 @@ describe('AIPipeline', () => {
                 expect.objectContaining({ source: 'discord' }),
                 expect.any(Array),
                 undefined,
+                undefined,
             );
         });
 
@@ -729,6 +730,7 @@ describe('AIPipeline', () => {
                 expect.any(Object),
                 [], // Empty results after failure
                 undefined,
+                undefined,
             );
         });
 
@@ -784,6 +786,22 @@ describe('AIPipeline', () => {
                 expect.any(Object),
                 expect.any(Array),
                 history,
+                undefined,
+            );
+        });
+
+        it('should thread the abort signal through to the generator', async () => {
+            const controller = new AbortController();
+            await pipeline.generateSupportResponse('test question', {
+                source: 'web',
+                signal: controller.signal,
+            });
+
+            expect(mockGenerate).toHaveBeenCalledWith(
+                expect.any(Object),
+                expect.any(Array),
+                undefined,
+                controller.signal,
             );
         });
     });

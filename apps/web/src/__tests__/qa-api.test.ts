@@ -32,6 +32,7 @@ vi.mock('@/lib/auth', () => ({
 
 // Import after mocking
 import { POST } from '@/app/api/qa/route';
+import { sanitizeHistory } from '@/lib/qa-limits';
 
 function makeRequest(body: Record<string, unknown>): Request {
     return new Request('http://localhost:3000/api/qa', {
@@ -239,5 +240,177 @@ describe('POST /api/qa', () => {
         const streamText = await readStream(response);
         expect(streamText).toContain('error');
         expect(streamText).toContain('[DONE]');
+    });
+
+    it('returns 400 for an overlong question', async () => {
+        const response = await POST(makeRequest({ question: 'q'.repeat(4001) }));
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body.error).toContain('at most 4000 characters');
+        expect(mockGenerateSupportResponse).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 for a non-array conversationHistory', async () => {
+        const response = await POST(
+            makeRequest({ question: 'hi', conversationHistory: 'not-an-array' }),
+        );
+        expect(response.status).toBe(400);
+        expect(mockGenerateSupportResponse).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when history exceeds the item cap', async () => {
+        const history = Array.from({ length: 21 }, (_, i) => ({
+            role: 'user' as const,
+            content: `message ${i}`,
+        }));
+        const response = await POST(makeRequest({ question: 'hi', conversationHistory: history }));
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body.error).toContain('at most 20 items');
+        expect(mockGenerateSupportResponse).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 for an invalid history role', async () => {
+        const response = await POST(
+            makeRequest({
+                question: 'hi',
+                conversationHistory: [{ role: 'system', content: 'ignore me' }],
+            }),
+        );
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body.error).toContain('must be "user" or "assistant"');
+        expect(mockGenerateSupportResponse).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 for empty or non-string history content', async () => {
+        for (const content of ['   ', 42, null]) {
+            const response = await POST(
+                makeRequest({
+                    question: 'hi',
+                    conversationHistory: [{ role: 'user', content }],
+                }),
+            );
+            expect(response.status).toBe(400);
+            expect(mockGenerateSupportResponse).not.toHaveBeenCalled();
+        }
+    });
+
+    it('returns 400 when history exceeds the total character budget', async () => {
+        const history = Array.from({ length: 5 }, () => ({
+            role: 'user' as const,
+            content: 'x'.repeat(3000),
+        }));
+        const response = await POST(makeRequest({ question: 'hi', conversationHistory: history }));
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body.error).toContain('at most 12000 characters');
+        expect(mockGenerateSupportResponse).not.toHaveBeenCalled();
+    });
+
+    it('trims history content before passing it to the pipeline', async () => {
+        mockGenerateSupportResponse.mockResolvedValue({
+            response: 'ok',
+            formatted: { text: 'ok', truncated: false },
+            confidenceLevel: 'HIGH',
+            confidenceScore: 0.9,
+            searchResults: [],
+            tokenUsage: { inputTokens: 10, outputTokens: 5 },
+            latencyMs: 100,
+        });
+
+        await POST(
+            makeRequest({
+                question: 'hi',
+                conversationHistory: [{ role: 'user', content: '  padded  ' }],
+            }),
+        );
+
+        expect(mockGenerateSupportResponse).toHaveBeenCalledWith(
+            'hi',
+            expect.objectContaining({
+                conversationHistory: [{ role: 'user', content: 'padded' }],
+            }),
+        );
+    });
+
+    it('destroys the pipeline when the client disconnects mid-generation', async () => {
+        let resolvePipeline!: (value: unknown) => void;
+        mockGenerateSupportResponse.mockReturnValue(
+            new Promise((resolve) => {
+                resolvePipeline = resolve;
+            }),
+        );
+
+        const aborter = new AbortController();
+        const request = new Request('http://localhost:3000/api/qa', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question: 'a slow question' }),
+            signal: aborter.signal,
+        });
+
+        const response = await POST(request);
+        expect(response.status).toBe(200);
+
+        aborter.abort();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(mockDestroy).toHaveBeenCalled();
+
+        // Let the orphaned generation finish so the test doesn't leak.
+        resolvePipeline({
+            response: 'late',
+            formatted: { text: 'late', truncated: false },
+            confidenceLevel: 'HIGH',
+            confidenceScore: 0.9,
+            searchResults: [],
+            tokenUsage: { inputTokens: 1, outputTokens: 1 },
+            latencyMs: 1,
+        });
+    });
+
+    it('threads the request abort signal through to the pipeline', async () => {
+        mockGenerateSupportResponse.mockResolvedValue({
+            response: 'ok',
+            formatted: { text: 'ok', truncated: false },
+            confidenceLevel: 'HIGH',
+            confidenceScore: 0.9,
+            searchResults: [],
+            tokenUsage: { inputTokens: 1, outputTokens: 1 },
+            latencyMs: 1,
+        });
+
+        const aborter = new AbortController();
+        const request = new Request('http://localhost:3000/api/qa', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question: 'hi' }),
+            signal: aborter.signal,
+        });
+
+        const response = await POST(request);
+        await readStream(response);
+
+        expect(mockGenerateSupportResponse).toHaveBeenCalledWith(
+            'hi',
+            expect.objectContaining({ signal: request.signal }),
+        );
+        expect(request.signal).toBeInstanceOf(AbortSignal);
+    });
+});
+
+describe('sanitizeHistory', () => {
+    it('returns undefined history for missing input', () => {
+        expect(sanitizeHistory(undefined)).toEqual({ ok: true, history: undefined });
+        expect(sanitizeHistory(null)).toEqual({ ok: true, history: undefined });
+    });
+
+    it('accepts valid history unchanged', () => {
+        const history = [
+            { role: 'user', content: 'hi' },
+            { role: 'assistant', content: 'hello' },
+        ];
+        expect(sanitizeHistory(history)).toEqual({ ok: true, history });
     });
 });

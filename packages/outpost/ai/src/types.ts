@@ -230,6 +230,13 @@ export interface PipelineOptions {
     maxTokens?: number;
     /** Bounded confidence adjustment from aggregate 👍/👎 feedback (default 0). */
     confidenceCalibration?: number;
+    /**
+     * AbortSignal for client disconnect. Threaded through to the model call so
+     * an aborted request frees the connection instead of billing a full
+     * generation for nobody. Note: aborting an already-dispatched non-streaming
+     * request frees capacity but does not guarantee the provider skips the charge.
+     */
+    signal?: AbortSignal;
 }
 
 export interface FormattedResponse {

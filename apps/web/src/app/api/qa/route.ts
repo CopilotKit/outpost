@@ -2,6 +2,10 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { AIPipeline } from '@copilotkit/outpost/ai';
 import type { ConfidenceLevel, SearchResult } from '@copilotkit/outpost/ai';
+import {
+    MAX_QUESTION_CHARS,
+    sanitizeHistory,
+} from '@/lib/qa-limits';
 
 /**
  * POST /api/qa
@@ -11,6 +15,10 @@ import type { ConfidenceLevel, SearchResult } from '@copilotkit/outpost/ai';
  * the response back using Server-Sent Events.
  *
  * Request body: { question: string, conversationHistory?: Array<{ role, content }> }
+ *
+ * Ingress limits: question <= 4000 chars; history <= 20 items, <= 4000 chars
+ * each and <= 12000 chars total, roles restricted to user/assistant. A client
+ * disconnect aborts the pipeline instead of generating for nobody.
  *
  * SSE events:
  *   data: { type: "token", text: "..." }      — streamed text chunks
@@ -27,7 +35,7 @@ export async function POST(request: Request) {
         );
     }
 
-    let body: { question?: string; conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }> };
+    let body: { question?: string; conversationHistory?: unknown };
 
     try {
         body = await request.json();
@@ -38,10 +46,27 @@ export async function POST(request: Request) {
         );
     }
 
-    const question = body.question?.trim();
+    const question = typeof body.question === 'string' ? body.question.trim() : '';
     if (!question) {
         return new Response(
             JSON.stringify({ error: 'question is required' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+    }
+
+    if (question.length > MAX_QUESTION_CHARS) {
+        return new Response(
+            JSON.stringify({
+                error: `question must be at most ${MAX_QUESTION_CHARS} characters`,
+            }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+    }
+
+    const sanitized = sanitizeHistory(body.conversationHistory);
+    if (!sanitized.ok) {
+        return new Response(
+            JSON.stringify({ error: sanitized.error }),
             { status: 400, headers: { 'Content-Type': 'application/json' } },
         );
     }
@@ -53,17 +78,38 @@ export async function POST(request: Request) {
         const stream = new ReadableStream({
             async start(controller) {
                 const encoder = new TextEncoder();
+                let settled = false;
 
                 function sendEvent(data: string) {
+                    if (settled) return;
                     controller.enqueue(encoder.encode(`data: ${data}\n\n`));
                 }
+
+                // If the client disconnects mid-generation, stop the pipeline
+                // instead of running it to completion for nobody.
+                request.signal.addEventListener(
+                    'abort',
+                    () => {
+                        if (!settled) {
+                            settled = true;
+                            pipeline.destroy();
+                            try {
+                                controller.close();
+                            } catch {
+                                // Already closed/errored by the generator below.
+                            }
+                        }
+                    },
+                    { once: true },
+                );
 
                 try {
                     const result = await pipeline.generateSupportResponse(
                         question,
                         {
                             source: 'web',
-                            conversationHistory: body.conversationHistory,
+                            conversationHistory: sanitized.history,
+                            signal: request.signal,
                         },
                     );
 
@@ -120,7 +166,10 @@ export async function POST(request: Request) {
                     );
                     sendEvent('[DONE]');
                 } finally {
-                    controller.close();
+                    if (!settled) {
+                        settled = true;
+                        controller.close();
+                    }
                     pipeline.destroy();
                 }
             },

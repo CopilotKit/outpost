@@ -181,19 +181,23 @@ export class ResponseGenerator {
         pipelineContext: PipelineContext,
         sources: SearchResult[],
         conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>,
+        signal?: AbortSignal,
     ): Promise<GeneratedResponse & { degraded: boolean }> {
         const startTime = Date.now();
         const systemPrompt = this.buildSystemPrompt(sources, pipelineContext.source);
         const messages = this.buildMessages(pipelineContext, conversationHistory);
 
         try {
-            const message = await this.client.messages.create({
-                model: this.model,
-                max_tokens: config.maxResponseTokens,
-                ...samplingParams(this.model, config.responseTemperature),
-                system: systemPrompt,
-                messages,
-            });
+            const message = await this.client.messages.create(
+                {
+                    model: this.model,
+                    max_tokens: config.maxResponseTokens,
+                    ...samplingParams(this.model, config.responseTemperature),
+                    system: systemPrompt,
+                    messages,
+                },
+                { signal },
+            );
 
             const responseText = extractResponseText(message.content);
             if (!responseText.trim()) {

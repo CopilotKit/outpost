@@ -206,6 +206,7 @@ export class AIPipeline {
             pipelineContext,
             searchResults,
             options.conversationHistory,
+            options.signal,
         );
 
         // Step 3: Score confidence against the ACTUAL generated response
