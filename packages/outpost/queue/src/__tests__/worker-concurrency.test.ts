@@ -318,3 +318,207 @@ describe('Worker per-type concurrency', () => {
         expect(callCount).toBeGreaterThanOrEqual(1);
     });
 });
+
+// ─── Claim-before-process (#232) ────────────────────────────────────────────
+
+/**
+ * The global budget used to be charged after `processClaimedJobs` had already
+ * awaited the batch, so work that had finished still held slots. With a broad
+ * backlog the budget ran out partway down `this.handlers` insertion order and
+ * the same tail types were never reached — deterministically, because the next
+ * poll started from the same place against the same state.
+ */
+describe('Worker claim budget and ordering', () => {
+    let worker: InstanceType<typeof Worker>;
+
+    /** Types in registration order; the last few are the ones that starved. */
+    const TYPES = [
+        JobType.AI_RESPONSE,
+        JobType.ESCALATION,
+        JobType.SLA_CHECK,
+        JobType.TRACKER_SYNC,
+        JobType.JOB_CLEANUP,
+    ];
+
+    /** `claimJobsForType` interpolates type third: jsonb map, default timeout, type, limit. */
+    const claimedType = (call: unknown[]) => call[3] as string;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.useFakeTimers();
+        mockPrisma.$executeRaw.mockResolvedValue(0);
+        mockPrismaJob.updateMany.mockResolvedValue({ count: 1 });
+        mockPrismaJob.update.mockResolvedValue({});
+    });
+
+    afterEach(async () => {
+        if (worker) await worker.stop();
+        vi.useRealTimers();
+    });
+
+    it('reaches every registered type across polls when every type has a backlog', async () => {
+        worker = new Worker({
+            pollIntervalMs: 10,
+            maxConcurrency: 4, // smaller than the backlog, so the budget must run out
+            batchSize: 2,
+            concurrencyByType: Object.fromEntries(TYPES.map((t) => [t, 2])),
+        });
+
+        for (const t of TYPES) worker.on(t, async () => ({ success: true }));
+
+        // Every type always has work waiting.
+        let seq = 0;
+        mockPrisma.$queryRaw.mockImplementation((...call: unknown[]) => {
+            const type = claimedType(call);
+            return Promise.resolve([
+                makeJobRow({ id: `${type}-${seq++}`, type }),
+                makeJobRow({ id: `${type}-${seq++}`, type }),
+            ]);
+        });
+
+        worker.start();
+        // Several polls: any fair scheme reaches all five well inside this.
+        await vi.advanceTimersByTimeAsync(200);
+
+        const reached = new Set(mockPrisma.$queryRaw.mock.calls.map(claimedType));
+        for (const t of TYPES) {
+            expect(reached, `type ${t} was never claimed`).toContain(t);
+        }
+    });
+
+    it('issues every claim before any handler runs, so a slow type cannot delay the rest', async () => {
+        worker = new Worker({
+            pollIntervalMs: 10,
+            maxConcurrency: 10,
+            batchSize: 1,
+            concurrencyByType: { [JobType.AI_RESPONSE]: 2, [JobType.ESCALATION]: 2 },
+        });
+
+        const events: string[] = [];
+        let releaseSlow: () => void = () => {};
+        const slowDone = new Promise<void>((r) => (releaseSlow = r));
+
+        worker.on(JobType.AI_RESPONSE, async () => {
+            events.push('ai-handler-start');
+            await slowDone;
+            return { success: true };
+        });
+        worker.on(JobType.ESCALATION, async () => {
+            events.push('esc-handler-start');
+            return { success: true };
+        });
+
+        mockPrisma.$queryRaw.mockImplementation((...call: unknown[]) => {
+            const type = claimedType(call);
+            events.push(`claim:${type}`);
+            if (type === JobType.AI_RESPONSE)
+                return Promise.resolve([makeJobRow({ id: 'ai-1', type })]);
+            if (type === JobType.ESCALATION)
+                return Promise.resolve([makeJobRow({ id: 'esc-1', type })]);
+            return Promise.resolve([]);
+        });
+
+        worker.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        // The ESCALATION claim must be issued even though the AI handler is parked.
+        // Both events must be present, or the index comparison below proves nothing.
+        expect(events).toContain(`claim:${JobType.ESCALATION}`);
+        expect(events).toContain('ai-handler-start');
+        expect(events.indexOf(`claim:${JobType.ESCALATION}`)).toBeLessThan(
+            events.indexOf('ai-handler-start'),
+        );
+
+        releaseSlow();
+        await vi.advanceTimersByTimeAsync(0);
+    });
+
+    it('never claims more than the global ceiling across all types in one poll', async () => {
+        // Budget 4 with a per-type limit of 2 means the ceiling can only be
+        // honoured by summing across types: no single type can reach it alone.
+        worker = new Worker({
+            pollIntervalMs: 10,
+            maxConcurrency: 4,
+            batchSize: 5,
+            concurrencyByType: Object.fromEntries(TYPES.map((t) => [t, 2])),
+        });
+
+        // Every handler parks, so the first poll cannot finish and cannot
+        // schedule a second one. Whatever is claimed is one poll's worth.
+        // Released before the assertions so `stop()` can drain in afterEach.
+        let release: () => void = () => {};
+        const parked = new Promise<void>((r) => (release = r));
+        for (const t of TYPES)
+            worker.on(t, async () => {
+                await parked;
+                return { success: true };
+            });
+
+        let claimed = 0;
+        const typesClaimed = new Set<string>();
+        mockPrisma.$queryRaw.mockImplementation((...call: unknown[]) => {
+            const type = claimedType(call);
+            const limit = call[4] as number;
+            const rows = Array.from({ length: limit }, (_, i) =>
+                makeJobRow({ id: `${type}-${i}`, type }),
+            );
+            claimed += rows.length;
+            typesClaimed.add(type);
+            return Promise.resolve(rows);
+        });
+
+        worker.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        const claimedInOnePoll = claimed;
+        const spannedTypes = typesClaimed.size;
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Lower bound first: a claim path that did nothing would satisfy the
+        // ceiling trivially.
+        expect(claimedInOnePoll).toBeGreaterThan(0);
+        expect(spannedTypes).toBeGreaterThan(1);
+        expect(claimedInOnePoll).toBeLessThanOrEqual(4);
+    });
+
+    it('dispatches jobs already claimed when a later claim fails', async () => {
+        // Claiming every type before processing any of them means a rejection
+        // partway through must not discard the rows already claimed: they are
+        // PROCESSING with a live token, and dropping them leaves them for the
+        // reclaim sweep, which consumes an attempt.
+        worker = new Worker({
+            pollIntervalMs: 10,
+            maxConcurrency: 10,
+            batchSize: 1,
+            concurrencyByType: {
+                [JobType.AI_RESPONSE]: 2,
+                [JobType.ESCALATION]: 2,
+                [JobType.SLA_CHECK]: 2,
+            },
+        });
+
+        const ran: string[] = [];
+        for (const t of [JobType.AI_RESPONSE, JobType.ESCALATION, JobType.SLA_CHECK])
+            worker.on(t, async (payload) => {
+                ran.push(String((payload as { id?: string }).id ?? 'x'));
+                return { success: true };
+            });
+
+        let call = 0;
+        mockPrisma.$queryRaw.mockImplementation((...args: unknown[]) => {
+            const type = claimedType(args);
+            call += 1;
+            if (call === 3) return Promise.reject(new Error('connection pool timeout'));
+            return Promise.resolve([
+                makeJobRow({ id: `${type}-1`, type, payload: { id: `${type}-1` } }),
+            ]);
+        });
+
+        worker.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        // The two claims that succeeded before the failure must still have run.
+        expect(ran).toHaveLength(2);
+    });
+});
