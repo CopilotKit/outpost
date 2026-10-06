@@ -11,6 +11,8 @@ export { handleHubSpotSync } from './handlers/hubspot-sync.js';
 export { createTrackerSyncHandler } from './handlers/tracker-sync.js';
 export { handleJobCleanup } from './handlers/job-cleanup.js';
 export { handleGithubReactionPoll } from './handlers/github-reaction-poll.js';
+export { handleSlackMirror, SLACK_MIRROR_PLUGIN } from './handlers/slack-mirror.js';
+export type { SlackPoster, SlackMirrorDeps } from './handlers/slack-mirror.js';
 export {
     handlePendingResponseSweep,
     STRANDED_RESPONSE_AFTER_MS,

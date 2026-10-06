@@ -241,6 +241,12 @@ model Job {
     progress    Int?      // Optional percentage 0-100
     runAt       DateTime  @default(now())
     lockedAt    DateTime?
+    // The deadline the CLAIMING worker was granted, written at claim time from
+    // that worker's own timeout config. Reclaim compares against this rather than
+    // re-deriving a window from whichever worker happens to notice, so a replica
+    // on an older config cannot decide a live claim has expired.
+    lockUntil   DateTime?
+    claimToken  String?   // Fences writes to the worker execution that owns this claim
     completedAt DateTime?
     error       String?
     createdAt   DateTime  @default(now())
@@ -248,6 +254,29 @@ model Job {
 
     @@index([status, runAt])
     @@index([type])
+    // Serves the reclaim sweep, which runs once per poll interval per replica.
+    // [status, runAt] has the wrong second column for it and [type] is far too
+    // low-selectivity to help.
+    //
+    // Only usable while the sweep's predicate keeps lockUntil bare on one side —
+    // see reclaimStaleJobs() in packages/outpost/queue/src/worker.ts. Wrapping
+    // the column in a CASE, or moving the interval arithmetic onto it, leaves the
+    // planner with the status prefix and a filter over every PROCESSING row.
+    //
+    // Worth stating what it does NOT buy, because the gain is smaller than it
+    // looks: PROCESSING is a tiny set (bounded by replicas × maxConcurrency, and
+    // JOB_CLEANUP keeps the table small besides), and [status, runAt]'s prefix
+    // already narrows to it. Meanwhile status and lockUntil both change on every
+    // claim and every release, so this index adds maintenance to the two hottest
+    // write paths on the table. It is here because the sweep's cost should not be
+    // a function of table size as the queue grows, not because it pays for itself
+    // at today's volumes.
+    //
+    // Ideally partial (WHERE status = 'PROCESSING'), which schema.prisma cannot
+    // express. Taking the wider index rather than hand-writing one, because a
+    // hand-written index puts the database permanently in drift against the CI
+    // gate that caught the missing claimToken field on this same branch.
+    @@index([status, lockUntil])
 }
 
 enum JobStatus {

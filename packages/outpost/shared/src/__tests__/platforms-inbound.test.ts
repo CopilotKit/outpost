@@ -1,4 +1,24 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+
+// The handler's mirror default reads process.env. A developer (or CI) exporting
+// SLACK_MIRROR_MODE would otherwise change the createJob call counts asserted
+// throughout this file. Neutralize the ambient environment for the whole suite.
+const AMBIENT_MIRROR_ENV = ['SLACK_MIRROR_MODE', 'SLACK_MIRROR_CHANNEL_ID'] as const;
+const savedMirrorEnv: Record<string, string | undefined> = {};
+
+beforeAll(() => {
+    for (const key of AMBIENT_MIRROR_ENV) {
+        savedMirrorEnv[key] = process.env[key];
+        delete process.env[key];
+    }
+});
+
+afterAll(() => {
+    for (const key of AMBIENT_MIRROR_ENV) {
+        if (savedMirrorEnv[key] !== undefined) process.env[key] = savedMirrorEnv[key]!;
+        else delete process.env[key];
+    }
+});
 import { InboundHandler } from '../platforms/inbound.js';
 import type { PrismaLike, CreateJobFn } from '../platforms/inbound.js';
 import type { InboundMessage } from '../platforms/types.js';
@@ -87,7 +107,8 @@ describe('InboundHandler', () => {
 
             // Ticket was created
             expect(prisma.ticket.create).toHaveBeenCalledTimes(1);
-            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             expect(ticketData.source).toBe('DISCORD');
             expect(ticketData.sourceId).toBe('thread-123');
             expect(ticketData.status).toBe('OPEN');
@@ -96,7 +117,8 @@ describe('InboundHandler', () => {
 
             // First message was created
             expect(prisma.message.create).toHaveBeenCalledTimes(1);
-            const msgData = (prisma.message.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const msgData = (prisma.message.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             expect(msgData.ticketId).toBe('ticket-1');
             expect(msgData.author).toContain('testuser');
             expect(msgData.author).toContain('user-123');
@@ -140,7 +162,8 @@ describe('InboundHandler', () => {
             const msg = makeInboundMessage({ content: longContent });
             await handler.handle(msg);
 
-            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             expect(ticketData.title.length).toBeLessThanOrEqual(200);
             expect(ticketData.description.length).toBeLessThanOrEqual(4000);
         });
@@ -167,26 +190,38 @@ describe('InboundHandler', () => {
             for (const { source, expectedTarget } of sources) {
                 const freshPrisma = createMockPrisma();
                 const freshCreateJob = createMockCreateJob();
-                const freshHandler = new InboundHandler({ prisma: freshPrisma, createJob: freshCreateJob });
+                const freshHandler = new InboundHandler({
+                    prisma: freshPrisma,
+                    createJob: freshCreateJob,
+                });
 
                 const msg = makeInboundMessage({ source });
                 await freshHandler.handle(msg);
 
-                expect(freshCreateJob).toHaveBeenCalledWith('AI_RESPONSE', expect.objectContaining({
-                    source: expectedTarget,
-                }));
+                expect(freshCreateJob).toHaveBeenCalledWith(
+                    'AI_RESPONSE',
+                    expect.objectContaining({
+                        source: expectedTarget,
+                    }),
+                );
             }
         });
 
         it('passes attachments to message record when present', async () => {
             const msg = makeInboundMessage({
                 attachments: [
-                    { filename: 'screenshot.png', url: 'https://cdn.example.com/screenshot.png', size: 1024, contentType: 'image/png' },
+                    {
+                        filename: 'screenshot.png',
+                        url: 'https://cdn.example.com/screenshot.png',
+                        size: 1024,
+                        contentType: 'image/png',
+                    },
                 ],
             });
             await handler.handle(msg);
 
-            const msgData = (prisma.message.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const msgData = (prisma.message.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             expect(msgData.attachments).toBeDefined();
             expect(msgData.attachments[0].filename).toBe('screenshot.png');
         });
@@ -210,7 +245,8 @@ describe('InboundHandler', () => {
             });
             expect(prisma.user.create).not.toHaveBeenCalled();
 
-            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             expect(ticketData.userId).toBe('user-existing-1');
         });
 
@@ -229,7 +265,8 @@ describe('InboundHandler', () => {
                 },
             });
 
-            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             expect(ticketData.userId).toBe('user-new-1');
         });
 
@@ -244,7 +281,10 @@ describe('InboundHandler', () => {
                 // race -> the winner's row. (A later call from isTeamMember
                 // falls through to null.)
                 .mockResolvedValueOnce(null)
-                .mockResolvedValueOnce({ id: 'user-raced-1', email: 'discord-user-123@reporters.outpost.internal' })
+                .mockResolvedValueOnce({
+                    id: 'user-raced-1',
+                    email: 'discord-user-123@reporters.outpost.internal',
+                })
                 .mockResolvedValue(null);
             (prisma.user.create as ReturnType<typeof vi.fn>)
                 .mockReset()
@@ -256,7 +296,8 @@ describe('InboundHandler', () => {
             expect(result.isNewTicket).toBe(true);
             expect(prisma.user.create).toHaveBeenCalledTimes(1);
 
-            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             expect(ticketData.userId).toBe('user-raced-1');
         });
 
@@ -266,7 +307,9 @@ describe('InboundHandler', () => {
                 .mockReset()
                 .mockRejectedValueOnce({ code: 'P1001', message: 'db unreachable' });
 
-            await expect(handler.handle(makeInboundMessage())).rejects.toMatchObject({ code: 'P1001' });
+            await expect(handler.handle(makeInboundMessage())).rejects.toMatchObject({
+                code: 'P1001',
+            });
         });
     });
 
@@ -300,7 +343,8 @@ describe('InboundHandler', () => {
 
             // Message was appended
             expect(prisma.message.create).toHaveBeenCalledTimes(1);
-            const msgData = (prisma.message.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const msgData = (prisma.message.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             expect(msgData.ticketId).toBe('ticket-existing');
             expect(msgData.content).toBe('Follow up question');
         });
@@ -440,7 +484,10 @@ describe('InboundHandler', () => {
                     status,
                 });
                 const freshCreateJob = createMockCreateJob();
-                const freshHandler = new InboundHandler({ prisma: freshPrisma, createJob: freshCreateJob });
+                const freshHandler = new InboundHandler({
+                    prisma: freshPrisma,
+                    createJob: freshCreateJob,
+                });
 
                 const msg = makeInboundMessage({ isThreadStart: false });
                 await freshHandler.handle(msg);
@@ -560,7 +607,8 @@ describe('InboundHandler', () => {
 
             await handler.handle(msg);
 
-            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             // Slack tickets use composite sourceId so reply lookups match
             expect(ticketData.sourceId).toBe('C0ABCDEF1:1234567890.123456');
         });
@@ -575,7 +623,8 @@ describe('InboundHandler', () => {
 
             await handler.handle(msg);
 
-            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             // A bare ts is not a Slack key — the reply lookup would build
             // "channel:ts" and never find it, so refuse to pretend otherwise.
             expect(ticketData.sourceId).toBeNull();
@@ -639,7 +688,8 @@ describe('InboundHandler', () => {
 
             await handler.handle(msg);
 
-            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0].data;
+            const ticketData = (prisma.ticket.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+                .data;
             expect(ticketData.sourceId).toBeNull();
         });
 
@@ -692,7 +742,9 @@ describe('InboundHandler', () => {
                 );
                 // No query at all is the correct read of a null key.
                 const read =
-                    findFirst.mock.calls.length === 0 ? null : findFirst.mock.calls[0][0].where.sourceId;
+                    findFirst.mock.calls.length === 0
+                        ? null
+                        : findFirst.mock.calls[0][0].where.sourceId;
 
                 expect(read).toBe(written);
             },
@@ -801,6 +853,199 @@ describe('InboundHandler', () => {
             await customHandler.handle(msg);
 
             expect(createJob).toHaveBeenCalledWith('CUSTOM_AI_JOB', expect.anything());
+        });
+    });
+    // ── Slack ticket mirror ──────────────────────────────────────────
+
+    describe('Slack ticket mirror', () => {
+        it('enqueues a thread-opening mirror job for a new ticket', async () => {
+            const handler = new InboundHandler({ prisma, createJob, mirrorToSlack: true });
+
+            await handler.handle(makeInboundMessage());
+
+            expect(createJob).toHaveBeenCalledWith('SLACK_MIRROR', {
+                ticketId: 'ticket-1',
+                source: 'discord',
+                kind: 'ticket',
+            });
+        });
+
+        // THE PRODUCTION ENABLE PATH. Every other test in this block passes
+        // `mirrorToSlack` explicitly, but no `new InboundHandler(...)` anywhere in
+        // apps/ does — all six rely on the `??` fallback, so the env branch is
+        // what actually turns the mirror on in production and it was the one line
+        // no test exercised. Replacing just the fallback with `false` left the
+        // whole suite green, because replacing the WHOLE expression kills five
+        // tests and makes the switch look covered.
+        //
+        // The symptom if it were ever wrong is an empty Slack channel, which is
+        // indistinguishable from "nobody filed anything today".
+        describe('the environment fallback, with no explicit flag', () => {
+            const setMirrorEnv = (mode: string | undefined, channel?: string) => {
+                if (mode === undefined) delete process.env.SLACK_MIRROR_MODE;
+                else process.env.SLACK_MIRROR_MODE = mode;
+                if (channel === undefined) delete process.env.SLACK_MIRROR_CHANNEL_ID;
+                else process.env.SLACK_MIRROR_CHANNEL_ID = channel;
+            };
+
+            afterEach(() => setMirrorEnv(undefined));
+
+            it('enables the mirror from SLACK_MIRROR_MODE=live', async () => {
+                setMirrorEnv('live', 'C0123456789');
+
+                const handler = new InboundHandler({ prisma, createJob });
+                await handler.handle(makeInboundMessage());
+
+                expect(createJob).toHaveBeenCalledWith('SLACK_MIRROR', {
+                    ticketId: 'ticket-1',
+                    source: 'discord',
+                    kind: 'ticket',
+                });
+            });
+
+            it('enables the mirror from SLACK_MIRROR_MODE=shadow', async () => {
+                setMirrorEnv('shadow', 'C0123456789');
+
+                const handler = new InboundHandler({ prisma, createJob });
+                await handler.handle(makeInboundMessage());
+
+                const types = (createJob as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+                expect(types).toContain('SLACK_MIRROR');
+            });
+
+            // Fails closed, and each of these is a realistic way to get it wrong.
+            it.each([
+                [undefined, undefined, 'unset'],
+                ['off', 'C0123456789', 'explicitly off'],
+                ['on', 'C0123456789', 'a typo that is not a recognized mode'],
+                ['live', undefined, 'live with no channel configured'],
+            ])('stays off when SLACK_MIRROR_MODE=%s (%s)', async (mode, channel, _why) => {
+                setMirrorEnv(mode, channel);
+
+                const handler = new InboundHandler({ prisma, createJob });
+                await handler.handle(makeInboundMessage());
+
+                const types = (createJob as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+                expect(types).not.toContain('SLACK_MIRROR');
+            });
+
+            // An explicit flag still wins, so a caller that opts out is not
+            // overridden by a stray environment variable.
+            it('lets an explicit mirrorToSlack:false override a live environment', async () => {
+                setMirrorEnv('live', 'C0123456789');
+
+                const handler = new InboundHandler({ prisma, createJob, mirrorToSlack: false });
+                await handler.handle(makeInboundMessage());
+
+                const types = (createJob as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+                expect(types).not.toContain('SLACK_MIRROR');
+            });
+        });
+
+        it('enqueues nothing when the mirror is disabled', async () => {
+            const handler = new InboundHandler({ prisma, createJob, mirrorToSlack: false });
+
+            await handler.handle(makeInboundMessage());
+
+            const types = (createJob as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+            expect(types).not.toContain('SLACK_MIRROR');
+        });
+
+        it('enqueues a threaded reply job carrying the message id', async () => {
+            prisma.ticket.findFirst = vi.fn().mockResolvedValue({
+                id: 'ticket-1',
+                displayId: 'TKT-ABCDEF12',
+                status: 'OPEN',
+                sourceId: 'thread-123',
+                channel: 'channel-1',
+                source: 'DISCORD',
+            });
+            const handler = new InboundHandler({ prisma, createJob, mirrorToSlack: true });
+
+            await handler.handle(makeInboundMessage({ isThreadStart: false }));
+
+            expect(createJob).toHaveBeenCalledWith('SLACK_MIRROR', {
+                ticketId: 'ticket-1',
+                source: 'discord',
+                kind: 'reply',
+                messageId: 'msg-1',
+            });
+        });
+
+        // The mirror is an ALLOWLIST of GitHub + Discord. A denylist ("anything
+        // but SLACK") silently mirrored TEAMS/EMAIL/WEB/MANUAL/LINEAR tickets the
+        // feature was never specified for.
+        it.each([
+            TicketSource.SLACK,
+            TicketSource.TEAMS,
+            TicketSource.EMAIL,
+            TicketSource.WEB,
+            TicketSource.MANUAL,
+            TicketSource.LINEAR,
+        ])('does not mirror a %s-sourced ticket', async (source) => {
+            const handler = new InboundHandler({ prisma, createJob, mirrorToSlack: true });
+
+            await handler.handle(makeInboundMessage({ source }));
+
+            const types = (createJob as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+            expect(types).not.toContain('SLACK_MIRROR');
+        });
+
+        it.each([TicketSource.GITHUB_ISSUE, TicketSource.GITHUB_DISCUSSION])(
+            'mirrors a %s-sourced ticket',
+            async (source) => {
+                const handler = new InboundHandler({ prisma, createJob, mirrorToSlack: true });
+
+                await handler.handle(makeInboundMessage({ source }));
+
+                const types = (createJob as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+                expect(types).toContain('SLACK_MIRROR');
+            },
+        );
+
+        // Production does not pass mirrorToSlack — it falls back to the env. With
+        // the env unset the fallback must be OFF, so a stray SLACK_MIRROR_MODE in
+        // a developer's shell cannot silently enqueue jobs (and cannot perturb the
+        // call-count assertions in every other test in this file).
+        it('defaults to disabled when the environment configures no mirror', async () => {
+            const originalMode = process.env.SLACK_MIRROR_MODE;
+            const originalChannel = process.env.SLACK_MIRROR_CHANNEL_ID;
+            try {
+                delete process.env.SLACK_MIRROR_MODE;
+                delete process.env.SLACK_MIRROR_CHANNEL_ID;
+
+                const handler = new InboundHandler({ prisma, createJob });
+                await handler.handle(makeInboundMessage());
+
+                const types = (createJob as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+                expect(types).not.toContain('SLACK_MIRROR');
+            } finally {
+                if (originalMode !== undefined) process.env.SLACK_MIRROR_MODE = originalMode;
+                else delete process.env.SLACK_MIRROR_MODE;
+                if (originalChannel !== undefined)
+                    process.env.SLACK_MIRROR_CHANNEL_ID = originalChannel;
+                else delete process.env.SLACK_MIRROR_CHANNEL_ID;
+            }
+        });
+
+        it('still creates the ticket when enqueueing the mirror job fails', async () => {
+            const failing = vi.fn().mockImplementation((type: string) => {
+                if (type === 'SLACK_MIRROR') return Promise.reject(new Error('queue down'));
+                return Promise.resolve('job-1');
+            });
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            const handler = new InboundHandler({
+                prisma,
+                createJob: failing as unknown as CreateJobFn,
+                mirrorToSlack: true,
+            });
+
+            const result = await handler.handle(makeInboundMessage());
+
+            expect(result.ticketId).toBe('ticket-1');
+            expect(result.isNewTicket).toBe(true);
+            expect(errorSpy).toHaveBeenCalled();
+            errorSpy.mockRestore();
         });
     });
 });

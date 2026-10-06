@@ -1,0 +1,20 @@
+-- Index the columns the reclaim sweep scans.
+--
+-- The sweep runs once per poll interval on every replica:
+--   status = 'PROCESSING' AND "lockUntil" < NOW() - grace
+-- plus a NULL-"lockUntil" arm for rows claimed before the column existed. The
+-- first arm keeps "lockUntil" bare with the interval arithmetic on the other
+-- side, which is what lets the second column do any work; the legacy arms
+-- discriminate on "lockedAt"/"updatedAt" and ride the (status, "lockUntil" IS
+-- NULL) prefix, then filter. That is fine -- those arms empty out after one
+-- rollout. See reclaimStaleJobs() in packages/outpost/queue/src/worker.ts.
+--
+-- Its own migration on purpose. Prisma wraps each migration file in one
+-- transaction, so keeping this with the ADD COLUMN would hold that statement's
+-- ACCESS EXCLUSIVE lock across the index build and block reads for the duration.
+-- Split, the ALTER commits first and this takes only SHARE: writes wait, reads
+-- do not. Same reason CONCURRENTLY is not used -- it cannot run inside Prisma's
+-- transaction at all.
+--
+-- Purely additive: creates an index only, no column or data changes.
+CREATE INDEX "Job_status_lockUntil_idx" ON "Job"("status", "lockUntil");
