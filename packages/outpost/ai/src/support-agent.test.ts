@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { useAimock } from './test-utils/aimock.js';
 import {
     SupportAgent,
@@ -7,6 +7,7 @@ import {
 } from './support-agent.js';
 import { validateSupportReply, type SupportReply } from './support-reply.js';
 import {
+    GitHubEvidenceAuthError,
     githubEvidenceAuthFromEnv,
     type InstallationTokenFactory,
 } from './github-evidence-auth.js';
@@ -1111,6 +1112,42 @@ describe('OpenAI support agent', () => {
             expect(result.reply.decision).toBe('answer');
             expect(captured).toHaveLength(3);
             expect(captured.map((request) => request.authorization)).toEqual([null, null, null]);
+        });
+
+        it('abandons a cancelled investigation without issuing the evidence request', async () => {
+            const captured = captureGithub();
+            sourceThenRelease();
+            const controller = new AbortController();
+            const reason = new DOMException('Investigation deadline', 'TimeoutError');
+            // Own the investigation's deadline instead of waiting out the real 60 seconds.
+            const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+            const timeout = vi
+                .spyOn(AbortSignal, 'timeout')
+                .mockImplementation((ms) => (ms === 60_000 ? controller.signal : realTimeout(ms)));
+            // Restored even if this test times out, which is exactly how it fails when the
+            // signal stops reaching the headers seam.
+            onTestFinished(() => timeout.mockRestore());
+            // Stalls exactly where a real App token exchange would, then the deadline lands.
+            const authorization = vi.fn(() => {
+                setTimeout(() => controller.abort(reason), 0);
+                return new Promise<string>(() => {});
+            });
+            const agent = new SupportAgent({
+                apiKey: 'test-key',
+                baseURL: mock().url,
+                tracingDisabled: true,
+                pathfinder: { searchEvidence: vi.fn<PathfinderClient['searchEvidence']>() },
+                githubAuth: { authorization },
+            });
+            const error = await agent
+                .investigate({ question: 'Shipped?', source: 'github' })
+                .catch((caught: unknown) => caught);
+            expect(authorization).toHaveBeenCalledTimes(1);
+            // The whole point: no request was sent while authorization hung.
+            expect(captured).toEqual([]);
+            expect(error).toBeInstanceOf(Error);
+            expect((error as Error).name).toBe('TimeoutError');
+            expect(error).not.toBeInstanceOf(GitHubEvidenceAuthError);
         });
 
         // A credential failure is now shaped like every other recoverable evidence failure:

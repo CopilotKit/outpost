@@ -94,9 +94,11 @@ async function githubJson(
 ): Promise<GithubResult> {
     // The origin is fixed below and the headers are built here, so an installation token
     // can only ever ride on a request to GitHub's API for an allowlisted repository.
+    // The signal bounds authorization too: awaited before the fetch, an unbounded token
+    // exchange would otherwise stall the investigation past its own deadline.
     let headers: Record<string, string>;
     try {
-        headers = await githubEvidenceHeaders(auth);
+        headers = await githubEvidenceHeaders(auth, signal);
     } catch (error) {
         rethrowIfTerminal(error, signal);
         // Only a credential failure becomes tool output, and only as this bare reason:

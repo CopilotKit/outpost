@@ -11,6 +11,7 @@
  */
 
 import { createAppAuth } from '@octokit/auth-app';
+import { Octokit } from '@octokit/rest';
 
 /**
  * Evidence reads fetch commits, file contents and release metadata. `contents:read`
@@ -22,6 +23,18 @@ const EVIDENCE_PERMISSIONS = { contents: 'read' } as const;
 
 /** Installation ids are positive decimal integers; `Number` alone would accept `1e3` and ` 7 `. */
 const INSTALLATION_ID = /^[1-9][0-9]*$/;
+
+/**
+ * Ceiling on a single installation-token exchange with GitHub.
+ *
+ * Fixed, rather than inherited from whichever investigation happened to ask first:
+ * `@octokit/auth-app` serves every concurrent caller with the same installation and
+ * permissions from one shared in-flight request, so a per-investigation deadline would
+ * let the first investigation to give up cancel the token the others are waiting on.
+ * A bound is still required, because an exchange with no deadline can hang forever and
+ * the SDK hands that same stalled promise to every later caller.
+ */
+const TOKEN_EXCHANGE_TIMEOUT_MS = 10_000;
 
 export class GitHubEvidenceAuthError extends Error {
     override name = 'GitHubEvidenceAuthError';
@@ -36,7 +49,12 @@ export class GitHubEvidenceAuthError extends Error {
  * instead would turn a misconfiguration into a quietly rate-limited success.
  */
 export interface GitHubEvidenceAuth {
-    authorization(): Promise<string | undefined>;
+    /**
+     * `signal` is the calling investigation's deadline. It bounds how long *this caller*
+     * waits, and must not be handed to a credential exchange shared with other
+     * investigations. An already-aborted signal must do no credential work at all.
+     */
+    authorization(signal?: AbortSignal): Promise<string | undefined>;
 }
 
 /** Unauthenticated public reads, for development hosts with no App credentials. */
@@ -44,20 +62,58 @@ export const anonymousGitHubEvidenceAuth: GitHubEvidenceAuth = {
     authorization: async () => undefined,
 };
 
-/**
- * The slice of `createAppAuth` this module uses, named so tests can substitute it.
- * Injecting here rather than stubbing the module keeps the production path — env
- * variables through `createAppAuth` — the one every pipeline consumer gets by default.
- */
-export type InstallationTokenFactory = (credentials: {
+export interface InstallationCredentials {
     appId: string;
     privateKey: string;
     installationId: number;
-}) => (options: {
+}
+
+/** Mints one installation token. The slice of the App strategy's `auth()` this module calls. */
+export type InstallationTokenSource = (options: {
     type: 'installation';
     installationId: number;
     permissions: Record<string, string>;
 }) => Promise<{ token: string }>;
+
+/**
+ * Builds a token source from credentials, named so tests can substitute it. Injecting
+ * here rather than stubbing the module keeps the production path — env variables through
+ * `createAppAuth` — the one every pipeline consumer gets by default.
+ */
+export type InstallationTokenFactory = (
+    credentials: InstallationCredentials,
+) => InstallationTokenSource;
+
+/**
+ * The production factory: `createAppAuth`, wired to a request that cannot hang.
+ *
+ * `request` is the only seam the strategy exposes — `auth()` forwards no per-call request
+ * — and `@octokit/request` reads its `fetch` from there, so this wrapper is the only
+ * place a deadline can be applied. It must be minted per attempt: a single
+ * `AbortSignal.timeout` baked into the request defaults would fire once and then reject
+ * every later exchange for the lifetime of the worker.
+ *
+ * Adapting rather than passing `createAppAuth` directly is what lets both sides keep
+ * their real types; the overloaded `AuthInterface` is not structurally assignable to the
+ * one narrow call signature this module needs.
+ */
+export const appInstallationTokens: InstallationTokenFactory = (credentials) => {
+    const auth = createAppAuth({
+        ...credentials,
+        request: new Octokit({
+            request: {
+                fetch: (url: string | URL | Request, init?: RequestInit) => {
+                    const deadline = AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS);
+                    return fetch(url, {
+                        ...init,
+                        signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline,
+                    });
+                },
+            },
+        }).request,
+    });
+    return (options) => auth(options);
+};
 
 /**
  * Build the evidence credential from the worker's configured App environment.
@@ -71,7 +127,7 @@ export type InstallationTokenFactory = (credentials: {
  */
 export function githubEvidenceAuthFromEnv(
     env: Record<string, string | undefined> = process.env,
-    createAuth: InstallationTokenFactory = createAppAuth as unknown as InstallationTokenFactory,
+    createAuth: InstallationTokenFactory = appInstallationTokens,
 ): GitHubEvidenceAuth {
     const appId = env.GITHUB_APP_ID?.trim() ?? '';
     const privateKey = env.GITHUB_PRIVATE_KEY?.trim() ?? '';
@@ -105,23 +161,30 @@ export function githubEvidenceAuthFromEnv(
 
 /** Mints installation tokens for evidence requests, deferring every cache decision to the SDK. */
 function installationAuth(
-    credentials: { appId: string; privateKey: string; installationId: number },
+    credentials: InstallationCredentials,
     createAuth: InstallationTokenFactory,
 ): GitHubEvidenceAuth {
-    let auth: ReturnType<InstallationTokenFactory> | undefined;
+    let tokens: InstallationTokenSource | undefined;
     return {
-        async authorization() {
-            auth ??= createAuth(credentials);
-            // Called per request on purpose. @octokit/auth-app caches the installation
-            // token and re-mints it before the one-hour expiry; holding the string here
-            // would pin a bearer that stops working an hour into the worker's uptime.
-            const { token } = await (
-                auth({
+        async authorization(signal) {
+            // Ahead of any credential work: an investigation that has already run out of
+            // time must not sign a JWT or open an exchange whose result nothing will read.
+            signal?.throwIfAborted();
+            const { token } = await mintWithoutLeaking(() => {
+                // Built on first use, and inside the boundary: createAppAuth validates its
+                // options synchronously and names what it rejected, so a throw here could
+                // quote the PEM exactly as a failed exchange could.
+                tokens ??= createAuth(credentials);
+                // Re-invoked per request on purpose. @octokit/auth-app caches the
+                // installation token and re-mints it before the one-hour expiry; holding
+                // the string here would pin a bearer that stops working an hour into the
+                // worker's uptime.
+                return tokens({
                     type: 'installation',
                     installationId: credentials.installationId,
                     permissions: EVIDENCE_PERMISSIONS,
-                }) as Promise<{ token: string }>
-            ).catch(rethrowWithoutCredentials);
+                });
+            });
             return `Bearer ${token}`;
         },
     };
@@ -136,26 +199,70 @@ function rejecting(reason: string): GitHubEvidenceAuth {
 }
 
 /**
- * A JWT-signing or token-exchange failure can quote the PEM it rejected or the token
- * it just minted, and this error travels to worker logs and run reports. Only the
- * underlying error's class name crosses the boundary — deliberately not its message,
- * and not as `cause`, which any structured logger would serialize straight back out.
+ * Runs strategy construction and the token exchange inside one boundary.
+ *
+ * Either step can quote the PEM it rejected or the token it just minted, and this error
+ * travels to worker logs and run reports. Only the underlying error's class name crosses
+ * the boundary — deliberately not its message, and not as `cause`, which any structured
+ * logger would serialize straight back out.
  */
-function rethrowWithoutCredentials(caught: unknown): never {
-    const kind = caught instanceof Error ? caught.name : typeof caught;
-    throw new GitHubEvidenceAuthError(
-        `GitHub App installation token request for evidence failed (${kind})`,
-    );
+async function mintWithoutLeaking(
+    mint: () => Promise<{ token: string }>,
+): Promise<{ token: string }> {
+    try {
+        return await mint();
+    } catch (caught) {
+        const kind = caught instanceof Error ? caught.name : typeof caught;
+        throw new GitHubEvidenceAuthError(
+            `GitHub App installation token request for evidence failed (${kind})`,
+        );
+    }
+}
+
+/**
+ * Resolves with `pending`, or rejects the moment `signal` aborts — whichever comes first.
+ *
+ * The exchange behind `pending` is deliberately left running rather than cancelled:
+ * `@octokit/auth-app` shares one in-flight token request between concurrent callers, so
+ * cancelling on behalf of a single abandoned investigation would reject the others too.
+ * Detaching lets it finish and fill the SDK cache for whoever is still waiting.
+ *
+ * The rejection is the signal's own reason, which makes a cancelled authorization
+ * indistinguishable from the cancelled fetch it was about to authorize: terminal, and
+ * never a `GitHubEvidenceAuthError` a caller could mistake for a retryable auth failure.
+ */
+function untilAborted<T>(pending: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+    if (!signal) return pending;
+    return new Promise<T>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        // An abort that landed while the exchange was being opened fires no event of its
+        // own, so the current state has to be read as well as subscribed to.
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+        // Settling either way drops the listener: a resolver that outlives one
+        // investigation must not accumulate one listener per evidence request. Attaching
+        // handlers to `pending` also keeps a late rejection from going unhandled once the
+        // race has already been lost to the abort.
+        void pending
+            .then(resolve, reject)
+            .finally(() => signal.removeEventListener('abort', abort));
+    });
 }
 
 /**
  * The single place an evidence request's headers are assembled, so no caller can
  * reach `api.github.com` with an `Authorization` header this module did not mint.
+ *
+ * `signal` bounds the authorization itself, not just the request it authorizes. Awaiting
+ * an unbounded credential exchange here would let a stalled token request outlive the
+ * deadline the investigation set, however short that deadline was.
  */
 export async function githubEvidenceHeaders(
     auth: GitHubEvidenceAuth,
+    signal?: AbortSignal,
 ): Promise<Record<string, string>> {
-    const authorization = await auth.authorization();
+    signal?.throwIfAborted();
+    const authorization = await untilAborted(auth.authorization(signal), signal);
     return {
         Accept: 'application/vnd.github+json',
         ...(authorization ? { Authorization: authorization } : {}),

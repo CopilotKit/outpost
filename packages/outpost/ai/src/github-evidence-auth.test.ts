@@ -5,6 +5,7 @@ import {
     githubEvidenceAuthFromEnv,
     githubEvidenceHeaders,
     type InstallationTokenFactory,
+    type InstallationTokenSource,
 } from './github-evidence-auth.js';
 
 /** Synthetic throughout: no test here may carry a credential that works anywhere. */
@@ -18,12 +19,14 @@ const TOKEN = 'ghs_syntheticplaceholdertoken';
 
 /** Stands in for `createAppAuth`, recording how the strategy is built and invoked. */
 function fakeAppAuth(
-    onAuth: (options: Record<string, unknown>) => Promise<{ token: string }> = async () => ({
-        token: TOKEN,
-    }),
+    onAuth: InstallationTokenSource = async () => ({ token: TOKEN }),
+    onCreate: () => void = () => {},
 ) {
-    const auth = vi.fn(onAuth);
-    const create = vi.fn<InstallationTokenFactory>(() => auth as never);
+    const auth = vi.fn<InstallationTokenSource>(onAuth);
+    const create = vi.fn<InstallationTokenFactory>(() => {
+        onCreate();
+        return auth;
+    });
     return { create, auth };
 }
 
@@ -171,5 +174,145 @@ describe('GitHub evidence authentication', () => {
         await expect(githubEvidenceHeaders(resolver)).rejects.toBeInstanceOf(
             GitHubEvidenceAuthError,
         );
+    });
+
+    it('surfaces a synchronous strategy construction failure without echoing the private key', async () => {
+        const leaky = new TypeError(
+            `[@octokit/auth-app] privateKey ${CREDENTIALS.GITHUB_PRIVATE_KEY} is malformed`,
+        );
+        const { create, auth } = fakeAppAuth(undefined, () => {
+            throw leaky;
+        });
+        const resolver = githubEvidenceAuthFromEnv(CREDENTIALS, create);
+        const error = await resolver.authorization().catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(GitHubEvidenceAuthError);
+        const rendered = `${(error as Error).message} ${(error as Error).stack ?? ''} ${JSON.stringify(error)}`;
+        expect(rendered).not.toContain('placeholder');
+        expect(rendered).not.toContain(leaky.message);
+        expect((error as Error).message).toContain('TypeError');
+        expect(auth).not.toHaveBeenCalled();
+    });
+
+    describe('investigation cancellation', () => {
+        /** A token source that never settles, standing in for a stalled exchange. */
+        function stalled() {
+            const { create, auth } = fakeAppAuth(() => new Promise<{ token: string }>(() => {}));
+            return { create, auth, resolver: githubEvidenceAuthFromEnv(CREDENTIALS, create) };
+        }
+
+        it('rejects an unresolved authorization once the investigation signal aborts', async () => {
+            const { resolver } = stalled();
+            const controller = new AbortController();
+            const reason = new DOMException('Investigation deadline', 'TimeoutError');
+            const headers = githubEvidenceHeaders(resolver, controller.signal);
+            controller.abort(reason);
+            await expect(headers).rejects.toBe(reason);
+        });
+
+        it('makes cancellation terminal rather than a recoverable auth failure', async () => {
+            const { resolver } = stalled();
+            const controller = new AbortController();
+            const reason = new DOMException('Investigation deadline', 'TimeoutError');
+            const headers = githubEvidenceHeaders(resolver, controller.signal);
+            controller.abort(reason);
+            const error = await headers.catch((caught: unknown) => caught);
+            expect(error).not.toBeInstanceOf(GitHubEvidenceAuthError);
+            expect((error as Error).name).toBe('TimeoutError');
+        });
+
+        it('never reaches the resolver at all when the signal is already aborted', async () => {
+            const authorization = vi.fn(async () => `Bearer ${TOKEN}`);
+            const controller = new AbortController();
+            controller.abort(new DOMException('Already over', 'TimeoutError'));
+            await expect(
+                githubEvidenceHeaders({ authorization }, controller.signal),
+            ).rejects.toHaveProperty('name', 'TimeoutError');
+            expect(authorization).not.toHaveBeenCalled();
+        });
+
+        it('rejects when the deadline lands while the exchange is being opened', async () => {
+            const controller = new AbortController();
+            const reason = new DOMException('Investigation deadline', 'TimeoutError');
+            // Aborts synchronously, before the race can subscribe. No abort event follows,
+            // so only reading the signal's settled state can end this wait.
+            const authorization = vi.fn(() => {
+                controller.abort(reason);
+                return new Promise<string>(() => {});
+            });
+            await expect(githubEvidenceHeaders({ authorization }, controller.signal)).rejects.toBe(
+                reason,
+            );
+        });
+
+        it('does no credential work when the signal is already aborted', async () => {
+            const { create, auth, resolver } = stalled();
+            const controller = new AbortController();
+            controller.abort(new DOMException('Already over', 'TimeoutError'));
+            await expect(githubEvidenceHeaders(resolver, controller.signal)).rejects.toThrow();
+            await expect(resolver.authorization(controller.signal)).rejects.toThrow();
+            expect(create).not.toHaveBeenCalled();
+            expect(auth).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            { name: 'success', onAuth: async () => ({ token: TOKEN }) },
+            { name: 'failure', onAuth: () => Promise.reject(new Error('exchange refused')) },
+        ])('drops its abort listener when authorization settles: $name', async ({ onAuth }) => {
+            const resolver = githubEvidenceAuthFromEnv(CREDENTIALS, fakeAppAuth(onAuth).create);
+            const controller = new AbortController();
+            const added = vi.spyOn(controller.signal, 'addEventListener');
+            const removed = vi.spyOn(controller.signal, 'removeEventListener');
+            await githubEvidenceHeaders(resolver, controller.signal).catch(() => undefined);
+            expect(added).toHaveBeenCalledTimes(1);
+            expect(removed).toHaveBeenCalledTimes(1);
+            expect(removed.mock.calls[0]?.[1]).toBe(added.mock.calls[0]?.[1]);
+        });
+
+        it('leaves the shared exchange running so a concurrent investigation still gets its token', async () => {
+            let settle: (value: { token: string }) => void = () => {};
+            const { create, auth } = fakeAppAuth(
+                () => new Promise<{ token: string }>((resolve) => (settle = resolve)),
+            );
+            const resolver = githubEvidenceAuthFromEnv(CREDENTIALS, create);
+            const abandoned = new AbortController();
+            const patient = new AbortController();
+
+            const first = githubEvidenceHeaders(resolver, abandoned.signal);
+            const second = githubEvidenceHeaders(resolver, patient.signal);
+            abandoned.abort(new DOMException('Investigation deadline', 'TimeoutError'));
+
+            await expect(first).rejects.toHaveProperty('name', 'TimeoutError');
+            settle({ token: TOKEN });
+            // One investigation giving up must not cancel the credential the other needs.
+            await expect(second).resolves.toEqual({
+                Accept: 'application/vnd.github+json',
+                Authorization: `Bearer ${TOKEN}`,
+            });
+            expect(create).toHaveBeenCalledTimes(1);
+            expect(auth).toHaveBeenCalledTimes(2);
+        });
+
+        it('does not leave a late exchange rejection unhandled after the caller gave up', async () => {
+            let fail: (error: Error) => void = () => {};
+            const resolver = githubEvidenceAuthFromEnv(
+                CREDENTIALS,
+                fakeAppAuth(() => new Promise<{ token: string }>((_, reject) => (fail = reject)))
+                    .create,
+            );
+            const controller = new AbortController();
+            const unhandled: unknown[] = [];
+            const record = (reason: unknown) => unhandled.push(reason);
+            process.on('unhandledRejection', record);
+            try {
+                const headers = githubEvidenceHeaders(resolver, controller.signal);
+                controller.abort(new DOMException('Investigation deadline', 'TimeoutError'));
+                await expect(headers).rejects.toThrow();
+                fail(new Error('exchange refused after the caller left'));
+                await new Promise((resolve) => setTimeout(resolve, 10));
+            } finally {
+                process.off('unhandledRejection', record);
+            }
+            expect(unhandled).toEqual([]);
+        });
     });
 });
