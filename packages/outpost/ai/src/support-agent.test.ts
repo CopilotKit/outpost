@@ -448,6 +448,93 @@ describe('OpenAI support agent', () => {
         expect(failure).not.toContain('203.0.113.7');
         expect(failure).not.toContain('API rate limit exceeded');
     });
+    // GitHub answers an exhausted rate limit with 403 or 429 rather than a status of its
+    // own, so only the rate-limit headers separate a throttle from a permission denial:
+    // https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+    it.each<{ kind: string; status: number; headers: Record<string, string>; reason: string }>([
+        {
+            kind: 'a primary limit exhausted on a 403',
+            status: 403,
+            headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700000000' },
+            reason: 'rate_limited',
+        },
+        {
+            kind: 'a secondary limit telling a 403 caller to wait',
+            status: 403,
+            headers: { 'retry-after': '60' },
+            reason: 'rate_limited',
+        },
+        {
+            kind: 'a primary limit exhausted on a 429',
+            status: 429,
+            headers: { 'x-ratelimit-remaining': '0' },
+            reason: 'rate_limited',
+        },
+        {
+            kind: 'a 429 carrying no rate-limit headers',
+            status: 429,
+            headers: {},
+            reason: 'rate_limited',
+        },
+        {
+            kind: 'a permission denial with request budget left',
+            status: 403,
+            headers: { 'x-ratelimit-remaining': '4987' },
+            reason: 'access_denied',
+        },
+        {
+            kind: 'unparsable rate-limit headers on a 403',
+            status: 403,
+            headers: { 'x-ratelimit-remaining': 'none', 'retry-after': 'in a bit' },
+            reason: 'access_denied',
+        },
+        {
+            kind: 'empty rate-limit headers on a 403',
+            status: 403,
+            headers: { 'x-ratelimit-remaining': '', 'retry-after': '' },
+            reason: 'access_denied',
+        },
+    ])(
+        'reports $kind as $reason and lets the run continue',
+        async ({ status, headers, reason }) => {
+            const deniedBody = JSON.stringify({
+                message: 'API rate limit exceeded for 203.0.113.7.',
+                documentation_url: 'https://docs.github.com/rest/rate-limit',
+            });
+            let refLookups = 0;
+            stubGitHub((url) =>
+                url.includes('/commits/') && refLookups++ === 0
+                    ? new Response(deniedBody, { status, headers })
+                    : okSourceFile(url),
+            );
+            scriptTurns([
+                { tool: 'read_source', path: SOURCE_PATH },
+                { tool: 'read_source', path: SOURCE_PATH, ref: 'main' },
+                { output: groundedReply },
+            ]);
+
+            const result = await setup().agent.investigate({
+                question: 'Tools?',
+                source: 'github',
+            });
+
+            const failure = toolResultSentToModel(0);
+            expect(failure).toContain('unavailable');
+            expect(failure).toContain(reason);
+            expect(failure).not.toContain(
+                reason === 'rate_limited' ? 'access_denied' : 'rate_limited',
+            );
+            // Headers classify; neither they nor the response body reach the model.
+            expect(failure).not.toContain('203.0.113.7');
+            expect(failure).not.toContain('1700000000');
+            expect(failure).not.toMatch(/retry|ratelimit/i);
+            // The model still sees a recoverable failure, corrects the ref and answers.
+            expect(result.reply.decision).toBe('answer');
+            expect(result.sources).toEqual([
+                expect.objectContaining({ sourceUrl: BLOB_URL, content: source.content }),
+            ]);
+        },
+    );
     it('returns a directory read as a correctable not_a_file result', async () => {
         const listing = JSON.stringify([
             {

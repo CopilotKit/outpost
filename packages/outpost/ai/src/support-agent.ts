@@ -84,6 +84,19 @@ function rethrowIfTerminal(error: unknown, signal: AbortSignal): void {
         throw error;
 }
 
+/** GitHub reports an exhausted rate limit as 403 or 429, never a status of its own, so a
+ * throttle is only distinguishable from a permission denial by these headers: a spent
+ * primary limit zeroes x-ratelimit-remaining, and a secondary limit asks for retry-after.
+ * https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+ * Read positively and only from headers — the response body is untrusted and never
+ * inspected, so an absent, empty or unparsable header leaves a 403 a permission denial. */
+function isRateLimited(response: Response): boolean {
+    return (
+        response.headers.get('x-ratelimit-remaining') === '0' ||
+        /^\d+$/.test(response.headers.get('retry-after') ?? '')
+    );
+}
+
 /** Only public, allowlisted repositories; callers never provide an arbitrary fetch URL.
  * Predictable API, transport, credential and payload failures are reported rather than
  * thrown, so the investigator can correct the request or fall back to other evidence. */
@@ -120,7 +133,11 @@ async function githubJson(
     }
     if (response.status === 404) return { ok: false, reason: 'not_found' };
     if (response.status === 403)
-        return { ok: false, reason: 'access_denied', httpStatus: response.status };
+        return {
+            ok: false,
+            reason: isRateLimited(response) ? 'rate_limited' : 'access_denied',
+            httpStatus: response.status,
+        };
     if (response.status === 429)
         return { ok: false, reason: 'rate_limited', httpStatus: response.status };
     if (!response.ok) return { ok: false, reason: 'upstream_error', httpStatus: response.status };
