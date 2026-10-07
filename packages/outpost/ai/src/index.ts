@@ -31,6 +31,7 @@ export {
     AI_DISCLAIMER_ESCALATED,
     AI_DISCLAIMER_REVIEWED,
     ResponseFormatter,
+    publishableText,
 } from './formatter.js';
 export { AIPipeline, SUPPRESSED_RESPONSE_TEXT } from './pipeline.js';
 export { analyzeSentiment } from './sentiment.js';

@@ -31,6 +31,29 @@ export const AI_DISCLAIMER_ESCALATED = `${AI_DISCLAIMER} We've escalated this to
 export const AI_DISCLAIMER_REVIEWED = `${AI_DISCLAIMER} A member of our team will review and follow up if needed.`;
 
 /**
+ * The whole formatted response as one string, for a sink that holds exactly one:
+ * the durable `suggestedResponse`, the shadow record, the string stream.
+ *
+ * Reads {@link FormattedResponse.completeText} when the formatter composed one —
+ * the web split is the only case, and it is the only correct serialization of it,
+ * because `text` there is just the summary pane and already carries the closing
+ * footer. Otherwise `text` (or `parts`, which supersede it: a split format repeats
+ * its first part in `text`, so publishing both would duplicate it) is already the
+ * whole response.
+ *
+ * The trailing `details` join is the compatibility path, not the intended one. It
+ * reproduces, byte for byte, how a `FormattedResponse` serialized before
+ * `completeText` existed, so a hand-built value or one read back from an older run
+ * is unchanged by this function's introduction. A formatter result always takes
+ * the `completeText` branch instead.
+ */
+export function publishableText(formatted: FormattedResponse): string {
+    if (formatted.completeText) return formatted.completeText;
+    const body = formatted.parts?.length ? formatted.parts.join('\n\n') : formatted.text;
+    return [body, formatted.details].filter(Boolean).join('\n\n');
+}
+
+/**
  * Formats AI-generated responses for different platform targets.
  *
  * - Discord: markdown with 2000-char limit, splits into multiple messages, adds action buttons
@@ -59,9 +82,17 @@ export class ResponseFormatter {
             };
         }
         if (platform === 'web') {
+            const summaryPane = this.formatWeb(reply.summary + disclaimer);
+            if (!details) return summaryPane;
             return {
-                ...this.formatWeb(reply.summary + disclaimer),
-                ...(details ? { details } : {}),
+                ...summaryPane,
+                details,
+                // The same pieces in reading order, closed by one footer, for the
+                // sinks that hold a single string. Composed here rather than by
+                // appending `details` to `summaryPane.text`, which would leave the
+                // footer stranded between the summary and the details.
+                completeText: this.formatWeb([reply.summary, details].join('\n\n') + disclaimer)
+                    .text,
             };
         }
 

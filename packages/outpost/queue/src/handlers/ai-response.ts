@@ -41,7 +41,7 @@
  */
 
 import { prisma } from '@copilotkit/outpost/db';
-import { AIPipeline } from '@copilotkit/outpost/ai';
+import { AIPipeline, publishableText } from '@copilotkit/outpost/ai';
 import { AI_CONFIDENCE, MAX_JOB_ATTEMPTS } from '@copilotkit/outpost/shared';
 import type { PlatformTarget, TicketSource } from '@copilotkit/outpost/shared';
 import {
@@ -560,19 +560,6 @@ function toPlatformTarget(source: string): PlatformTarget {
     return mapping[source] ?? 'web';
 }
 
-function completePublishableResponse(formatted: {
-    text: string;
-    parts?: string[];
-    details?: string;
-}): string {
-    return [
-        formatted.parts?.length ? formatted.parts.join('\n\n') : formatted.text,
-        formatted.details,
-    ]
-        .filter(Boolean)
-        .join('\n\n');
-}
-
 export async function handleAiResponse(
     payload: AiResponsePayload,
     context: JobHandlerContext,
@@ -948,15 +935,16 @@ export async function handleAiResponse(
             };
         }
 
-        // Store the complete publishable response: split parts already include
-        // text as their first part; web replies carry separate details. For
-        // sources without adapters, this is the durable sink.
+        // Store the complete publishable response — the formatter's own one-string
+        // serialization, so the web split's details land before the footer that
+        // closes the response rather than after it. For sources without adapters,
+        // this is the durable sink.
         //
         // Non-fatal on purpose. The BOT Message row is already committed above,
         // so aborting here would turn the retry into delayed human recovery
         // rather than giving this attempt the chance to complete its intended
         // delivery. Log it, remember it, and keep going so delivery can happen.
-        const publishableResponse = completePublishableResponse(pipelineResult.formatted);
+        const publishableResponse = publishableText(pipelineResult.formatted);
         let suggestedResponseError: string | null = null;
         try {
             await prisma.ticket.update({

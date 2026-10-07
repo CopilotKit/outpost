@@ -249,6 +249,26 @@ export interface FormattedResponse {
     details?: string;
     /** The formatted response text */
     text: string;
+    /**
+     * The whole response as ONE string, for a sink that cannot render `details` as
+     * a separate disclosure — a durable `suggestedResponse`, a shadow record, a
+     * string stream.
+     *
+     * Present only where `text` is NOT already the whole response: the web split,
+     * where `text` is the summary pane and `details` the disclosure pane. Both
+     * panes close with their own trailing matter — `text` already ends in the
+     * footer — so appending one to the other strands the footer and the disclaimer
+     * mid-response. Only the formatter knows where that trailing matter goes, so
+     * the formatter composes this rather than leaving each consumer to reassemble
+     * it (or, worse, to split a footer back out of text it did not write).
+     *
+     * Absent on every platform whose `text` (or `parts`) is already complete —
+     * Discord, GitHub, Slack, Teams — where a second serialization could only
+     * disagree with the first. Read it through {@link publishableText}, which
+     * falls back to the historical join so a value built before this field
+     * existed serializes exactly as it used to.
+     */
+    completeText?: string;
     /** Action buttons metadata (for Discord bot) */
     buttons?: Array<{ label: string; action: string }>;
     /** Whether the response was truncated */

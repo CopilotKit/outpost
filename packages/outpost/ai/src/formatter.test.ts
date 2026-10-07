@@ -5,6 +5,7 @@ import {
     AI_DISCLAIMER_ESCALATED,
     AI_DISCLAIMER_REVIEWED,
     ResponseFormatter,
+    publishableText,
 } from './formatter.js';
 
 describe('disclaimer copy', () => {
@@ -263,6 +264,99 @@ describe('structured support formatting', () => {
             expect(result.text).not.toContain('Internal routing reason');
             expect(result.text).not.toContain('<details>');
             expect(result.details).toBeUndefined();
+            expect(result.completeText).toBeUndefined();
         },
     );
+
+    // The web split is a UI contract, not a serialization: `text` and `details`
+    // are two panes of one disclosure, and `text` already carries the footer that
+    // closes the whole response. A sink that can only hold one string therefore
+    // cannot be served by concatenating them — that buries the footer and the
+    // disclaimer mid-response. `completeText` is the formatter answering that
+    // question itself, since it is the only place that knows where the footer goes.
+    describe('web completeText', () => {
+        it('closes the single-string serialization with the footer, after the details', () => {
+            const result = formatter.formatStructured(reply(), 'web', {
+                addDisclaimer: true,
+                disclaimerText: AI_DISCLAIMER_ESCALATED,
+            });
+            const complete = result.completeText ?? '';
+
+            expect(complete.startsWith(reply().summary)).toBe(true);
+            expect(complete.endsWith('\n\n---\n*Powered by CopilotKit AI*')).toBe(true);
+            expect(complete.indexOf(reply().details)).toBeGreaterThan(
+                complete.indexOf(reply().summary),
+            );
+            expect(complete.indexOf(AI_DISCLAIMER_ESCALATED)).toBeGreaterThan(
+                complete.indexOf(reply().details),
+            );
+            expect(complete.indexOf('*Powered by CopilotKit AI*')).toBeGreaterThan(
+                complete.indexOf(AI_DISCLAIMER_ESCALATED),
+            );
+        });
+
+        it('carries the footer, disclaimer, summary and details exactly once each', () => {
+            const result = formatter.formatStructured(reply(), 'web', {
+                addDisclaimer: true,
+                disclaimerText: AI_DISCLAIMER_REVIEWED,
+            });
+            const complete = result.completeText ?? '';
+
+            for (const once of [
+                reply().summary,
+                reply().details,
+                AI_DISCLAIMER_REVIEWED,
+                '*Powered by CopilotKit AI*',
+                'https://docs.copilotkit.ai/provider',
+            ]) {
+                expect(complete.split(once)).toHaveLength(2);
+            }
+        });
+
+        it('leaves the two-pane text/details UI contract untouched', () => {
+            const result = formatter.formatStructured(reply(), 'web', { addDisclaimer: true });
+
+            expect(result.text.startsWith(reply().summary)).toBe(true);
+            expect(result.text).not.toContain(reply().details);
+            expect(result.text.endsWith('\n\n---\n*Powered by CopilotKit AI*')).toBe(true);
+            expect(result.details).toContain(reply().details);
+            expect(result.details).not.toContain('*Powered by CopilotKit AI*');
+        });
+    });
+
+    // Every platform whose `text` is already the whole response must stay byte-identical;
+    // a second serialization is exactly the duplicate-footer bug in the other direction.
+    it.each(['discord', 'github', 'slack', 'teams'] as const)(
+        'leaves %s with no second serialization to disagree with its text',
+        (platform) => {
+            expect(formatter.formatStructured(reply(), platform).completeText).toBeUndefined();
+        },
+    );
+});
+
+describe('publishableText', () => {
+    it('prefers the formatter-composed whole response over re-joining the panes', () => {
+        expect(
+            publishableText({
+                text: 'Summary\n\n---\n*Powered by CopilotKit AI*',
+                details: 'Details',
+                completeText: 'Summary\n\nDetails\n\n---\n*Powered by CopilotKit AI*',
+            }),
+        ).toBe('Summary\n\nDetails\n\n---\n*Powered by CopilotKit AI*');
+    });
+
+    // Discord stores its first part in `text` as well; publishing both would repeat it.
+    it('publishes Discord continuations once, in order, ahead of text', () => {
+        expect(
+            publishableText({ text: 'One', parts: ['One', 'Two', 'Three'], truncated: true }),
+        ).toBe('One\n\nTwo\n\nThree');
+    });
+
+    // A FormattedResponse built before `completeText` existed — a hand-rolled fixture,
+    // or a value read back from an older run — must serialize exactly as it used to.
+    it('falls back to the historical text-then-details join without completeText', () => {
+        expect(publishableText({ text: 'Summary', details: 'Details' })).toBe('Summary\n\nDetails');
+        expect(publishableText({ text: 'Summary' })).toBe('Summary');
+        expect(publishableText({ text: 'Summary', parts: [] })).toBe('Summary');
+    });
 });

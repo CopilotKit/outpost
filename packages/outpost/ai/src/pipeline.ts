@@ -28,6 +28,7 @@ import {
     AI_DISCLAIMER_ESCALATED,
     AI_DISCLAIMER_REVIEWED,
     ResponseFormatter,
+    publishableText,
 } from './formatter.js';
 import { config, validateConfig } from './config.js';
 
@@ -485,11 +486,9 @@ export class AIPipeline {
     ): AsyncIterable<string> {
         if (this.supportAgent) {
             const { formatted } = await this.generateSupportResponse(question, options);
-            // Split formats store the first part in text too; publish the parts once.
-            const text = formatted.parts?.length ? formatted.parts.join('\n\n') : formatted.text;
-            yield [text, options.source === 'web' ? formatted.details : undefined]
-                .filter(Boolean)
-                .join('\n\n');
+            // One string, so it has to be the whole response in reading order —
+            // including the web split's details, and with the footer still last.
+            yield publishableText(formatted);
             return;
         }
 

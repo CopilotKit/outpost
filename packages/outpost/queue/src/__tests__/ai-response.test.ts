@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import type { Message } from '@prisma/client';
 import type { EscalationPayload, JobHandlerContext } from '../types.js';
+import type * as OutpostAi from '@copilotkit/outpost/ai';
 
 // Seven tests in this file assert the non-shadow path. An inherited
 // SHADOW_MODE=true flips the handler and fails them, so the ambient value is
@@ -70,7 +71,11 @@ class MockAIPipeline {
     destroy = mockDestroy;
 }
 
-vi.mock('@copilotkit/outpost/ai', () => ({
+// Only the pipeline is stubbed. `publishableText` stays real on purpose: it is the
+// serialization these tests assert the durable sinks store, so stubbing it would
+// make every assertion about footer placement check the stub instead of the code.
+vi.mock('@copilotkit/outpost/ai', async (importOriginal) => ({
+    ...(await importOriginal<typeof OutpostAi>()),
     AIPipeline: MockAIPipeline,
 }));
 
@@ -937,6 +942,77 @@ describe('handleAiResponse', () => {
             expect(mockPostResponse).not.toHaveBeenCalled();
         },
     );
+
+    // What the web formatter actually returns: `text` is the summary pane and ALREADY
+    // ends with the footer that closes the response, `details` is the second pane, and
+    // `completeText` is the one-string serialization the formatter composed itself.
+    // The durable sinks below hold one string, so they must take `completeText` —
+    // re-joining the two panes leaves the footer stranded in the middle.
+    const webFormatted = {
+        text: 'Summary\n\n---\n*Powered by CopilotKit AI*',
+        details: 'Details\n\nSources:\n- [Doc](https://example.test/doc)',
+        completeText:
+            'Summary\n\nDetails\n\nSources:\n- [Doc](https://example.test/doc)' +
+            '\n\n---\n*Powered by CopilotKit AI*',
+        truncated: false,
+    };
+
+    it('ends the durable web suggestion with the footer, after the details', async () => {
+        mockPrismaTicket.findUnique.mockResolvedValue({ ...sampleTicket, source: 'WEB' });
+        mockHasAdapter.mockReturnValue(false);
+        mockGenerateSupportResponse.mockResolvedValue({
+            ...highConfidenceResult,
+            response: 'Private investigation draft',
+            handoffReason: 'Private handoff metadata',
+            formatted: webFormatted,
+        });
+
+        const result = await handleAiResponse({ ticketId: 'tkt-1' }, makeContext());
+
+        expect(result.success).toBe(true);
+        expect(mockPrismaTicket.update).toHaveBeenCalledWith({
+            where: { id: 'tkt-1' },
+            data: { suggestedResponse: webFormatted.completeText },
+        });
+        const stored = mockPrismaTicket.update.mock.calls.find(
+            (call: Array<Record<string, Record<string, unknown>>>) =>
+                call[0].data.suggestedResponse !== undefined,
+        )![0].data.suggestedResponse as string;
+        expect(stored.endsWith('\n\n---\n*Powered by CopilotKit AI*')).toBe(true);
+        expect(stored.split('*Powered by CopilotKit AI*')).toHaveLength(2);
+        expect(stored).not.toContain('Private investigation draft');
+        expect(stored).not.toContain('Private handoff metadata');
+    });
+
+    it('ends the shadow SYSTEM record with the footer, after the details', async () => {
+        const originalShadow = process.env.SHADOW_MODE;
+        try {
+            process.env.SHADOW_MODE = 'true';
+            mockPrismaTicket.findUnique.mockResolvedValue({ ...sampleTicket, source: 'WEB' });
+            mockGenerateSupportResponse.mockResolvedValue({
+                ...highConfidenceResult,
+                response: 'Private investigation draft',
+                handoffReason: 'Private handoff metadata',
+                formatted: webFormatted,
+            });
+
+            const result = await handleAiResponse(
+                { ticketId: 'tkt-1', source: 'web' },
+                makeContext(),
+            );
+
+            expect(result.success).toBe(true);
+            const content = findShadowMessageCreateCall()![0].data.content as string;
+            expect(content).toBe(webFormatted.completeText);
+            expect(content.endsWith('\n\n---\n*Powered by CopilotKit AI*')).toBe(true);
+            expect(content.split('*Powered by CopilotKit AI*')).toHaveLength(2);
+            expect(content.split('Sources:')).toHaveLength(2);
+            expect(content).not.toContain('Private investigation draft');
+            expect(content).not.toContain('Private handoff metadata');
+        } finally {
+            restoreShadowMode(originalShadow);
+        }
+    });
 
     it('skips post-back in shadow mode', async () => {
         const originalShadow = process.env.SHADOW_MODE;
