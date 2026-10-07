@@ -1,16 +1,67 @@
-node_modules
-.next
-dist
+# Docker matches these patterns against paths relative to the build context ROOT,
+# so a bare `node_modules` excludes only ./node_modules. apps/*/node_modules,
+# apps/*/dist and apps/*/.env all stayed in the context. Every pattern naming a
+# build artifact or a secret is therefore `**/`-prefixed; `**/` matches zero or
+# more leading directories, so the root-level copy is still covered.
+
+# Dependencies. Host installs are platform-specific: a darwin node_modules that
+# survives into out/full/ is copied over the linux install in the installer stage.
+**/node_modules
+
+# Build outputs
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+
+# Secrets. `.env*` alone matched only the root, so apps/*/.env, which holds
+# live tokens on any developer machine, sat inside the build context of every
+# image here. `*.env` (staging.env, prod.env) is a separate shape the
+# dot-prefixed patterns do not match.
+#
+# This block mirrors every secret-bearing entry in .gitignore; keep the two in
+# step. settings.local.json is unanchored there on purpose (nested worktrees,
+# editor .bak copies), so it is unanchored here too rather than relying on the
+# .claude exclusion below to cover it.
+**/.env
+**/.env.*
+**/*.env
+!**/.env.example
+!**/.env.*.example
+
+# Credentials and keys
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/settings.local.json
+**/settings.local.json.*
+**/.railway-config-pull-*
+**/.chalk
+**/*.log
+**/.DS_Store
+**/Thumbs.db
+
+# A local `turbo prune` leaves a full monorepo copy here, and a `next export` in
+# any app leaves one there. Depth-matching for the same reason as everything
+# above: `/out` anchored to the root reintroduced the exact bug this file's
+# header describes, one line below the header.
+**/out
+**/.nyc_output
+
+# Repo and editor metadata not needed by any build
 .git
 .github
 .claude
+docker-compose.yml
+**/.vscode
+**/.idea
+
+# Docs site is not built from these images
+apps/docs
+
+# Top-level docs only, deliberately not `**/*.md`: nested README files stay in the
+# context because packages may read or ship them.
 *.md
 !README.md
-.env*
-!.env.example
-docker-compose.yml
-.turbo
-coverage
-.vscode
-.idea
-apps/docs

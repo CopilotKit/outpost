@@ -1,0 +1,33 @@
+{
+    // Checking-only companion to tsconfig.json.
+    //
+    // The base config excludes src/__tests__ so the build never emits tests into
+    // dist/ - emitting them put `import 'vitest'` into the production image. But
+    // that exclusion also removed the tests from `tsc --noEmit`, and vitest
+    // transpiles through esbuild without type checking, so nothing checked them at
+    // all: a type error in a test file passed CI.
+    //
+    // This config re-includes them for checking only. `noEmit` is what keeps the
+    // original reason intact - tests are type-checked here and emitted nowhere.
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "noEmit": true,
+        // Widened from the base config's `src`, which exists to shape dist/.
+        // Nothing is emitted here, and vitest.config.ts sits at the package root:
+        // the file that configures the test run was checked by nothing, which is
+        // the same hole this config was written to close one directory down.
+        "rootDir": ".",
+        // The tests import from 'vitest' explicitly (vitest.config.ts sets no
+        // `globals`), so vitest is listed for its ambient declarations rather than
+        // to put describe/it/expect in scope as globals.
+        "types": ["node", "vitest"],
+        // Outside dist/. `dist/**` is the turbo `build` task's declared output, so a
+        // buildinfo written there by a --noEmit run becomes part of a restored build
+        // cache. Matched by the root .gitignore's `*.tsbuildinfo`.
+        "tsBuildInfoFile": "./tsconfig.test.tsbuildinfo"
+    },
+    // `include`/`exclude` replace the base rather than merge with it: src/__tests__
+    // is deliberately absent from the exclude list below.
+    "include": ["src/**/*.ts", "*.config.ts"],
+    "exclude": ["node_modules", "dist"]
+}

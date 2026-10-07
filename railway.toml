@@ -15,6 +15,7 @@
 #   outpost-teams-bot   -> apps/teams-bot/railway.toml
 #   outpost-linear-sync -> apps/linear-sync/railway.toml
 #   outpost-worker      -> apps/worker/railway.toml
+#   outpost-release-bot -> apps/release-bot/railway.toml
 #
 # Each non-web service must point its "Config file path" (Railway dashboard ->
 # service -> Settings -> Config-as-code) at its file above. Build context is the
