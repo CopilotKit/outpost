@@ -402,26 +402,35 @@ export class AIPipeline {
                 `[Pipeline] Response withheld from public post — ${groundedness.reasons.join('; ')}`,
             );
         }
-        const deterministicSuppressionReason = [
-            ...(groundedness.suppress ? groundedness.reasons : []),
+        // Every finding this pipeline reached on its own, in the order a reviewer
+        // should read them. `forcesEscalation` belongs here even though it never
+        // withholds the draft: it clamps the score below the gate above, so a human
+        // is already on the way and needs to know which assertion to check.
+        const deterministicReasons = [
+            ...(groundedness.suppress || groundedness.forcesEscalation ? groundedness.reasons : []),
             ...(!lint.publish ? lint.reasons : []),
-        ].join('; ');
-        const explicitHandoffReason = this.supportAgent ? generatedResponse.reasoning : undefined;
-        const legacySuppressionReason = [
-            deterministicSuppressionReason,
-            generatedResponse.reasoning,
-        ]
-            .filter(Boolean)
-            .join('; ');
-        const handoffReason = suppressed
-            ? (
-                  explicitHandoffReason ||
-                  legacySuppressionReason ||
-                  (confidenceAssessment.degraded
-                      ? 'Independent verification was unavailable or malformed'
-                      : 'Independent verification found insufficient support')
-              ).slice(0, 2000)
-            : undefined;
+        ];
+        // A reason is attached to the two outcomes that deterministically commit a
+        // human — a withheld draft and a forced escalation — and to nothing else. A
+        // score that merely landed under the gate is not a finding; restating it
+        // here would bury the real ones under noise on every low-confidence reply.
+        //
+        // The model's diagnosis explains why IT handed off. The deterministic
+        // findings are separate conclusions about the draft it produced, so neither
+        // one stands in for the other and both travel. Deterministic leads: it is
+        // locally verifiable, and it is what survives the bound below when a
+        // diagnosis runs long.
+        const handoffReason =
+            suppressed || groundedness.forcesEscalation
+                ? (
+                      [...deterministicReasons, generatedResponse.reasoning]
+                          .filter(Boolean)
+                          .join('; ') ||
+                      (confidenceAssessment.degraded
+                          ? 'Independent verification was unavailable or malformed'
+                          : 'Independent verification found insufficient support')
+                  ).slice(0, 2000)
+                : undefined;
 
         return {
             // The ORIGINAL draft, even when suppressed — the human picking up the

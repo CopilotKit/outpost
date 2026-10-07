@@ -217,6 +217,9 @@ describe('OpenAI publication boundary', () => {
     it('publishes a verified summary and exactly one GitHub disclosure', async () => {
         const result = await setup().generateSupportResponse('Tools?', { source: 'github' });
         expect(result.suppressed).toBe(false);
+        // Nothing deterministically committed a human, so nothing is handed to one.
+        expect(result.groundedness.forcesEscalation).toBe(false);
+        expect(result.handoffReason).toBeUndefined();
         expect(result.formatted.text.startsWith(reply.summary)).toBe(true);
         expect(result.formatted.text.match(/<details>/g)).toHaveLength(1);
         expect(result.formatted.text).not.toContain(source.content);
@@ -253,6 +256,44 @@ describe('OpenAI publication boundary', () => {
 
         expect(result.suppressed).toBe(true);
         expect(result.handoffReason).toBe(diagnosis);
+        expect(result.formatted.text).toContain(SUPPRESSED_RESPONSE_TEXT);
+        expect(result.formatted.text).not.toContain(diagnosis);
+    });
+    // The investigator's own diagnosis explains why IT gave up; the groundedness
+    // gate explains what the pipeline independently caught in the draft. They are
+    // different findings about different things, so the reviewer needs both — an
+    // explicit diagnosis must not stand in for the deterministic one.
+    it('keeps the deterministic groundedness reason alongside the investigator diagnosis', async () => {
+        const diagnosis = 'The retrieved sources do not cover the requested release.';
+        const pipeline = new AIPipeline({
+            supportAgent: {
+                investigate: async () => ({
+                    reply: {
+                        ...reply,
+                        decision: 'route' as const,
+                        summary: 'Override `.copilotKitGhostA` and `.copilotKitGhostB` to fix it.',
+                        details: '',
+                        evidence: [],
+                        handoffReason: diagnosis,
+                    },
+                    sources: [source],
+                    tokenUsage: { inputTokens: 0, outputTokens: 0 },
+                }),
+            },
+        });
+
+        const result = await pipeline.generateSupportResponse('Tools?', { source: 'github' });
+
+        expect(result.suppressed).toBe(true);
+        expect(result.groundedness.suppress).toBe(true);
+        const handoffReason = result.handoffReason ?? '';
+        expect(handoffReason).toContain('copilotKitGhostA');
+        expect(handoffReason).toContain('copilotKitGhostB');
+        expect(handoffReason).toContain(diagnosis);
+        // Deterministic findings lead, matching the legacy path's ordering.
+        expect(handoffReason.indexOf('copilotKitGhostA')).toBeLessThan(
+            handoffReason.indexOf(diagnosis),
+        );
         expect(result.formatted.text).toContain(SUPPRESSED_RESPONSE_TEXT);
         expect(result.formatted.text).not.toContain(diagnosis);
     });

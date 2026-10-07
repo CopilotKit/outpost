@@ -274,6 +274,35 @@ const lowConfidenceResult = {
     confidenceScore: 0.25,
 };
 
+/** The deterministic finding behind a forced escalation: the draft claimed WE checked. */
+const OWN_VERIFICATION_REASON = 'asserts own verification: "we confirmed"';
+
+/**
+ * What the pipeline returns for a draft that asserts its own verification.
+ *
+ * `forcesEscalation` clamps the score to SUPPRESSED_CONFIDENCE_CAP (ESCALATE -
+ * 0.01) without setting `suppressed`, so the answer publishes AND a human is
+ * summoned. Unlike an ordinary low score, the reason for that handoff is known
+ * and already on the result — this is the one published path that arrives with
+ * a `handoffReason` the handler must not drop.
+ */
+const forcedEscalationResult = {
+    ...highConfidenceResult,
+    confidenceLevel: 'LOW',
+    confidenceScore: 0.39,
+    groundedness: {
+        penalty: 0.3,
+        unverifiedClaims: ['"we confirmed"'],
+        unsourcedIdentifiers: [],
+        hedgeCount: 0,
+        suppress: false,
+        forcesEscalation: true,
+        reasons: [OWN_VERIFICATION_REASON],
+    },
+    suppressed: false,
+    handoffReason: OWN_VERIFICATION_REASON,
+};
+
 const sampleClassification = {
     priority: 'LOW',
     type: 'QUESTION',
@@ -1193,6 +1222,151 @@ describe('handleAiResponse', () => {
 
         expect(result.success).toBe(true);
         expect(mockPostResponse).not.toHaveBeenCalled();
+    });
+
+    // ── A published answer can arrive with its handoff reason already known ──
+    //
+    // `handoffReason` is documented as "internal reason preserved for durable
+    // human escalation". The suppressed arm has always consumed it. The
+    // published arm had only the score to go on, so a forced escalation — which
+    // publishes, and whose reason the pipeline computed deterministically —
+    // reached the human as a bare percentage. The reason was discarded at this
+    // seam, BEFORE the durable write, so no retry or sweep could recover it.
+    describe('a published response that carries its own handoff reason', () => {
+        const payload = { ticketId: 'tkt-1', source: 'discord' as const };
+
+        function escalationReasons(): string[] {
+            return mockPrismaJob.create.mock.calls
+                .map((call: Array<{ data: { type: string; payload: unknown } }>) => call[0].data)
+                .filter((data: { type: string }) => data.type === 'ESCALATION')
+                .map((data: { payload: unknown }) => (data.payload as { reason: string }).reason);
+        }
+
+        it('queues and durably stores the known reason behind a forced escalation', async () => {
+            mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
+            mockGenerateSupportResponse.mockResolvedValue(forcedEscalationResult);
+
+            const result = await handleAiResponse(payload, makeContext());
+
+            expect(result.success).toBe(true);
+            // The answer still publishes — a forced escalation is not a
+            // suppression, and this fix must not turn it into one.
+            expect(mockPostResponse).toHaveBeenCalledTimes(1);
+
+            const expectedReason =
+                `Low AI confidence (39%) — automated escalation ` + `(${OWN_VERIFICATION_REASON})`;
+
+            // The human is told why, not just how little.
+            expect(escalationReasons()).toEqual([expectedReason]);
+            // And the same text is committed with the response row BEFORE any
+            // publication, so an interrupted attempt leaves it behind.
+            expect(mockPrismaMessage.create).toHaveBeenCalledWith({
+                data: expect.objectContaining({
+                    escalationRequiredReason: expectedReason,
+                }),
+            });
+            // The numeric prefix the existing readers key on is untouched.
+            expect(expectedReason.indexOf('Low AI confidence (39%) — automated escalation')).toBe(
+                0,
+            );
+            // Internal reasoning stays internal.
+            expect(JSON.stringify(mockPostResponse.mock.calls)).not.toContain(
+                OWN_VERIFICATION_REASON,
+            );
+        });
+
+        it('leaves an ordinary low score with the generic reason, exactly as before', async () => {
+            mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
+            mockGenerateSupportResponse.mockResolvedValue(lowConfidenceResult);
+
+            await handleAiResponse(payload, makeContext());
+
+            // Negative control. A reply that merely landed under the gate has no
+            // known reason, and the handler must not invent a parenthetical.
+            expect(escalationReasons()).toEqual(['Low AI confidence (25%) — automated escalation']);
+            expect(mockPrismaMessage.create).toHaveBeenCalledWith({
+                data: expect.objectContaining({
+                    escalationRequiredReason: 'Low AI confidence (25%) — automated escalation',
+                }),
+            });
+        });
+
+        it.each([
+            ['empty', ''],
+            ['blank', '   \n  '],
+        ])(
+            'leaves the generic reason alone for a %s handoff reason',
+            async (_label, handoffReason) => {
+                mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
+                mockGenerateSupportResponse.mockResolvedValue({
+                    ...lowConfidenceResult,
+                    handoffReason,
+                });
+
+                await handleAiResponse(payload, makeContext());
+
+                // Negative control. A present-but-substanceless reason must not
+                // produce "— automated escalation ()".
+                expect(escalationReasons()).toEqual([
+                    'Low AI confidence (25%) — automated escalation',
+                ]);
+            },
+        );
+
+        it('bounds a pathologically long handoff reason', async () => {
+            mockPrismaTicket.findUnique.mockResolvedValue(sampleTicket);
+            const runaway = 'x'.repeat(5000);
+            mockGenerateSupportResponse.mockResolvedValue({
+                ...forcedEscalationResult,
+                handoffReason: runaway,
+            });
+
+            await handleAiResponse(payload, makeContext());
+
+            const [reason] = escalationReasons();
+            expect(reason.indexOf('Low AI confidence (39%) — automated escalation')).toBe(0);
+            expect(reason).toContain('x'.repeat(100));
+            expect(reason).not.toContain(runaway);
+            expect(reason.length).toBeLessThanOrEqual(
+                'Low AI confidence (39%) — automated escalation ()'.length + 2000,
+            );
+        });
+
+        it('keeps the reason through a failed enqueue and recovers it on retry', async () => {
+            const storedResponse = trackResponsePersistence();
+            mockGenerateSupportResponse.mockResolvedValue(forcedEscalationResult);
+            mockPrismaJob.create.mockRejectedValueOnce(new Error('queue unavailable'));
+
+            const first = await handleAiResponse(payload, makeContext({ jobId: 'job-owner' }));
+
+            expect(first.success).toBe(false);
+            expect(mockPostResponse).toHaveBeenCalledTimes(1);
+            // Delivered, but the handoff is still owed — and the owed marker
+            // carries the reason rather than a bare percentage.
+            expect(storedResponse()).toMatchObject({
+                responseState: 'PENDING',
+                deliveryConfirmed: true,
+            });
+            expect(storedResponse()?.escalationRequiredReason).toContain(OWN_VERIFICATION_REASON);
+
+            const retry = await handleAiResponse(payload, makeContext({ jobId: 'job-owner' }));
+
+            expect(retry.data).toMatchObject({
+                escalated: true,
+                deliveryFailed: false,
+                reason: 'escalation_recovered',
+            });
+            // Recovery reads the row, so losing the reason at the seam above
+            // would have lost it here too. Proven delivery, so nothing is
+            // appended about an arrival that did not fail. One failed enqueue
+            // plus one successful retry, and the reason is identical on both.
+            expect(escalationReasons()).toEqual([
+                `Low AI confidence (39%) — automated escalation (${OWN_VERIFICATION_REASON})`,
+                `Low AI confidence (39%) — automated escalation (${OWN_VERIFICATION_REASON})`,
+            ]);
+            expect(mockPostResponse).toHaveBeenCalledTimes(1);
+            expect(mockGenerateSupportResponse).toHaveBeenCalledTimes(1);
+        });
     });
 
     // ── Undelivered responses always end up with a human ──────────────────
@@ -2446,6 +2620,15 @@ describe('handleAiResponse', () => {
                 'suppressed',
                 { ...suppressedResult, handoffReason: 'Reporter version is unknown' },
                 'AI response withheld (Reporter version is unknown) — needs a human answer',
+                'escalation_recovered',
+            ],
+            // A forced escalation publishes rather than suppressing, so it owes
+            // its handoff down the low-confidence arm — and that arm now carries
+            // the pipeline's own reason all the way to the recovered escalation.
+            [
+                'forced-escalation',
+                forcedEscalationResult,
+                `Low AI confidence (39%) — automated escalation (${OWN_VERIFICATION_REASON})`,
                 'escalation_recovered',
             ],
             // The control: medium confidence owes no handoff, so the marker is

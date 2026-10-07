@@ -70,6 +70,18 @@ export const PRIMARY_AI_RESPONSE_KEY = 'PRIMARY_AI_RESPONSE';
  */
 export const RESPONSE_RECOVERY_AFTER_MS = 5 * 60 * 1000;
 
+/**
+ * Upper bound on the pipeline's own reason when this handler repeats it into an
+ * escalation.
+ *
+ * The pipeline already slices `handoffReason` to the same length, so this only
+ * binds if that bound ever moves or a future producer skips it. It is restated
+ * here because the value crosses a trust boundary at this seam: past it the
+ * reason lives in a durable column and in a queued job payload, neither of
+ * which should be able to grow without a decision made right here.
+ */
+const MAX_REPEATED_HANDOFF_REASON = 2000;
+
 interface StoredAiResponse {
     id: string;
     type: string;
@@ -888,10 +900,29 @@ export async function handleAiResponse(
 
         await context.reportProgress(70);
 
+        // A published answer can arrive with its handoff reason already known.
+        // A forced escalation is the live case: an ungrounded self-verification
+        // claim clamps the score below the escalation gate WITHOUT suppressing,
+        // so the draft publishes and the handoff comes down the low-confidence
+        // arm — the one arm that used to have only the score to report. The
+        // pipeline computed a deterministic reason for that escalation, and
+        // dropping it here dropped it for good: this value is what the durable
+        // `escalationRequiredReason` is written from, so no retry or sweep could
+        // recover a reason this expression never produced.
+        //
+        // Appended, not substituted. The percentage is the part existing readers
+        // key on — including the sweep, which asserts the stored reason leads its
+        // recovered text — so the generic sentence stays intact ahead of the
+        // detail. An absent or blank reason adds nothing at all, which keeps a
+        // merely low-scoring reply reading exactly as it always has.
+        const knownHandoffReason = pipelineResult.handoffReason?.trim();
         const nonDeliveryEscalationReason = pipelineResult.suppressed
             ? `AI response withheld (${pipelineResult.handoffReason || pipelineResult.groundedness.reasons.join('; ') || 'Insufficient verified evidence'}) — needs a human answer`
             : pipelineResult.confidenceScore < AI_CONFIDENCE.ESCALATE
-              ? `Low AI confidence (${(pipelineResult.confidenceScore * 100).toFixed(0)}%) — automated escalation`
+              ? `Low AI confidence (${(pipelineResult.confidenceScore * 100).toFixed(0)}%) — automated escalation` +
+                (knownHandoffReason
+                    ? ` (${knownHandoffReason.slice(0, MAX_REPEATED_HANDOFF_REASON)})`
+                    : '')
               : null;
 
         // 5. Persist the AI-generated response and atomically claim this

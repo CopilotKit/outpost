@@ -654,6 +654,52 @@ describe('AIPipeline', () => {
                 expect(result.confidenceScore).toBeLessThan(AI_CONFIDENCE.ESCALATE);
             });
 
+            // The clamp above guarantees a human picks this up, so the reason the
+            // clamp fired has to travel with it. Suppression is NOT the trigger —
+            // this draft publishes — so a reason gated on `suppressed` alone hands
+            // the reviewer an escalation with no explanation of what to check.
+            it('carries the own-verification reason on a forced escalation that still publishes', async () => {
+                mockGenerate.mockResolvedValue({
+                    ...sampleGeneratedResponse,
+                    text: '## Bug Confirmed: Cursor Jump\n\nRoot cause is a re-render.',
+                });
+
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(false);
+                expect(result.groundedness.forcesEscalation).toBe(true);
+                expect(result.confidenceScore).toBeLessThan(AI_CONFIDENCE.ESCALATE);
+                expect(result.handoffReason).toEqual(expect.any(String));
+                expect(result.handoffReason ?? '').toContain('asserts own verification');
+            });
+
+            // The complement of the test above, and the bound on it: a score under
+            // the gate is not by itself something a reviewer can act on, so a
+            // published answer that merely scored low must stay reason-free rather
+            // than carry a restatement of its own confidence number.
+            it('does not manufacture a handoff reason for a merely low-scoring published answer', async () => {
+                mockScore.mockResolvedValue({
+                    ...sampleConfidence,
+                    score: 0.2,
+                    level: ConfidenceLevel.LOW,
+                });
+
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(false);
+                expect(result.groundedness.forcesEscalation).toBe(false);
+                expect(result.confidenceScore).toBeLessThan(AI_CONFIDENCE.ESCALATE);
+                expect(result.handoffReason).toBeUndefined();
+            });
+
+            it('leaves a published grounded answer without a handoff reason', async () => {
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(false);
+                expect(result.groundedness.forcesEscalation).toBe(false);
+                expect(result.handoffReason).toBeUndefined();
+            });
+
             it('marks a response naming identifiers absent from the sources as suppressed', async () => {
                 mockGenerate.mockResolvedValue({
                     ...sampleGeneratedResponse,
