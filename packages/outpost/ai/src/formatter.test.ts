@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SupportReply } from './support-reply.js';
+import type { FormattedResponse } from './types.js';
 import {
     AI_DISCLAIMER,
     AI_DISCLAIMER_ESCALATED,
@@ -101,6 +102,171 @@ describe('ResponseFormatter', () => {
             });
 
             expect(result.text).toContain('Low confidence response');
+        });
+    });
+
+    // Discord rejects any message over 2000 characters, so the formatter owns a
+    // budget, not a preference. The footer is part of what it must fit: it is 109
+    // UTF-16 units and is appended AFTER the split, so a splitter that reserves
+    // less than that hands Discord an oversized last message — and whatever the
+    // formatter does to force it back under the cap is damage to copy a user reads.
+    //
+    // These cases are stated as the posting contract rather than as the splitter's
+    // internals, because the contract is what the Discord adapter consumes: it posts
+    // `parts` when present and `text` otherwise (shared/src/platforms/discord.ts),
+    // so "a message" means one element of that sequence.
+    describe('Discord 2000-character budget', () => {
+        // Derived through the public API rather than copied from the source, so this
+        // tracks the real footer instead of asserting against a second copy of it:
+        // an empty body formats to the footer and nothing else.
+        const FOOTER = formatter.format('', 'discord').text;
+
+        // A high surrogate not followed by a low one, or a low surrogate not preceded
+        // by a high one. Either is an unpaired code unit — not a rendering nit but an
+        // ill-formed string, which is what slicing at an arbitrary index produces when
+        // the index lands in the middle of an astral character such as 👍.
+        const LONE_SURROGATE =
+            /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+        /** The exact message sequence the Discord adapter will post, in order. */
+        function messagesFor(result: FormattedResponse): string[] {
+            return result.parts?.length ? result.parts : [result.text];
+        }
+
+        /** The invariants that hold for every Discord response, split or not. */
+        function postableMessages(result: FormattedResponse): string[] {
+            const messages = messagesFor(result);
+            for (const message of messages) {
+                expect(message.length).toBeLessThanOrEqual(2000);
+                expect(message).not.toMatch(LONE_SURROGATE);
+                expect(message.endsWith('...')).toBe(false);
+            }
+            // One complete footer, closing the last message and appearing nowhere else.
+            expect(messages[messages.length - 1].endsWith(FOOTER)).toBe(true);
+            const footerOccurrences = messages.reduce(
+                (total, message) => total + message.split(FOOTER).length - 1,
+                0,
+            );
+            expect(footerOccurrences).toBe(1);
+            return messages;
+        }
+
+        it('reserves the whole footer, not a smaller fixed allowance', () => {
+            // 1892 is the first body length whose single message would exceed the cap
+            // only once the footer is counted — the first size a 50-character reserve
+            // gets wrong.
+            const messages = postableMessages(formatter.format('A'.repeat(1892), 'discord'));
+
+            expect(messages.length).toBeGreaterThan(1);
+            expect(messages.join('')).toContain('A'.repeat(1892).slice(0, 100));
+        });
+
+        it('keeps the Docs link and the reaction prompt whole at every near-limit size', () => {
+            // The whole window where body + footer lands just over the cap. Sizes below
+            // it fit in one message and sizes above it split on their own; in between is
+            // where an under-reserved budget silently eats the end of the footer — the
+            // Docs URL at one size, the 👍/👎 prompt at another.
+            for (let length = 1880; length <= 1960; length++) {
+                const messages = postableMessages(formatter.format('A'.repeat(length), 'discord'));
+                const last = messages[messages.length - 1];
+
+                expect(last, `body length ${length}`).toContain(
+                    '[Docs](https://docs.copilotkit.ai)',
+                );
+                expect(last, `body length ${length}`).toContain('React with 👍 or 👎');
+            }
+        });
+
+        it('never emits an unpaired surrogate half of the footer emoji', () => {
+            // At this size the old cap landed between the two code units of 👍 and
+            // shipped a bare \uD83D to Discord.
+            const messages = postableMessages(formatter.format('A'.repeat(1896), 'discord'));
+
+            expect(messages.join('')).not.toMatch(LONE_SURROGATE);
+        });
+
+        it('closes an already-split response with the footer intact', () => {
+            // Same failure one part further along: the body splits on its own, and the
+            // last part is then the one that overflows when the footer is appended.
+            const messages = postableMessages(formatter.format('A'.repeat(3899), 'discord'));
+
+            expect(messages.length).toBeGreaterThan(2);
+        });
+
+        // Already true before the budget was corrected — plain prose was never the
+        // part that got cut. It is here as a guard on the split point itself: the
+        // split consumes the separator it broke on, and nothing else.
+        it('carries every word of a split body across the parts, in order', () => {
+            const words = Array.from({ length: 700 }, (_, index) => `word${index}`);
+            const body = words.join(' ');
+
+            const messages = postableMessages(formatter.format(body, 'discord'));
+            const last = messages[messages.length - 1];
+            const bodyAsPosted = [...messages.slice(0, -1), last.slice(0, -FOOTER.length)]
+                .join(' ')
+                .split(/\s+/)
+                .filter(Boolean);
+
+            expect(bodyAsPosted).toEqual(words);
+        });
+
+        it('preserves the indentation of every code line it splits between', () => {
+            // A split consumes the newline it broke on. It must not also consume the
+            // leading whitespace of the line that follows, which inside a fence is the
+            // code's own indentation — losing it rewrites the snippet the user copies.
+            const lines = Array.from(
+                { length: 90 },
+                (_, index) => `        indented line ${index} padding padding padding`,
+            );
+            const body = '```ts\n' + lines.join('\n') + '\n```';
+
+            const messages = postableMessages(formatter.format(body, 'discord'));
+
+            expect(messages.length).toBeGreaterThan(1);
+            for (const line of lines) {
+                expect(messages.filter((message) => message.includes(line))).toHaveLength(1);
+            }
+        });
+
+        it('leaves room for the fences it adds when it splits inside a code block', () => {
+            // Closing a fence on one part and reopening it on the next adds characters
+            // the splitter did not measure. Sweeping the body length walks that overhead
+            // across the cap instead of guessing which single size lands on it, and walks
+            // the last part through the window where the footer no longer fits.
+            for (let lineCount = 100; lineCount <= 240; lineCount++) {
+                const body = '```typescript\n' + 'const value = 1;\n'.repeat(lineCount) + '```';
+                const messages = postableMessages(formatter.format(body, 'discord'));
+
+                for (const message of messages) {
+                    expect(
+                        (message.match(/```/g) ?? []).length % 2,
+                        `line count ${lineCount}`,
+                    ).toBe(0);
+                }
+            }
+        });
+
+        it('splits a non-ASCII body without dropping or halving a character', () => {
+            // Length in UTF-16 units is not length in characters. A body of astral and
+            // multi-byte characters crosses the cap at a different sentence count and
+            // offers far more indices that sit inside a character, so the count is swept
+            // rather than guessed.
+            for (let sentenceCount = 60; sentenceCount <= 140; sentenceCount++) {
+                const sentences = Array.from(
+                    { length: sentenceCount },
+                    (_, index) => `手順${index}：プロバイダーを設定してください 🙂🚀`,
+                );
+                const messages = postableMessages(
+                    formatter.format(sentences.join('\n'), 'discord'),
+                );
+
+                for (const sentence of sentences) {
+                    expect(
+                        messages.filter((message) => message.includes(sentence)),
+                        `sentence count ${sentenceCount}`,
+                    ).toHaveLength(1);
+                }
+            }
         });
     });
 

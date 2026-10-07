@@ -4,6 +4,15 @@ import { supportReplyDetails, type SupportReply } from './support-reply.js';
 
 const DISCORD_MAX_LENGTH = 2000;
 
+/**
+ * What a split costs when it lands inside a fenced code block: the fence is closed
+ * on the part being emitted and reopened on the next one. Both are appended after
+ * the split point is chosen, so both are charged against the budget rather than
+ * assumed to fit.
+ */
+const FENCE_CLOSE = '\n```';
+const FENCE_REOPEN = '```\n';
+
 const STANDARD_FOOTER =
     '\n\n---\n*Powered by CopilotKit AI · [Docs](https://docs.copilotkit.ai) · Was this helpful? React with 👍 or 👎*';
 
@@ -51,6 +60,17 @@ export function publishableText(formatted: FormattedResponse): string {
     if (formatted.completeText) return formatted.completeText;
     const body = formatted.parts?.length ? formatted.parts.join('\n\n') : formatted.text;
     return [body, formatted.details].filter(Boolean).join('\n\n');
+}
+
+/**
+ * True when `index` holds the leading half of a surrogate pair completed at
+ * `index + 1` — that is, when a cut between the two would leave both halves
+ * unpaired.
+ */
+function splitsSurrogatePair(text: string, index: number): boolean {
+    const leading = text.charCodeAt(index);
+    const trailing = text.charCodeAt(index + 1);
+    return leading >= 0xd800 && leading <= 0xdbff && trailing >= 0xdc00 && trailing <= 0xdfff;
 }
 
 /**
@@ -144,17 +164,14 @@ export class ResponseFormatter {
             };
         }
 
-        // Split into multiple parts, preserving code blocks
-        const parts = this.splitForDiscord(text);
-
-        // Add footer only to the last part
-        const lastIdx = parts.length - 1;
-        parts[lastIdx] = parts[lastIdx] + STANDARD_FOOTER;
-
-        // If even the last part is too long after footer, truncate it
-        if (parts[lastIdx].length > DISCORD_MAX_LENGTH) {
-            parts[lastIdx] = parts[lastIdx].slice(0, DISCORD_MAX_LENGTH - 3) + '...';
-        }
+        // Split into multiple parts, preserving code blocks. The splitter is told how
+        // much the footer will cost so the last part comes back with room for it; there
+        // is therefore nothing left to cut here, and nothing may be cut — the end of the
+        // last message is the footer, so trimming to fit removes the Docs link and the
+        // 👍/👎 prompt from a response a user reads, and can leave half a surrogate pair
+        // where an emoji was.
+        const parts = this.splitForDiscord(text, STANDARD_FOOTER.length);
+        parts[parts.length - 1] += STANDARD_FOOTER;
 
         return {
             text: parts[0],
@@ -164,50 +181,82 @@ export class ResponseFormatter {
         };
     }
 
-    private splitForDiscord(text: string): string[] {
+    /**
+     * Split `text` into messages that each fit Discord's cap, leaving the LAST one
+     * `footerLength` characters free for the footer the caller appends to it.
+     *
+     * The budget is the whole job. Everything appended after the split point is
+     * chosen has to be counted here, because Discord rejects an oversized message and
+     * the only way to recover downstream is to cut copy that was meant to be read.
+     * Two things are appended: the footer, on the last part, and the fence this
+     * function closes on a part when the split lands inside a code block. A reserve
+     * that under-counts either one is not a smaller margin — it is a message that
+     * cannot be posted as composed.
+     */
+    private splitForDiscord(text: string, footerLength: number): string[] {
         const parts: string[] = [];
-        // Reserve space for potential "... (continued)" markers
-        const maxPartLength = DISCORD_MAX_LENGTH - 50;
+        // Charged on every part, because any part may be the one a fence is closed on.
+        const maxPartLength = DISCORD_MAX_LENGTH - FENCE_CLOSE.length;
 
         let remaining = text;
         while (remaining.length > 0) {
-            if (remaining.length <= maxPartLength) {
+            if (remaining.length + footerLength <= DISCORD_MAX_LENGTH) {
                 parts.push(remaining);
                 break;
             }
 
-            // Find a good split point: prefer paragraph breaks, then newlines, then spaces
-            let splitAt = maxPartLength;
+            // Cutting as late as the budget allows would answer a body that overruns by
+            // a few characters with a continuation message that is almost entirely
+            // footer, so the cut also leaves at least the footer's own length behind.
+            // The floor of 1 is for termination only: it cannot be reached while the
+            // footer is shorter than the cap.
+            const limit = Math.max(1, Math.min(maxPartLength, remaining.length - footerLength));
+            const { splitAt, separatorLength } = this.splitPoint(remaining, limit);
 
-            const paragraphBreak = remaining.lastIndexOf('\n\n', maxPartLength);
-            if (paragraphBreak > maxPartLength * 0.5) {
-                splitAt = paragraphBreak;
-            } else {
-                const lineBreak = remaining.lastIndexOf('\n', maxPartLength);
-                if (lineBreak > maxPartLength * 0.5) {
-                    splitAt = lineBreak;
-                } else {
-                    const space = remaining.lastIndexOf(' ', maxPartLength);
-                    if (space > maxPartLength * 0.5) {
-                        splitAt = space;
-                    }
-                }
-            }
-
-            // Check if we're splitting inside a code block
             const part = remaining.slice(0, splitAt);
-            const openFences = (part.match(/```/g) || []).length;
-            if (openFences % 2 !== 0) {
-                // We're inside a code block — close it and reopen in next part
-                parts.push(part + '\n```');
-                remaining = '```\n' + remaining.slice(splitAt).trimStart();
-            } else {
-                parts.push(part);
-                remaining = remaining.slice(splitAt).trimStart();
-            }
+            const insideCodeBlock = (part.match(/```/g) ?? []).length % 2 !== 0;
+            parts.push(insideCodeBlock ? part + FENCE_CLOSE : part);
+            remaining =
+                (insideCodeBlock ? FENCE_REOPEN : '') + remaining.slice(splitAt + separatorLength);
         }
 
         return parts;
+    }
+
+    /**
+     * Where to break `text` at or before `limit`, and how many characters of it the
+     * break consumes.
+     *
+     * Breaking on whitespace consumes exactly the whitespace it broke on and not a
+     * character more. What follows a newline is the next line's indentation, which
+     * inside a fenced block is the snippet's own structure — absorbing it silently
+     * rewrites code the reader is being told to copy.
+     */
+    private splitPoint(text: string, limit: number): { splitAt: number; separatorLength: number } {
+        // Prefer paragraph breaks, then newlines, then spaces — but only in the back
+        // half of the budget, so a body with one early break still fills its messages.
+        const earliestUsefulBreak = limit * 0.5;
+
+        const paragraphBreak = text.lastIndexOf('\n\n', limit);
+        if (paragraphBreak > earliestUsefulBreak) {
+            return { splitAt: paragraphBreak, separatorLength: 2 };
+        }
+
+        const lineBreak = text.lastIndexOf('\n', limit);
+        if (lineBreak > earliestUsefulBreak) {
+            return { splitAt: lineBreak, separatorLength: 1 };
+        }
+
+        const space = text.lastIndexOf(' ', limit);
+        if (space > earliestUsefulBreak) {
+            return { splitAt: space, separatorLength: 1 };
+        }
+
+        // Nothing to break on, so cut at the limit — but never between the two code
+        // units of an astral character such as 👍. That is not a rendering nit: it
+        // produces an unpaired surrogate, an ill-formed string, in published copy.
+        const cutsAnAstralCharacter = limit > 1 && splitsSurrogatePair(text, limit - 1);
+        return { splitAt: cutsAnAstralCharacter ? limit - 1 : limit, separatorLength: 0 };
     }
 
     private formatGitHub(text: string): FormattedResponse {
