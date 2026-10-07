@@ -376,14 +376,16 @@ function holdPlatformPost() {
         signalStarted = resolve;
     });
     let rejectPost!: (error: Error) => void;
-    const pendingPost = new Promise<void>((_resolve, reject) => {
+    let resolvePost!: () => void;
+    const pendingPost = new Promise<void>((resolve, reject) => {
+        resolvePost = () => resolve();
         rejectPost = reject;
     });
     mockPostResponse.mockImplementationOnce(() => {
         signalStarted();
         return pendingPost;
     });
-    return { started, rejectPost };
+    return { started, rejectPost, resolvePost };
 }
 
 function findShadowMessageCreateCall() {
@@ -1665,6 +1667,13 @@ describe('handleAiResponse', () => {
                         responseState: 'PENDING',
                         responseJobId: 'job-required-escalation',
                         escalationRequiredReason: 'Low AI confidence (25%) — automated escalation',
+                        // The first attempt above posted successfully, and a
+                        // delivered response that owes a handoff records that on
+                        // deliveryConfirmed. Without it the row would say only
+                        // "a human is owed", which is also what an attempt that
+                        // died before posting leaves behind — and that one is
+                        // routed to a delayed takeover instead of escalating.
+                        deliveryConfirmed: true,
                         createdAt: new Date(),
                     },
                 ],
@@ -1961,6 +1970,9 @@ describe('handleAiResponse', () => {
                         responseState: 'PENDING',
                         responseJobId: 'job-required-escalation',
                         escalationRequiredReason: 'Low AI confidence (25%) — automated escalation',
+                        // Delivered, handoff still owed — the shape that escalates
+                        // on sight rather than waiting for a delayed takeover.
+                        deliveryConfirmed: true,
                         createdAt: new Date('2026-04-23T10:00:20Z'),
                     },
                 ],
@@ -2003,7 +2015,13 @@ describe('handleAiResponse', () => {
      * comes back has to follow the row's real responseState.
      */
     describe('recovery escalation compare-and-set changed no rows', () => {
-        /** Row shape that routes into recoverRequiredEscalation. */
+        /**
+         * Row shape that routes into recoverRequiredEscalation: an owed handoff
+         * on a response whose delivery outcome IS recorded. Without that
+         * recorded outcome the owed marker alone is ambiguous — an attempt that
+         * died before posting leaves the same row — so the gate sends it to a
+         * delayed takeover instead, and these cases would never be reached.
+         */
         const requiredEscalationRow = {
             id: 'msg-required-escalation',
             type: 'BOT',
@@ -2013,6 +2031,7 @@ describe('handleAiResponse', () => {
             responseState: 'PENDING',
             responseJobId: 'job-recovery',
             escalationRequiredReason: 'Low AI confidence (25%) — automated escalation',
+            deliveryConfirmed: true,
             createdAt: new Date('2026-04-23T10:00:20Z'),
         };
 
@@ -2234,6 +2253,301 @@ describe('handleAiResponse', () => {
                 reason: 'delivery_recovered',
             });
             expect(mockPrismaMessage.findUnique).not.toHaveBeenCalled();
+        });
+    });
+
+    /**
+     * An owed handoff and a delivery outcome are different facts, and the row
+     * records them separately because it has to.
+     *
+     * `escalationRequiredReason` is stamped on the response when it is created,
+     * before publication is even attempted — it is the promise ("low
+     * confidence", "withheld draft"), not a report on what the reporter
+     * received. On its own it therefore cannot tell these apart:
+     *
+     *   - the answer went out and a human is owed a look at a weak one, versus
+     *   - the attempt died around the post and the reporter has nothing.
+     *
+     * Treating every owed marker as the first case escalated immediately on a
+     * row whose delivery was unknown — summoning a human against a post that
+     * may still have been in flight, under a reason that implies an answer
+     * arrived, and reporting deliveryFailed: false for a reporter who may be
+     * sitting in silence. So delivery has to be recorded even while the row
+     * stays PENDING for its handoff, and an unrecorded outcome has to take the
+     * delayed takeover route that already exists for exactly this uncertainty.
+     */
+    describe('an owed handoff whose delivery outcome was never recorded', () => {
+        const payload = { ticketId: 'tkt-1', source: 'discord' as const };
+
+        function jobsOfType(type: string) {
+            return mockPrismaJob.create.mock.calls
+                .map((call: Array<{ data: { type: string; payload: unknown } }>) => call[0].data)
+                .filter((data: { type: string }) => data.type === type);
+        }
+
+        function lastEscalationReason(): string {
+            const escalations = jobsOfType('ESCALATION');
+            expect(escalations.length).toBeGreaterThan(0);
+            return (escalations[escalations.length - 1].payload as { reason: string }).reason;
+        }
+
+        /**
+         * Commit the response row, then stop the worker dead before the platform
+         * post — the interruption that leaves an owed marker next to an unknown
+         * delivery. The row survives because it is already committed; the throw
+         * escapes the handler exactly as a crashing attempt would.
+         */
+        function crashAfterResponseRow(): void {
+            const persist = mockPrismaMessage.create.getMockImplementation()!;
+            mockPrismaMessage.create.mockImplementationOnce(async (args: unknown) => {
+                await persist(args);
+                throw new Error('worker interrupted before publication');
+            });
+        }
+
+        it.each([
+            [
+                'low-confidence',
+                lowConfidenceResult,
+                'Low AI confidence (25%) — automated escalation',
+                'escalation_recovered',
+            ],
+            [
+                'suppressed',
+                { ...suppressedResult, handoffReason: 'Reporter version is unknown' },
+                'AI response withheld (Reporter version is unknown) — needs a human answer',
+                'escalation_recovered',
+            ],
+            // The control: medium confidence owes no handoff, so the marker is
+            // absent and this row has always taken the delayed route. The two
+            // above must now reach the same place by the same road.
+            ['medium-confidence', mediumConfidenceResult, null, 'delivery_recovered'],
+        ])(
+            'defers an interrupted %s response to the delayed takeover, then escalates undelivered',
+            async (_label, pipelineResult, owedReason, takeoverOutcome) => {
+                const storedResponse = trackResponsePersistence();
+                mockGenerateSupportResponse.mockResolvedValue(pipelineResult);
+                crashAfterResponseRow();
+                mockPrismaJob.create.mockResolvedValueOnce({ id: 'job-delayed-takeover' });
+
+                await expect(
+                    handleAiResponse(payload, makeContext({ jobId: 'job-owner' })),
+                ).rejects.toThrow('worker interrupted before publication');
+
+                // Nothing reached the reporter, and nothing on the row claims
+                // otherwise — which is precisely the ambiguity to resolve.
+                expect(mockPostResponse).not.toHaveBeenCalled();
+                expect(storedResponse()).toMatchObject({
+                    responseState: 'PENDING',
+                    deliveryConfirmed: false,
+                    responseError: null,
+                    escalationRequiredReason: owedReason,
+                });
+
+                const retry = await handleAiResponse(payload, makeContext({ jobId: 'job-owner' }));
+
+                // No human yet: the takeover delay is what keeps recovery from
+                // racing a post this job may still be making.
+                expect(retry.data).toMatchObject({
+                    skipped: true,
+                    recoveryScheduled: true,
+                    recoveryJobId: 'job-delayed-takeover',
+                    reason: 'delivery_recovery_scheduled',
+                });
+                expect(jobsOfType('ESCALATION')).toHaveLength(0);
+                // The claim moved; the promise did not.
+                expect(storedResponse()).toMatchObject({
+                    responseJobId: 'job-delayed-takeover',
+                    escalationRequiredReason: owedReason,
+                });
+
+                const takeover = await handleAiResponse(
+                    { ...payload, pendingResponseRecovery: { messageId: 'msg-new' } },
+                    makeContext({ jobId: 'job-delayed-takeover' }),
+                );
+
+                expect(takeover.data).toMatchObject({
+                    skipped: true,
+                    escalated: true,
+                    // The reporter may have nothing. Saying delivery succeeded
+                    // here is the reading that gets the thread closed unread.
+                    deliveryFailed: true,
+                    reason: takeoverOutcome,
+                });
+                expect(storedResponse()).toMatchObject({
+                    responseState: 'ESCALATED',
+                    escalationRequiredReason: null,
+                });
+
+                const reason = lastEscalationReason();
+                expect(reason).toContain('A human must verify the thread and answer if needed.');
+                if (owedReason) {
+                    // The exact promise survives, and the uncertainty is added
+                    // to it rather than replacing it.
+                    expect(reason).toContain(owedReason);
+                    expect(reason).toContain('DISCORD');
+                    expect(reason).toContain('may have received no response at all');
+                }
+                // One takeover, one escalation, and never a second post.
+                expect(jobsOfType('ESCALATION')).toHaveLength(1);
+                expect(jobsOfType('AI_RESPONSE')).toHaveLength(1);
+                expect(mockPostResponse).not.toHaveBeenCalled();
+                expect(mockGenerateSupportResponse).toHaveBeenCalledTimes(1);
+            },
+        );
+
+        it('waits out a post still in flight instead of escalating against it', async () => {
+            const storedResponse = trackResponsePersistence();
+            mockGenerateSupportResponse.mockResolvedValue(lowConfidenceResult);
+            const post = holdPlatformPost();
+            mockPrismaJob.create.mockResolvedValueOnce({ id: 'job-delayed-takeover' });
+
+            const original = handleAiResponse(payload, makeContext({ jobId: 'job-owner' }));
+            await post.started;
+
+            // The owning job is retried while its first attempt sits inside
+            // postResponse — a timed-out claim, not a dead worker. The owed
+            // marker predates that post, so settling on it here summons a human
+            // against an answer that is about to land.
+            const retry = await handleAiResponse(payload, makeContext({ jobId: 'job-owner' }));
+
+            expect(retry.data).toMatchObject({
+                recoveryScheduled: true,
+                reason: 'delivery_recovery_scheduled',
+            });
+            expect(jobsOfType('ESCALATION')).toHaveLength(0);
+
+            post.resolvePost();
+            const first = await original;
+
+            // Delivery is now a proven fact, recorded even though the row has to
+            // stay PENDING until the handoff it owes is durable.
+            expect(first.data).toMatchObject({ escalated: true, deliveryFailed: false });
+            expect(storedResponse()).toMatchObject({
+                responseState: 'ESCALATED',
+                deliveryConfirmed: true,
+            });
+            expect(jobsOfType('ESCALATION')).toHaveLength(1);
+            // A delivered answer's handoff carries its own reason and nothing
+            // about a delivery that did not fail.
+            expect(lastEscalationReason()).toBe('Low AI confidence (25%) — automated escalation');
+
+            // The takeover the retry scheduled finds the row settled and leaves
+            // it there: one post, one escalation.
+            const takeover = await handleAiResponse(
+                { ...payload, pendingResponseRecovery: { messageId: 'msg-new' } },
+                makeContext({ jobId: 'job-delayed-takeover' }),
+            );
+
+            expect(takeover.data).toMatchObject({ skipped: true, reason: 'already_answered' });
+            expect(jobsOfType('ESCALATION')).toHaveLength(1);
+            expect(mockPostResponse).toHaveBeenCalledTimes(1);
+            expect(mockGenerateSupportResponse).toHaveBeenCalledTimes(1);
+        });
+
+        it('records the delivery of a response held PENDING by its owed handoff', async () => {
+            const storedResponse = trackResponsePersistence();
+            mockGenerateSupportResponse.mockResolvedValue(lowConfidenceResult);
+            mockPrismaJob.create.mockRejectedValueOnce(new Error('queue unavailable'));
+
+            const first = await handleAiResponse(payload, makeContext({ jobId: 'job-owner' }));
+
+            expect(first.success).toBe(false);
+            expect(mockPostResponse).toHaveBeenCalledTimes(1);
+            // Both facts, on one row, because responseState can only hold one of
+            // them: the reporter has the answer AND a human is still owed.
+            expect(storedResponse()).toMatchObject({
+                responseState: 'PENDING',
+                deliveryConfirmed: true,
+                escalationRequiredReason: 'Low AI confidence (25%) — automated escalation',
+            });
+
+            const retry = await handleAiResponse(payload, makeContext({ jobId: 'job-owner' }));
+
+            // Proven delivery, so there is nothing to wait out: escalate now,
+            // and never tell the human the answer failed to arrive.
+            expect(retry.data).toMatchObject({
+                escalated: true,
+                deliveryFailed: false,
+                reason: 'escalation_recovered',
+            });
+            expect(jobsOfType('AI_RESPONSE')).toHaveLength(0);
+            expect(lastEscalationReason()).toBe('Low AI confidence (25%) — automated escalation');
+            expect(mockPostResponse).toHaveBeenCalledTimes(1);
+            expect(mockGenerateSupportResponse).toHaveBeenCalledTimes(1);
+        });
+
+        it('escalates a recorded delivery failure at once, keeping its diagnostic', async () => {
+            const storedResponse = trackResponsePersistence();
+            mockGenerateSupportResponse.mockResolvedValue(lowConfidenceResult);
+            mockPostResponse.mockRejectedValueOnce(new Error('Discord API 503'));
+            mockPrismaJob.create.mockRejectedValueOnce(new Error('queue unavailable'));
+
+            const first = await handleAiResponse(payload, makeContext({ jobId: 'job-owner' }));
+
+            expect(first.success).toBe(false);
+            expect(storedResponse()).toMatchObject({
+                responseState: 'PENDING',
+                deliveryConfirmed: false,
+                responseError: 'Discord API 503',
+            });
+
+            const retry = await handleAiResponse(payload, makeContext({ jobId: 'job-owner' }));
+
+            // A recorded failure is an answered question, not an open one — no
+            // delay, and the reason the delivery path already wrote stands as
+            // it is, diagnostic included.
+            expect(retry.data).toMatchObject({
+                escalated: true,
+                deliveryFailed: true,
+                reason: 'escalation_recovered',
+            });
+            expect(jobsOfType('AI_RESPONSE')).toHaveLength(0);
+            expect(lastEscalationReason()).toBe(
+                'AI response generated but not delivered to DISCORD (Discord API 503) — ' +
+                    'needs a human to answer the reporter',
+            );
+        });
+
+        it('does not defer an owed handoff it no longer owns', async () => {
+            // A stale duplicate cannot transfer a claim it does not hold, so
+            // deferring here would drop the handoff rather than delay it. The
+            // escalation compare-and-set is what keeps it from doubling up with
+            // the real owner.
+            mockPrismaTicket.findUnique.mockResolvedValue({
+                ...sampleTicket,
+                messages: [
+                    ...sampleTicket.messages,
+                    {
+                        id: 'msg-newer-owner',
+                        type: 'BOT',
+                        content: lowConfidenceResult.response,
+                        isAiGenerated: true,
+                        responseKey: 'PRIMARY_AI_RESPONSE',
+                        responseState: 'PENDING',
+                        responseJobId: 'job-newer',
+                        escalationRequiredReason: 'Low AI confidence (25%) — automated escalation',
+                        deliveryConfirmed: false,
+                        responseError: null,
+                        createdAt: new Date(),
+                    },
+                ],
+            });
+
+            const result = await handleAiResponse(payload, makeContext({ jobId: 'job-stale' }));
+
+            expect(result.data).toMatchObject({
+                skipped: true,
+                escalated: true,
+                deliveryFailed: true,
+                reason: 'escalation_recovered',
+            });
+            expect(jobsOfType('AI_RESPONSE')).toHaveLength(0);
+            const reason = lastEscalationReason();
+            expect(reason).toContain('Low AI confidence (25%) — automated escalation');
+            expect(reason).toContain('may have received no response at all');
+            expect(mockPostResponse).not.toHaveBeenCalled();
+            expect(mockGenerateSupportResponse).not.toHaveBeenCalled();
         });
     });
 

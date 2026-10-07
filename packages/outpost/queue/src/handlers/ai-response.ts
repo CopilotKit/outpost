@@ -19,9 +19,14 @@
  *
  * The BOT Message starts in PENDING before any external post. Successful
  * delivery with no human handoff marks it DELIVERED; a response that requires
- * escalation stays PENDING until that job is durable, then becomes ESCALATED.
- * If delivery itself ends PENDING, a retry schedules a delayed check. That
- * check pulls in a human only if the response remains pending, preserving the
+ * escalation stays PENDING until that job is durable, then becomes ESCALATED —
+ * recording its successful post on `deliveryConfirmed` in the meantime, since
+ * responseState is busy saying the handoff is still owed.
+ *
+ * Whenever an attempt ends with the delivery outcome unrecorded — neither
+ * confirmed nor failed — a retry of the owning job schedules a delayed check
+ * instead of settling the row, whether or not a handoff is owed. That check
+ * pulls in a human only if the response remains pending, preserving the
  * one-post rule without racing the original handler.
  *
  * Every transition above is driven by the job that owns the response, so none of
@@ -110,8 +115,63 @@ function isPrimaryAiResponseConflict(error: unknown): boolean {
  * responseError: that column is read as error text, and "the reporter has their
  * answer" is the opposite of an error.
  */
-function hasConfirmedDelivery(response: StoredAiResponse): boolean {
+function hasConfirmedDelivery(response: Pick<StoredAiResponse, 'deliveryConfirmed'>): boolean {
     return response.deliveryConfirmed === true;
+}
+
+/**
+ * Whether anything on the row records what became of the platform post.
+ *
+ * Confirmed delivery and a recorded delivery error are the two traces a
+ * publication attempt that ran to a conclusion leaves behind. Neither present
+ * means the attempt stopped before — or during — the post, so the outcome is
+ * genuinely unknown and must not be guessed in either direction. Both the
+ * routing decision and the reason wording turn on this one question, so they
+ * ask it in one place.
+ */
+function hasRecordedDeliveryOutcome(
+    response: Pick<StoredAiResponse, 'deliveryConfirmed' | 'responseError'>,
+): boolean {
+    return hasConfirmedDelivery(response) || Boolean(response.responseError);
+}
+
+/**
+ * The escalation reason for a recovery that found an owed handoff on a response
+ * still stuck in PENDING.
+ *
+ * `escalationRequiredReason` is written with the response row, BEFORE any
+ * publication, so it says why a human is needed — low confidence, a withheld
+ * draft — and nothing at all about whether the reporter ever saw an answer. On
+ * a row that also records a delivery outcome the two together are the whole
+ * story, and the stored reason stands verbatim: it is the exact promise the
+ * response made, and a delivery failure has already replaced it with text
+ * carrying its own diagnostic.
+ *
+ * A row with no recorded outcome is the interrupted case, and there the bare
+ * reason reads as "an answer went out and it was weak" — the opposite of what
+ * may have happened. The human taking the thread over has to be told the
+ * reporter may be sitting in silence, so the uncertainty is appended while the
+ * promised reason is preserved verbatim ahead of it.
+ *
+ * Shared with the PENDING_RESPONSE_SWEEP backstop, which settles exactly these
+ * rows once no job is left to recover them and must say the same thing about
+ * them.
+ */
+export function recoveredHandoffReason(options: {
+    owedReason: string;
+    ticketSource: string;
+    deliveryConfirmed: boolean;
+    responseError: string | null;
+}): string {
+    const { owedReason, ticketSource, deliveryConfirmed, responseError } = options;
+    if (hasRecordedDeliveryOutcome({ deliveryConfirmed, responseError })) return owedReason;
+
+    const promise = /[.!?]$/.test(owedReason) ? owedReason : `${owedReason}.`;
+    return (
+        `${promise} Delivery of the AI response for ${ticketSource} was never confirmed, so the ` +
+        `reporter may have received no response at all. A human must verify the thread and ` +
+        `answer if needed.`
+    );
 }
 
 /**
@@ -305,14 +365,25 @@ async function reportSkippedRecoveryEscalation(options: {
 
 async function recoverRequiredEscalation(
     ticketId: string,
+    ticketSource: string,
     response: StoredAiResponse,
-    reason: string,
+    owedReason: string,
     context: JobHandlerContext,
 ): Promise<JobResult> {
-    // For an owed handoff, the delivery path writes responseError and replaces
-    // its reason together when posting fails. Confirmed delivery remains the
-    // stronger evidence if an older row carries both kinds of metadata.
-    const deliveryFailed = Boolean(response.responseError) && !hasConfirmedDelivery(response);
+    // Delivery counts as failed unless the post is a proven fact. A recorded
+    // error says outright that it failed; no recorded outcome at all means the
+    // reporter may have nothing, and reporting that as a successful delivery
+    // hides the one thing a human needs to check first. Only `deliveryConfirmed`
+    // rules it out — and it stays the stronger evidence if an older row carries
+    // both kinds of metadata, because the delivery path writes responseError and
+    // replaces the owed reason together when posting fails.
+    const deliveryFailed = !hasConfirmedDelivery(response);
+    const reason = recoveredHandoffReason({
+        owedReason,
+        ticketSource,
+        deliveryConfirmed: hasConfirmedDelivery(response),
+        responseError: response.responseError ?? null,
+    });
     let escalationEnqueued: boolean;
     try {
         escalationEnqueued = await enqueueEscalationAtomically(ticketId, response.id, reason);
@@ -591,8 +662,31 @@ export async function handleAiResponse(
         // ever reposts to the reporter.
         const escalationRetryReason = requiredEscalationReason(priorAiResponse);
         if (escalationRetryReason) {
+            // An owed handoff still says nothing about delivery: its reason is
+            // stored with the row before publication is attempted. So when this
+            // job is the response's own owner and the row records no delivery
+            // outcome, the attempt that owns it may be inside postResponse right
+            // now — escalating here would summon a human against a post still in
+            // flight, on the strength of a marker that predates it.
+            //
+            // Take the delayed route instead, the same one an undelivered
+            // response with no owed reason takes. The stored reason rides along
+            // on the row untouched, and the takeover job re-enters this branch
+            // once the original has had its window: by then the row either
+            // settled on its own or is genuinely stuck, and the escalation below
+            // says so. The payload check is what stops that takeover from
+            // scheduling a second one — it is the attempt the delay was for.
+            if (
+                !hasRecordedDeliveryOutcome(priorAiResponse) &&
+                payload.pendingResponseRecovery?.messageId !== priorAiResponse.id &&
+                priorAiResponse.responseJobId === context.jobId
+            ) {
+                return schedulePendingResponseRecovery(payload, priorAiResponse, context);
+            }
+
             return recoverRequiredEscalation(
                 ticketId,
+                ticket.source,
                 priorAiResponse,
                 escalationRetryReason,
                 context,
@@ -1054,6 +1148,31 @@ export async function handleAiResponse(
                             `(${markerMessage}) — needs manual attention`,
                     };
                 }
+            }
+        } else if (responseDelivered) {
+            // Publication happened, but the row owes a handoff and must stay
+            // PENDING until that escalation is durable — so the DELIVERED
+            // transition above is not available, and without this flag NOTHING
+            // on the row would record that the reporter was answered. An
+            // attempt interrupted here would then be indistinguishable from one
+            // that died before posting, and recovery would have to assume the
+            // worse of the two. Same column, same meaning as above: the post is
+            // a proven fact while responseState has yet to catch up.
+            //
+            // Non-fatal, and deliberately so. What the reporter is owed is the
+            // escalation enqueued a few lines below; returning early here would
+            // skip it to report a bookkeeping write, and the recovery path this
+            // flag feeds is conservative when the flag is missing.
+            try {
+                await prisma.message.update({
+                    where: { id: aiMessage.id },
+                    data: { deliveryConfirmed: true },
+                });
+            } catch (error) {
+                console.error(
+                    `[AI Response] Failed to record delivery of an escalating response for ticket ${ticketId}:`,
+                    error instanceof Error ? error.message : String(error),
+                );
             }
         }
 

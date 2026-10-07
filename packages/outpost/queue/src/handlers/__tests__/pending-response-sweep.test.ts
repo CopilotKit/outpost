@@ -245,10 +245,17 @@ describe('handlePendingResponseSweep', () => {
 
         await handlePendingResponseSweep({}, makeContext());
 
-        expect(escalationJobs()[0].payload).toMatchObject({
-            ticketId: 'tkt-1',
-            reason: 'Low AI confidence (12%) — automated escalation',
-        });
+        const payload = escalationJobs()[0].payload as { ticketId: string; reason: string };
+        expect(payload.ticketId).toBe('tkt-1');
+        // Verbatim, and first: it is the promise the response made.
+        expect(payload.reason).toContain('Low AI confidence (12%) — automated escalation');
+        expect(payload.reason.indexOf('Low AI confidence (12%) — automated escalation')).toBe(0);
+        // This row records no delivery outcome, and the stored reason predates
+        // publication — so on its own it would read as "a weak answer went out"
+        // to the human who may in fact need to answer from scratch.
+        expect(payload.reason).toContain('DISCORD');
+        expect(payload.reason).toContain('may have received no response at all');
+        expect(payload.reason).toContain('A human must verify the thread and answer if needed.');
     });
 
     it('reports the last delivery error in its own reason when none was recorded', async () => {
@@ -328,6 +335,38 @@ describe('handlePendingResponseSweep', () => {
     });
 
     // ── Confirmed delivery ──────────────────────────────────────────────────
+
+    it('escalates a confirmed delivery that still owes a human handoff', async () => {
+        // Delivery proof settles a row that owes nothing else. This one is
+        // PENDING *because* of its marker — a low-confidence answer the reporter
+        // did receive — so repairing it to DELIVERED would drop the promised
+        // human and strand the marker next to a settled state, which is the one
+        // pair no path can act on afterwards.
+        const reason = 'Low AI confidence (12%) — automated escalation';
+        const row = addMessage({ deliveryConfirmed: true, escalationRequiredReason: reason });
+
+        const result = await handlePendingResponseSweep({}, makeContext());
+
+        expect(result.success).toBe(true);
+        expect(result.data).toMatchObject({ escalated: 1, repaired: 0, failed: 0 });
+        expect(row.responseState).toBe('ESCALATED');
+        expect(row.escalationRequiredReason).toBeNull();
+        // Delivery is proven, so the reason stays exactly as promised.
+        expect((escalationJobs()[0].payload as { reason: string }).reason).toBe(reason);
+    });
+
+    it('keeps a recorded delivery failure diagnostic as the whole reason', async () => {
+        // The delivery path already folded the failure into the stored reason,
+        // so there is no uncertainty left to append.
+        const reason =
+            'AI response generated but not delivered to DISCORD (discord 503) — ' +
+            'needs a human to answer the reporter';
+        addMessage({ escalationRequiredReason: reason, responseError: 'discord 503' });
+
+        await handlePendingResponseSweep({}, makeContext());
+
+        expect((escalationJobs()[0].payload as { reason: string }).reason).toBe(reason);
+    });
 
     it('repairs a confirmed delivery to DELIVERED instead of summoning a human', async () => {
         const row = addMessage({
