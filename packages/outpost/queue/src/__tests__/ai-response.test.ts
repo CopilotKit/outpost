@@ -1014,6 +1014,60 @@ describe('handleAiResponse', () => {
         }
     });
 
+    // The two tests above pin WHERE the footer lands using a hand-built value. This
+    // one pins WHAT is stored, through the real validator and the real formatter:
+    // an answer about embedding is HTML, `validateSupportReply` publishes the tags
+    // it writes inside a fence or a code span, and the durable `suggestedResponse`
+    // is what a bot without an adapter picks up and posts. Serializing that answer
+    // through a sanitizer deletes the <script> element and the onclick attribute, so
+    // the stored reply tells the reader to copy an empty fence and a dead button.
+    it('stores the validated code literal in the durable web suggestion', async () => {
+        const { ResponseFormatter, validateSupportReply } =
+            await vi.importActual<typeof OutpostAi>('@copilotkit/outpost/ai');
+        const source = {
+            title: 'Embedding the widget',
+            content: 'Mount the widget with a script tag and a button that calls handleClick.',
+            sourceUrl: 'https://docs.copilotkit.ai/embed',
+            score: 0.9,
+        };
+        const htmlReply = validateSupportReply(
+            {
+                decision: 'answer',
+                summary: 'Mount the widget with the snippet below.',
+                details:
+                    'Add the script and the trigger to your page:\n\n' +
+                    '```html\n' +
+                    '<script src="app.js"></script>\n' +
+                    '<button onclick="handleClick()">Run</button>\n' +
+                    '```',
+                apiVersion: 'v2',
+                appliesTo: 'React applications',
+                evidence: [{ sourceUrl: source.sourceUrl, quote: source.content }],
+                handoffReason: '',
+            },
+            [source],
+        );
+        const formatted = new ResponseFormatter().formatStructured(htmlReply, 'web');
+
+        mockPrismaTicket.findUnique.mockResolvedValue({ ...sampleTicket, source: 'WEB' });
+        mockHasAdapter.mockReturnValue(false);
+        mockGenerateSupportResponse.mockResolvedValue({ ...highConfidenceResult, formatted });
+
+        const result = await handleAiResponse({ ticketId: 'tkt-1' }, makeContext());
+
+        expect(result.success).toBe(true);
+        const stored = mockPrismaTicket.update.mock.calls.find(
+            (call: Array<Record<string, Record<string, unknown>>>) =>
+                call[0].data.suggestedResponse !== undefined,
+        )![0].data.suggestedResponse as string;
+        expect(stored).toContain(
+            '```html\n<script src="app.js"></script>\n<button onclick="handleClick()">Run</button>\n```',
+        );
+        expect(stored.startsWith(htmlReply.summary)).toBe(true);
+        expect(stored.endsWith('\n\n---\n*Powered by CopilotKit AI*')).toBe(true);
+        expect(stored.split('*Powered by CopilotKit AI*')).toHaveLength(2);
+    });
+
     it('skips post-back in shadow mode', async () => {
         const originalShadow = process.env.SHADOW_MODE;
         try {

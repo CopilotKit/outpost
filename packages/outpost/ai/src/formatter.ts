@@ -102,7 +102,28 @@ export class ResponseFormatter {
             };
         }
         if (platform === 'web') {
-            const summaryPane = this.formatWeb(reply.summary + disclaimer);
+            // Both panes of the web split are spliced from a VALIDATED reply, so both
+            // carry their fields as written. `validateSupportReply` runs the same
+            // prose check over `summary`, `details` and `appliesTo`: raw HTML outside
+            // code is refused outright, and a tag inside a fence or a code span is
+            // deliberately published, because the chat surface renders Markdown
+            // through ReactMarkdown with no rehype-raw and it reaches the reader as
+            // the inert literal the answer meant. Anything the web sanitizer could
+            // still find in these fields is therefore an answer's own example, and
+            // deleting it is how `Use \`<button onclick="handleClick()">Run</button>\``
+            // reached a reader as `<button >Run</button>` — a wrong answer, not a
+            // safe one. The defence belongs on an unvalidated body, which is what
+            // `formatWeb` still guards on the legacy `format()` path.
+            //
+            // The disclaimer is the one piece here that nothing validated — it is
+            // whatever the caller passed — so it keeps the sanitizer. Both panes
+            // close with the same `trailing` expression, which is what makes the
+            // disclaimer land once and the footer last in each of them.
+            const trailing = this.sanitizeWeb(disclaimer) + WEB_FOOTER;
+            const summaryPane: FormattedResponse = {
+                text: reply.summary + trailing,
+                truncated: false,
+            };
             if (!details) return summaryPane;
             return {
                 ...summaryPane,
@@ -111,8 +132,7 @@ export class ResponseFormatter {
                 // sinks that hold a single string. Composed here rather than by
                 // appending `details` to `summaryPane.text`, which would leave the
                 // footer stranded between the summary and the details.
-                completeText: this.formatWeb([reply.summary, details].join('\n\n') + disclaimer)
-                    .text,
+                completeText: [reply.summary, details].join('\n\n') + trailing,
             };
         }
 
@@ -272,16 +292,29 @@ export class ResponseFormatter {
         };
     }
 
-    private formatWeb(text: string): FormattedResponse {
-        // For web, ensure markdown is clean and HTML-safe
-        // Escape any raw HTML that isn't part of markdown
-        const sanitized = text
+    /**
+     * Strip the raw HTML an UNVALIDATED body could be carrying as markup.
+     *
+     * This is the legacy `format()` path's defence, and it is a blunt one: it
+     * deletes a `<script>` or `<iframe>` element whole and drops every `on*`
+     * attribute, with no notion of whether what it found was markup or an example.
+     * That is the right trade for a free-text body nothing else has checked.
+     *
+     * It is the wrong trade for a validated reply's own fields, which have already
+     * been held to a stricter rule by a real parser. That is why `formatStructured`
+     * runs it over the caller-supplied disclaimer only — see the web composition
+     * for what the difference costs a reader.
+     */
+    private sanitizeWeb(text: string): string {
+        return text
             .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
             .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
             .replace(/on\w+="[^"]*"/gi, '');
+    }
 
+    private formatWeb(text: string): FormattedResponse {
         return {
-            text: sanitized + WEB_FOOTER,
+            text: this.sanitizeWeb(text) + WEB_FOOTER,
             truncated: false,
         };
     }

@@ -7,7 +7,7 @@ import {
 } from './support-agent.js';
 import { ConfidenceScorer } from './confidence.js';
 import { ResponseFormatter } from './formatter.js';
-import { validateSupportReply } from './support-reply.js';
+import { supportReplyDetails, validateSupportReply } from './support-reply.js';
 import { useAimock } from './test-utils/aimock.js';
 import type { PathfinderClient } from './pathfinder.js';
 import type { SupportReply } from './support-reply.js';
@@ -428,5 +428,44 @@ describe('OpenAI publication boundary', () => {
         expect(text.endsWith('\n\n---\n*Powered by CopilotKit AI*')).toBe(true);
         expect(text.split('*Powered by CopilotKit AI*')).toHaveLength(2);
         expect(text.split(reply.details)).toHaveLength(2);
+    });
+
+    // An answer about embedding IS HTML, and `validateSupportReply` publishes the
+    // tags it writes inside a fence or a code span — the chat surface renders
+    // Markdown through ReactMarkdown with no rehype-raw, so they reach the reader
+    // inert. What the stream hands a consumer has to be that same answer: a
+    // serialization that deletes the `<script>` element and the `onclick` attribute
+    // ships an empty fence and a dead button, which is a wrong answer rather than a
+    // sanitized one. Built through the real validator so the stream is exercised on
+    // what the agent actually produces.
+    const htmlReply = validateSupportReply(
+        {
+            ...reply,
+            summary: 'Mount the widget with the snippet below.',
+            details:
+                'Add the script and the trigger to your page:\n\n' +
+                '```html\n' +
+                '<script src="app.js"></script>\n' +
+                '<button onclick="handleClick()">Run</button>\n' +
+                '```\n\n' +
+                'Use `<iframe src="embed.html"></iframe>` only inside a sandboxed page.',
+        },
+        [source],
+    );
+
+    it('streams validated HTML examples to the web consumer byte for byte', async () => {
+        const text = await collectText(
+            setup(htmlReply).generateStreamingResponse('Tools?', { source: 'web' }),
+        );
+
+        expect(text).toContain(supportReplyDetails(htmlReply));
+        expect(text).toContain(
+            '```html\n<script src="app.js"></script>\n<button onclick="handleClick()">Run</button>\n```',
+        );
+        expect(text).toContain('`<iframe src="embed.html"></iframe>`');
+        expect(text.startsWith(htmlReply.summary)).toBe(true);
+        expect(text.endsWith('\n\n---\n*Powered by CopilotKit AI*')).toBe(true);
+        expect(text.split('*Powered by CopilotKit AI*')).toHaveLength(2);
+        expect(text.split(source.sourceUrl)).toHaveLength(2);
     });
 });

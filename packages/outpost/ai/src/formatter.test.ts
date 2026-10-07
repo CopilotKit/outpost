@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { SupportReply } from './support-reply.js';
-import type { FormattedResponse } from './types.js';
+import { supportReplyDetails, validateSupportReply, type SupportReply } from './support-reply.js';
+import type { FormattedResponse, SearchResult } from './types.js';
 import {
     AI_DISCLAIMER,
     AI_DISCLAIMER_ESCALATED,
@@ -348,6 +348,73 @@ describe('structured support formatting', () => {
         };
     }
 
+    const htmlExampleQuote =
+        'Mount the widget with a script tag and a button that calls handleClick.';
+    const htmlExampleSources: SearchResult[] = [
+        {
+            title: 'Embedding the widget',
+            content: `12: ${htmlExampleQuote}`,
+            sourceUrl: 'https://docs.copilotkit.ai/embed',
+            score: 0.9,
+        },
+    ];
+
+    /**
+     * A support reply whose answer IS HTML — the real validator's output for it, not
+     * a hand-built value, so what the formatter is handed here is exactly what the
+     * pipeline hands it in production. The literal tags live inside a fence and a
+     * code span, the one place `validateSupportReply` permits them.
+     */
+    function literalHtmlReply(): SupportReply {
+        return validateSupportReply(
+            {
+                decision: 'answer',
+                summary: 'Mount the widget with the snippet below.',
+                details:
+                    'Add the script and the trigger to your page:\n\n' +
+                    '```html\n' +
+                    '<script src="app.js"></script>\n' +
+                    '<button onclick="handleClick()">Run</button>\n' +
+                    '```\n\n' +
+                    'Use `<iframe src="embed.html"></iframe>` only inside a sandboxed page.',
+                apiVersion: 'v2',
+                appliesTo: 'React applications',
+                evidence: [
+                    { sourceUrl: 'https://docs.copilotkit.ai/embed', quote: htmlExampleQuote },
+                ],
+                handoffReason: '',
+            },
+            htmlExampleSources,
+        );
+    }
+
+    /**
+     * The same validated shape with the literal in the one-paragraph `summary`
+     * instead of the details body.
+     *
+     * `validateSupportReply` holds every prose field to one rule — `validateProse`
+     * runs over `summary`, `details` and `appliesTo` alike — so a tag inside a code
+     * span is exactly as deliberate here as it is there, and arrives at the
+     * formatter under exactly the same guarantee.
+     */
+    function literalHtmlSummaryReply(): SupportReply {
+        return validateSupportReply(
+            {
+                decision: 'answer',
+                summary:
+                    'Use `<button onclick="handleClick()">Run</button>` to trigger the callback.',
+                details: 'Mount the widget before binding the handler.',
+                apiVersion: 'v2',
+                appliesTo: 'React applications',
+                evidence: [
+                    { sourceUrl: 'https://docs.copilotkit.ai/embed', quote: htmlExampleQuote },
+                ],
+                handoffReason: '',
+            },
+            htmlExampleSources,
+        );
+    }
+
     it('starts GitHub with the useful summary and puts disclosure after one details section', () => {
         const result = formatter.formatStructured(reply(), 'github', {
             addDisclaimer: true,
@@ -487,6 +554,135 @@ describe('structured support formatting', () => {
             expect(result.text.endsWith('\n\n---\n*Powered by CopilotKit AI*')).toBe(true);
             expect(result.details).toContain(reply().details);
             expect(result.details).not.toContain('*Powered by CopilotKit AI*');
+        });
+
+        // `validateSupportReply` deliberately publishes literal HTML written inside a
+        // code fence or a code span: the chat surface renders Markdown through
+        // ReactMarkdown with no rehype-raw, so a tag written there reaches the reader
+        // as the inert text the answer meant it to be. That is why the details pane
+        // carries it byte for byte — and the single-string serialization is the SAME
+        // answer, to a reader who gets one string instead of two panes.
+        //
+        // Running the web sanitizer over the composed string is what broke that. It
+        // is a defence against raw HTML the model wrote as markup, and the validator
+        // has already refused that; what it found here was an answer's own example.
+        // Deleting `<script src="app.js"></script>` leaves the reader an empty fence,
+        // and deleting `onclick="handleClick()"` leaves them a button that does
+        // nothing — a wrong answer rather than a sanitized one.
+        describe('literal HTML inside validated code', () => {
+            it('is a reply the validator accepts, HTML literal and all', () => {
+                expect(() => literalHtmlReply()).not.toThrow();
+                expect(literalHtmlReply().details).toContain('<script src="app.js"></script>');
+            });
+
+            it('keeps the validated details byte-exact in the single-string serialization', () => {
+                const value = literalHtmlReply();
+                const result = formatter.formatStructured(value, 'web');
+
+                expect(result.details).toBe(supportReplyDetails(value));
+                expect(result.completeText).toContain(supportReplyDetails(value));
+            });
+
+            it('does not alter the code a reader is told to copy', () => {
+                const complete =
+                    formatter.formatStructured(literalHtmlReply(), 'web').completeText ?? '';
+
+                expect(complete).toContain(
+                    '```html\n<script src="app.js"></script>\n<button onclick="handleClick()">Run</button>\n```',
+                );
+                expect(complete).toContain('`<iframe src="embed.html"></iframe>`');
+            });
+
+            it('still closes with one footer, after the preserved code and the disclaimer', () => {
+                const value = literalHtmlReply();
+                const complete =
+                    formatter.formatStructured(value, 'web', {
+                        addDisclaimer: true,
+                        disclaimerText: AI_DISCLAIMER_REVIEWED,
+                    }).completeText ?? '';
+
+                expect(complete.startsWith(value.summary)).toBe(true);
+                expect(complete.endsWith('\n\n---\n*Powered by CopilotKit AI*')).toBe(true);
+                expect(complete.split('*Powered by CopilotKit AI*')).toHaveLength(2);
+                expect(complete.split(AI_DISCLAIMER_REVIEWED)).toHaveLength(2);
+                expect(complete.split('<script src="app.js"></script>')).toHaveLength(2);
+                expect(complete.indexOf(AI_DISCLAIMER_REVIEWED)).toBeGreaterThan(
+                    complete.indexOf('<script src="app.js"></script>'),
+                );
+                expect(complete.indexOf('*Powered by CopilotKit AI*')).toBeGreaterThan(
+                    complete.indexOf(AI_DISCLAIMER_REVIEWED),
+                );
+            });
+
+            // `details` is not the field that guarantee covers — it covers the reply.
+            // `validateProse` runs over `summary`, `details` and `appliesTo` alike, so
+            // an answer whose point IS a tag can make it in the one paragraph the
+            // summary gets, and often must: the summary is the pane a web reader sees
+            // without opening the disclosure. Sanitizing it deletes the attribute the
+            // sentence exists to name, and does it in BOTH serializations — the two
+            // panes agree with each other and both are wrong.
+            //
+            // This replaces a test that pinned the stripping of a summary carrying raw
+            // markup as prose. That fixture was never reachable: the formatter is only
+            // ever handed a validated reply, and the boundary below refuses that exact
+            // spelling. Asserting on it locked the corruption in as a contract.
+            it('keeps a validated summary code span literal in both serializations', () => {
+                const value = literalHtmlSummaryReply();
+                const result = formatter.formatStructured(value, 'web');
+
+                expect(result.text.startsWith(value.summary)).toBe(true);
+                expect(result.completeText?.startsWith(value.summary)).toBe(true);
+                for (const pane of [result.text, result.completeText ?? '']) {
+                    expect(pane).toContain('`<button onclick="handleClick()">Run</button>`');
+                }
+            });
+
+            // The real boundary, pinned where the composition above relies on it: what
+            // the deleted sanitization was defending against never reaches the
+            // formatter, because the prose spelling of those same tags is refused
+            // before a SupportReply exists. That refusal is what makes splicing the
+            // summary literally safe — not the formatter's own second guess at it.
+            it('is never handed raw markup in a summary — the validator refuses it', () => {
+                expect(() =>
+                    validateSupportReply(
+                        {
+                            ...literalHtmlSummaryReply(),
+                            summary:
+                                'Mount it <script>alert(1)</script> <b onclick="go()">here</b>.',
+                        },
+                        htmlExampleSources,
+                    ),
+                ).toThrow('Raw HTML is only allowed inside code in a support reply');
+            });
+
+            // The disclaimer is the one piece of this composition that is NOT a
+            // validated field — it is whatever the caller passed. The unvalidated-input
+            // defence stays exactly there, and stays identical in both serializations.
+            it('still strips raw markup from the caller-supplied disclaimer', () => {
+                const result = formatter.formatStructured(literalHtmlSummaryReply(), 'web', {
+                    addDisclaimer: true,
+                    disclaimerText:
+                        'Reviewed <script>alert(1)</script> <b onclick="go()">soon</b>.',
+                });
+
+                for (const pane of [result.text, result.completeText ?? '']) {
+                    expect(pane).not.toContain('<script>');
+                    expect(pane).not.toContain('onclick="go()"');
+                }
+            });
+
+            // The sources list and the applicability line are appended to `details`,
+            // so preserving the span byte-exact has to preserve them too — they are
+            // the last thing before the trailing matter, not something the summary
+            // sanitization may reach past.
+            it('keeps the applicability and the source list in the serialization', () => {
+                const complete =
+                    formatter.formatStructured(literalHtmlReply(), 'web').completeText ?? '';
+
+                expect(complete).toContain('**Applies to:**');
+                expect(complete).toContain('**API version:** v2');
+                expect(complete).toContain('[Source 1](<https://docs.copilotkit.ai/embed>)');
+            });
         });
     });
 
