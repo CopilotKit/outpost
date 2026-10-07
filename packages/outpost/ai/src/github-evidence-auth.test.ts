@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     GitHubEvidenceAuthError,
     anonymousGitHubEvidenceAuth,
+    githubEvidenceAuthDiagnostic,
     githubEvidenceAuthFromEnv,
     githubEvidenceHeaders,
     type InstallationTokenFactory,
@@ -191,6 +192,158 @@ describe('GitHub evidence authentication', () => {
         expect(rendered).not.toContain(leaky.message);
         expect((error as Error).message).toContain('TypeError');
         expect(auth).not.toHaveBeenCalled();
+    });
+
+    describe('operator diagnostic', () => {
+        /** The whole closed set a log line may say; anything else is a value that escaped. */
+        const OPERATOR_VOCABULARY = [
+            'partial_configuration',
+            'invalid_installation_id',
+            'token_exchange_failed',
+            'auth_unavailable',
+        ];
+
+        it('names which App variables a partial configuration is missing', async () => {
+            const resolver = githubEvidenceAuthFromEnv(
+                { GITHUB_APP_ID: CREDENTIALS.GITHUB_APP_ID },
+                fakeAppAuth().create,
+            );
+            const error = await resolver.authorization().catch((caught: unknown) => caught);
+            expect(githubEvidenceAuthDiagnostic(error)).toEqual({
+                code: 'partial_configuration',
+                missing: ['GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID'],
+            });
+        });
+
+        it('separates a malformed installation id from a missing one', async () => {
+            const resolver = githubEvidenceAuthFromEnv(
+                { ...CREDENTIALS, GITHUB_INSTALLATION_ID: '1e3' },
+                fakeAppAuth().create,
+            );
+            const error = await resolver.authorization().catch((caught: unknown) => caught);
+            expect(githubEvidenceAuthDiagnostic(error)).toEqual({
+                code: 'invalid_installation_id',
+            });
+        });
+
+        it('reports a failed token exchange without the key or token that failed it', async () => {
+            const leaky = new RangeError(
+                `secretOrPrivateKey ${CREDENTIALS.GITHUB_PRIVATE_KEY} rejected while minting ${TOKEN}`,
+            );
+            const { create } = fakeAppAuth(() => Promise.reject(leaky));
+            const resolver = githubEvidenceAuthFromEnv(CREDENTIALS, create);
+            const error = await resolver.authorization().catch((caught: unknown) => caught);
+            const diagnostic = githubEvidenceAuthDiagnostic(error);
+            expect(diagnostic).toEqual({ code: 'token_exchange_failed' });
+            // The underlying class name reached the error message; it must not reach the log,
+            // because nothing constrains what a third-party strategy names its errors.
+            expect(JSON.stringify(diagnostic)).not.toContain('RangeError');
+        });
+
+        // `githubAuth` is an injectable seam, so a `GitHubEvidenceAuthError` can arrive carrying
+        // anything at all. The log line is built from the allowlist, never from what it was handed.
+        it('discards a forged code and forged variable names', () => {
+            const forged = new GitHubEvidenceAuthError(
+                `-----BEGIN RSA PRIVATE KEY-----\nplaceholder\n-----END RSA PRIVATE KEY-----`,
+                {
+                    code: 'partial_configuration',
+                    missing: [
+                        'GITHUB_PRIVATE_KEY',
+                        'ghs_syntheticplaceholdertoken',
+                        '10.1.2.3',
+                    ] as never,
+                },
+            );
+            expect(githubEvidenceAuthDiagnostic(forged)).toEqual({
+                code: 'partial_configuration',
+                missing: ['GITHUB_PRIVATE_KEY'],
+            });
+            const unknownCode = new GitHubEvidenceAuthError('boom', {
+                code: 'sudo_make_me_a_sandwich' as never,
+            });
+            expect(githubEvidenceAuthDiagnostic(unknownCode)).toEqual({ code: 'auth_unavailable' });
+            // Nothing recognizable survives the filter, so the claim itself is not repeated.
+            const noneRecognized = new GitHubEvidenceAuthError('boom', {
+                code: 'partial_configuration',
+                missing: '10.1.2.3' as never,
+            });
+            expect(githubEvidenceAuthDiagnostic(noneRecognized)).toEqual({
+                code: 'auth_unavailable',
+            });
+        });
+
+        // A `diagnostic` arriving through the `githubAuth` seam is an object its author owns
+        // outright, so its properties can be getters. Validating one read and returning another
+        // would let a value that never passed the allowlist reach the operator log.
+        it('discards a code that changes between the allowlist check and the return', () => {
+            const synthetic = 'ghs_syntheticplaceholdertoken';
+            const shifting = (first: string) => {
+                let reads = 0;
+                return new GitHubEvidenceAuthError('boom', {
+                    get code() {
+                        reads += 1;
+                        return (reads === 1 ? first : synthetic) as never;
+                    },
+                    missing: ['GITHUB_APP_ID'],
+                });
+            };
+
+            // The code is read again to pick the return branch, and again to build the result.
+            const viaDirectReturn = githubEvidenceAuthDiagnostic(shifting('token_exchange_failed'));
+            expect(OPERATOR_VOCABULARY).toContain(viaDirectReturn.code);
+            expect(JSON.stringify(viaDirectReturn)).not.toContain(synthetic);
+
+            // The partial-configuration branch reads it once more, after the name filter.
+            const viaMissingBranch = githubEvidenceAuthDiagnostic(
+                shifting('partial_configuration'),
+            );
+            expect(OPERATOR_VOCABULARY).toContain(viaMissingBranch.code);
+            expect(JSON.stringify(viaMissingBranch)).not.toContain(synthetic);
+        });
+
+        // Classifying is a recoverable path: the evidence read degrades to `auth_unavailable`.
+        // A malformed claim must not raise out of the classifier and make the failure fatal.
+        it('survives a missing list that is an array only when it is checked', () => {
+            let reads = 0;
+            const arrayThenNull = new GitHubEvidenceAuthError('boom', {
+                code: 'partial_configuration',
+                get missing() {
+                    reads += 1;
+                    return (reads === 1 ? ['GITHUB_APP_ID'] : null) as never;
+                },
+            });
+
+            expect(githubEvidenceAuthDiagnostic(arrayThenNull)).toEqual({
+                code: 'partial_configuration',
+                missing: ['GITHUB_APP_ID'],
+            });
+
+            // The inverse: what the type guard rejected is what the filter must see.
+            let inverseReads = 0;
+            const stringThenArray = new GitHubEvidenceAuthError('boom', {
+                code: 'partial_configuration',
+                get missing() {
+                    inverseReads += 1;
+                    return (inverseReads === 1 ? '10.1.2.3' : ['GITHUB_APP_ID']) as never;
+                },
+            });
+
+            expect(githubEvidenceAuthDiagnostic(stringThenArray)).toEqual({
+                code: 'auth_unavailable',
+            });
+        });
+
+        it('falls back to the generic category for an error carrying no diagnostic', () => {
+            expect(githubEvidenceAuthDiagnostic(new GitHubEvidenceAuthError('boom'))).toEqual({
+                code: 'auth_unavailable',
+            });
+            expect(githubEvidenceAuthDiagnostic(new TypeError('not a credential failure'))).toEqual(
+                { code: 'auth_unavailable' },
+            );
+            expect(githubEvidenceAuthDiagnostic('ghs_syntheticplaceholdertoken')).toEqual({
+                code: 'auth_unavailable',
+            });
+        });
     });
 
     describe('investigation cancellation', () => {

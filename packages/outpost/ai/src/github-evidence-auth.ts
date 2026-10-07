@@ -24,6 +24,41 @@ const EVIDENCE_PERMISSIONS = { contents: 'read' } as const;
 /** Installation ids are positive decimal integers; `Number` alone would accept `1e3` and ` 7 `. */
 const INSTALLATION_ID = /^[1-9][0-9]*$/;
 
+/** The only configuration names this module reads, and the only ones it will ever name. */
+const EVIDENCE_VARIABLES = [
+    'GITHUB_APP_ID',
+    'GITHUB_PRIVATE_KEY',
+    'GITHUB_INSTALLATION_ID',
+] as const;
+type EvidenceVariable = (typeof EVIDENCE_VARIABLES)[number];
+
+/**
+ * The closed vocabulary an operator-facing log line may use.
+ *
+ * Every value is a compile-time constant of this module: no credential, no response body and
+ * no third-party error text can become one. `auth_unavailable` is the fallback for a failure
+ * this module did not classify — including one raised through the `githubAuth` injection seam,
+ * which can hand a caller a `GitHubEvidenceAuthError` carrying anything at all.
+ */
+export type GitHubEvidenceAuthCode =
+    | 'partial_configuration'
+    | 'invalid_installation_id'
+    | 'token_exchange_failed'
+    | 'auth_unavailable';
+
+export interface GitHubEvidenceAuthDiagnostic {
+    readonly code: GitHubEvidenceAuthCode;
+    /** Present only for `partial_configuration`, and only ever a subset of `EVIDENCE_VARIABLES`. */
+    readonly missing?: readonly EvidenceVariable[];
+}
+
+/** The codes this module itself raises; anything else degrades to `auth_unavailable`. */
+const CLASSIFIED: ReadonlySet<string> = new Set<GitHubEvidenceAuthCode>([
+    'partial_configuration',
+    'invalid_installation_id',
+    'token_exchange_failed',
+]);
+
 /**
  * Ceiling on a single installation-token exchange with GitHub.
  *
@@ -38,6 +73,41 @@ const TOKEN_EXCHANGE_TIMEOUT_MS = 10_000;
 
 export class GitHubEvidenceAuthError extends Error {
     override name = 'GitHubEvidenceAuthError';
+    /**
+     * A claim about what went wrong, not a trusted one. `message` stays unreadable to any
+     * consumer — it can quote a PEM — so this is the only part meant to be surfaced, and only
+     * after `githubEvidenceAuthDiagnostic` has re-derived it from the allowlists above.
+     */
+    readonly diagnostic?: GitHubEvidenceAuthDiagnostic;
+
+    constructor(message: string, diagnostic?: GitHubEvidenceAuthDiagnostic) {
+        super(message);
+        this.diagnostic = diagnostic;
+    }
+}
+
+/**
+ * Reduces any authorization failure to a category safe to write to the worker log.
+ *
+ * Nothing is forwarded: the returned code is matched against `CLASSIFIED` and the returned
+ * variable names are rebuilt from `EVIDENCE_VARIABLES`, so a forged or unclassified diagnostic
+ * yields the bare `auth_unavailable` rather than whatever it was carrying.
+ */
+export function githubEvidenceAuthDiagnostic(error: unknown): GitHubEvidenceAuthDiagnostic {
+    const claimed = error instanceof GitHubEvidenceAuthError ? error.diagnostic : undefined;
+    if (!claimed) return { code: 'auth_unavailable' };
+    // Each claimed field is read exactly once. The diagnostic is a plain object its author
+    // owns, so a property may be a getter: re-reading it would let a value the allowlist
+    // never saw be the one returned, and would make a shape the type guard accepted differ
+    // from the one used.
+    const code = claimed.code;
+    const claimedMissing: unknown = claimed.missing;
+    if (!CLASSIFIED.has(code)) return { code: 'auth_unavailable' };
+    if (code !== 'partial_configuration') return { code };
+    const names: readonly unknown[] = Array.isArray(claimedMissing) ? claimedMissing : [];
+    const missing = EVIDENCE_VARIABLES.filter((name) => names.includes(name));
+    // A partial configuration that names none of the three is not one this module raised.
+    return missing.length ? { code, missing } : { code: 'auth_unavailable' };
 }
 
 /**
@@ -133,24 +203,25 @@ export function githubEvidenceAuthFromEnv(
     const privateKey = env.GITHUB_PRIVATE_KEY?.trim() ?? '';
     const installationId = env.GITHUB_INSTALLATION_ID?.trim() ?? '';
 
-    const missing = (
-        [
-            ['GITHUB_APP_ID', appId],
-            ['GITHUB_PRIVATE_KEY', privateKey],
-            ['GITHUB_INSTALLATION_ID', installationId],
-        ] as const
-    )
-        .filter(([, value]) => !value)
-        .map(([name]) => name);
+    // Keyed by the same allowlist the diagnostic is rebuilt from, so a name can never be
+    // reported missing that `githubEvidenceAuthDiagnostic` would then drop as unrecognized.
+    const configured: Record<EvidenceVariable, string> = {
+        GITHUB_APP_ID: appId,
+        GITHUB_PRIVATE_KEY: privateKey,
+        GITHUB_INSTALLATION_ID: installationId,
+    };
+    const missing = EVIDENCE_VARIABLES.filter((name) => !configured[name]);
 
-    if (missing.length === 3) return anonymousGitHubEvidenceAuth;
+    if (missing.length === EVIDENCE_VARIABLES.length) return anonymousGitHubEvidenceAuth;
     if (missing.length)
         return rejecting(
             `GitHub evidence authentication is partially configured; missing ${missing.join(', ')}`,
+            { code: 'partial_configuration', missing },
         );
     if (!INSTALLATION_ID.test(installationId))
         return rejecting(
             'GitHub evidence authentication requires GITHUB_INSTALLATION_ID to be a positive integer',
+            { code: 'invalid_installation_id' },
         );
 
     return installationAuth(
@@ -190,10 +261,10 @@ function installationAuth(
     };
 }
 
-function rejecting(reason: string): GitHubEvidenceAuth {
+function rejecting(reason: string, diagnostic: GitHubEvidenceAuthDiagnostic): GitHubEvidenceAuth {
     return {
         authorization: async () => {
-            throw new GitHubEvidenceAuthError(reason);
+            throw new GitHubEvidenceAuthError(reason, diagnostic);
         },
     };
 }
@@ -201,10 +272,13 @@ function rejecting(reason: string): GitHubEvidenceAuth {
 /**
  * Runs strategy construction and the token exchange inside one boundary.
  *
- * Either step can quote the PEM it rejected or the token it just minted, and this error
- * travels to worker logs and run reports. Only the underlying error's class name crosses
- * the boundary — deliberately not its message, and not as `cause`, which any structured
- * logger would serialize straight back out.
+ * Either step can quote the PEM it rejected or the token it just minted. Only the underlying
+ * error's class name crosses the boundary — deliberately not its message, and not as `cause`,
+ * which any structured logger would serialize straight back out.
+ *
+ * Even that class name stays inside `message`, which no consumer prints: a third-party strategy
+ * chooses its own error names and nothing constrains them. What reaches the operator is the
+ * `token_exchange_failed` category alone.
  */
 async function mintWithoutLeaking(
     mint: () => Promise<{ token: string }>,
@@ -215,6 +289,7 @@ async function mintWithoutLeaking(
         const kind = caught instanceof Error ? caught.name : typeof caught;
         throw new GitHubEvidenceAuthError(
             `GitHub App installation token request for evidence failed (${kind})`,
+            { code: 'token_exchange_failed' },
         );
     }
 }

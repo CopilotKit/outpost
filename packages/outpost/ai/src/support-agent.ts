@@ -13,6 +13,7 @@ import { StructuredOpenAIProvider } from './structured-openai-provider.js';
 import { PathfinderClient } from './pathfinder.js';
 import {
     GitHubEvidenceAuthError,
+    githubEvidenceAuthDiagnostic,
     githubEvidenceAuthFromEnv,
     githubEvidenceHeaders,
 } from './github-evidence-auth.js';
@@ -117,6 +118,14 @@ async function githubJson(
         // Only a credential failure becomes tool output, and only as this bare reason:
         // anything else is a programmer error and must still escape the model loop.
         if (!(error instanceof GitHubEvidenceAuthError)) throw error;
+        // Two channels, deliberately unequal. The investigator gets the bare reason below;
+        // the operator who can actually repair the credential gets the category, rebuilt
+        // from the auth module's allowlists rather than copied out of the error. Bounded by
+        // the six-call tool budget, so a broken host costs at most six lines per run.
+        console.error(
+            '[SupportAgent] GitHub evidence authentication unavailable:',
+            githubEvidenceAuthDiagnostic(error),
+        );
         // Returning here rather than retrying bare is deliberate — a configured but
         // unusable credential must not silently degrade into an anonymous read.
         return { ok: false, reason: 'auth_unavailable' };

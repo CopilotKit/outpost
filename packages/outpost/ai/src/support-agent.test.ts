@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import {
+    afterEach,
+    beforeEach,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+    vi,
+    type MockInstance,
+} from 'vitest';
 import { useAimock } from './test-utils/aimock.js';
 import {
     SupportAgent,
@@ -1082,6 +1091,16 @@ describe('OpenAI support agent', () => {
         const SYNTHETIC_HEADER = 'Bearer ghs_syntheticplaceholdertoken';
         const sha = 'a'.repeat(40);
         const releaseUrl = 'https://github.com/CopilotKit/CopilotKit/releases/tag/v2.0.0';
+        const PEM = '-----BEGIN RSA PRIVATE KEY-----\nplaceholder\n-----END RSA PRIVATE KEY-----';
+
+        /** The worker-log channel, captured so a credential category can be asserted on. */
+        let operatorLog: MockInstance<typeof console.error>;
+        beforeEach(() => {
+            operatorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+        });
+        afterEach(() => operatorLog.mockRestore());
+        /** Everything the operator would actually see, as one searchable string. */
+        const operatorSaw = () => JSON.stringify(operatorLog.mock.calls);
 
         /** Records the origin and Authorization header of every captured request. */
         function captureGithub() {
@@ -1199,6 +1218,8 @@ describe('OpenAI support agent', () => {
             expect(result.reply.decision).toBe('answer');
             expect(captured).toHaveLength(3);
             expect(captured.map((request) => request.authorization)).toEqual([null, null, null]);
+            // A deliberate anonymous host is a supported configuration, not an incident.
+            expect(operatorLog.mock.calls).toEqual([]);
         });
 
         it('abandons a cancelled investigation without issuing the evidence request', async () => {
@@ -1235,6 +1256,9 @@ describe('OpenAI support agent', () => {
             expect(error).toBeInstanceOf(Error);
             expect((error as Error).name).toBe('TimeoutError');
             expect(error).not.toBeInstanceOf(GitHubEvidenceAuthError);
+            // The run ran out of time; nothing about the credential is in question, so
+            // reporting one would send the operator after a configuration that is fine.
+            expect(operatorSaw()).not.toContain('authentication');
         });
 
         // A credential failure is now shaped like every other recoverable evidence failure:
@@ -1261,6 +1285,128 @@ describe('OpenAI support agent', () => {
             expect(failure).toContain('auth_unavailable');
             // Which variable is missing is a host configuration detail, not model evidence.
             expect(failure).not.toContain('GITHUB_PRIVATE_KEY');
+        });
+
+        // The operator who can fix the credential reads the worker log, not the tool result.
+        // These two channels carry deliberately different amounts of detail.
+        it('logs which App variables are missing while the model is told only auth_unavailable', async () => {
+            vi.stubEnv('GITHUB_APP_ID', '123456');
+            for (const name of ['GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID'])
+                vi.stubEnv(name, undefined as unknown as string);
+            stubGitHub(okSourceFile);
+            scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
+
+            await setup().agent.investigate({ question: 'Shipped?', source: 'github' });
+
+            // One failed evidence read, one line: the six-call budget is what bounds this.
+            expect(operatorLog).toHaveBeenCalledTimes(1);
+            expect(operatorSaw()).toContain('partial_configuration');
+            expect(operatorSaw()).toContain('GITHUB_PRIVATE_KEY');
+            expect(operatorSaw()).toContain('GITHUB_INSTALLATION_ID');
+            // Configured names only; the value of the one that *is* set stays out.
+            expect(operatorSaw()).not.toContain('123456');
+        });
+
+        it('logs a failed token exchange as its own category, without the key that failed it', async () => {
+            stubGitHub(okSourceFile);
+            scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
+            const failingExchange: InstallationTokenFactory = () => async () => {
+                throw new Error(`could not sign JWT with ${PEM}`);
+            };
+            const agent = new SupportAgent({
+                apiKey: 'test-key',
+                baseURL: mock().url,
+                tracingDisabled: true,
+                pathfinder: { searchEvidence: vi.fn<PathfinderClient['searchEvidence']>() },
+                githubAuth: githubEvidenceAuthFromEnv(
+                    {
+                        GITHUB_APP_ID: '123456',
+                        GITHUB_PRIVATE_KEY: PEM,
+                        GITHUB_INSTALLATION_ID: '7890',
+                    },
+                    failingExchange,
+                ),
+            });
+
+            await agent.investigate({ question: 'Shipped?', source: 'github' });
+
+            expect(operatorSaw()).toContain('token_exchange_failed');
+            expect(operatorSaw()).not.toContain('BEGIN RSA PRIVATE KEY');
+            expect(operatorSaw()).not.toContain('placeholder');
+            // A misconfigured key is not a missing one; the operator must not be sent to the
+            // variable list when the variables are all set.
+            expect(operatorSaw()).not.toContain('partial_configuration');
+        });
+
+        // `githubAuth` is a test seam: a `GitHubEvidenceAuthError` reaching the agent proves
+        // nothing about what it carries, so the log is built from the category alone.
+        it('writes no part of an unclassified credential error to the log', async () => {
+            stubGitHub(okSourceFile);
+            scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
+            const leaked = `${PEM} ghs_syntheticplaceholdertoken 10.1.2.3`;
+            const agent = new SupportAgent({
+                apiKey: 'test-key',
+                baseURL: mock().url,
+                tracingDisabled: true,
+                pathfinder: { searchEvidence: vi.fn<PathfinderClient['searchEvidence']>() },
+                githubAuth: {
+                    authorization: async () => {
+                        throw new GitHubEvidenceAuthError(leaked);
+                    },
+                },
+            });
+
+            await agent.investigate({ question: 'Shipped?', source: 'github' });
+
+            expect(operatorSaw()).toContain('auth_unavailable');
+            for (const secret of [
+                'BEGIN RSA PRIVATE KEY',
+                'placeholder',
+                'ghs_syntheticplaceholdertoken',
+                '10.1.2.3',
+            ])
+                expect(operatorSaw()).not.toContain(secret);
+            expect(toolResultSentToModel(0)).not.toContain('placeholder');
+        });
+
+        // The seam owns the error outright, so the category it claims can be a getter. What the
+        // allowlist accepted is what must be logged — not whatever a later read returns.
+        it('logs the category that was checked, not one substituted after the check', async () => {
+            stubGitHub(okSourceFile);
+            scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
+            const substituted = `${PEM} ghs_syntheticplaceholdertoken 10.1.2.3`;
+            const agent = new SupportAgent({
+                apiKey: 'test-key',
+                baseURL: mock().url,
+                tracingDisabled: true,
+                pathfinder: { searchEvidence: vi.fn<PathfinderClient['searchEvidence']>() },
+                githubAuth: {
+                    authorization: async () => {
+                        let reads = 0;
+                        throw new GitHubEvidenceAuthError('boom', {
+                            get code() {
+                                reads += 1;
+                                return (
+                                    reads === 1 ? 'token_exchange_failed' : substituted
+                                ) as never;
+                            },
+                        });
+                    },
+                },
+            });
+
+            await agent.investigate({ question: 'Shipped?', source: 'github' });
+
+            expect(operatorSaw()).toContain('token_exchange_failed');
+            for (const secret of [
+                'BEGIN RSA PRIVATE KEY',
+                'placeholder',
+                'ghs_syntheticplaceholdertoken',
+                '10.1.2.3',
+            ])
+                expect(operatorSaw()).not.toContain(secret);
+            // The evidence read still degrades rather than failing the investigation.
+            expect(toolResultSentToModel(0)).toContain('auth_unavailable');
         });
 
         it('keeps the signing key out of the model-visible result when the token exchange fails', async () => {
@@ -1318,6 +1464,9 @@ describe('OpenAI support agent', () => {
                 agent.investigate({ question: 'Shipped?', source: 'github' }),
             ).rejects.toThrow('resolver is not a function');
             expect(githubRequests).toEqual([]);
+            // Logging it as a credential category would file a programmer error under
+            // configuration and hand the operator a fix that cannot work.
+            expect(operatorSaw()).not.toContain('auth_unavailable');
         });
     });
 });
