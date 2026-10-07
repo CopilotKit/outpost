@@ -259,6 +259,20 @@ describe('ChatMessage', () => {
             markdown: 'Read <https://docs.copilotkit.ai/reference/setup)>.',
             hrefs: ['https://docs.copilotkit.ai/reference/setup)'],
         },
+        // An autolink's address is published exactly as written, and `'` and '`' are
+        // both ordinary URL content an evidence URL may hold. Each href below is the
+        // `new URL(address)` canonicalization of the address — `'` survives it, '`'
+        // percent-encodes to %60 — which is what lets the validator ground a reply on
+        // one of these rather than on the prefix a character class would read. A
+        // renderer or remark-gfm change that publishes either differently fails here.
+        {
+            markdown: "Read <https://docs.copilotkit.ai/reference/provider's>.",
+            hrefs: ["https://docs.copilotkit.ai/reference/provider's"],
+        },
+        {
+            markdown: 'Read <https://docs.copilotkit.ai/reference/provider`name>.',
+            hrefs: ['https://docs.copilotkit.ai/reference/provider%60name'],
+        },
         {
             markdown: 'Read [Doc](https://docs.copilotkit.ai/reference/provider).',
             hrefs: ['https://docs.copilotkit.ai/reference/provider'],
@@ -717,6 +731,35 @@ describe('ChatMessage', () => {
                 guideUrl,
             ),
             hrefs: ['https://docs.copilotkit.ai/reference/my%5C-guide', guideUrl],
+            code: [],
+        },
+        // The composed string carries a cited address twice when the body autolinks
+        // it: once in the body and once as the angle inline destination the sources
+        // footer writes. The two syntaxes decode differently, so this records that
+        // both land on the one href for an address holding a character the
+        // validator's pattern scan cannot spell.
+        {
+            form: 'an autolinked applicability URL holding an apostrophe',
+            content: composed(
+                "See <https://docs.copilotkit.ai/reference/provider's> now.\n\n**Applies to:** React applications using the provider.",
+                "https://docs.copilotkit.ai/reference/provider's",
+            ),
+            hrefs: [
+                "https://docs.copilotkit.ai/reference/provider's",
+                "https://docs.copilotkit.ai/reference/provider's",
+            ],
+            code: [],
+        },
+        {
+            form: 'an autolinked applicability URL holding a backtick',
+            content: composed(
+                'See <https://docs.copilotkit.ai/reference/provider`name> now.\n\n**Applies to:** React applications using the provider.',
+                'https://docs.copilotkit.ai/reference/provider`name',
+            ),
+            hrefs: [
+                'https://docs.copilotkit.ai/reference/provider%60name',
+                'https://docs.copilotkit.ai/reference/provider%60name',
+            ],
             code: [],
         },
     ])('publishes composed details holding $form', ({ content, hrefs, code }) => {

@@ -313,6 +313,99 @@ describe('support reply contract', () => {
         expect(() => validateSupportReply(reply({ details }), sources)).toThrow(/link|url/i);
     });
 
+    /** Two evidence URLs the raw-URL scan's class cannot spell, and their hrefs. */
+    const autolinkAddresses = [
+        {
+            character: 'an apostrophe',
+            url: "https://docs.copilotkit.ai/reference/provider's",
+            href: "https://docs.copilotkit.ai/reference/provider's",
+        },
+        {
+            character: 'a backtick',
+            url: 'https://docs.copilotkit.ai/reference/provider`name',
+            href: 'https://docs.copilotkit.ai/reference/provider%60name',
+        },
+    ];
+
+    // The CommonMark `<…>` autolink was the one link syntax left to the pattern scan
+    // on its own. An inline destination, a reference definition and a bare literal
+    // each have a grammar-derived span that masks them from it, and the class that
+    // scan runs an address to stops at `'` and '`'. Both are ordinary URL content:
+    // `parseSourceUrl` accepts an evidence URL holding either, and this renderer
+    // publishes both in an href, recorded against the app's real ReactMarkdown +
+    // remark-gfm in apps/web/src/__tests__/qa-components.test.tsx. So the scan
+    // compared a truncated prefix of the cited address against the evidence set,
+    // found nothing, and escalated to a human a reply whose only citation was its
+    // own evidence and whose reader would have clicked straight through to it.
+    //
+    // Each row asserts the href this renderer publishes resolves to the cited
+    // evidence URL, so the row is accepted because the reader reaches the validated
+    // source and not because the comparison was widened: `'` survives
+    // canonicalization and '`' percent-encodes to %60 on both sides of it.
+    it.each(
+        (['summary', 'details', 'appliesTo'] as const).flatMap((field) =>
+            autolinkAddresses.map((address) => ({ ...address, field })),
+        ),
+    )('keeps an evidence autolink holding $character cited in $field', ({ url, href, field }) => {
+        expect(new URL(url).href).toBe(href);
+
+        const details = `See <${url}> now.`;
+        const value = reply({ [field]: details, evidence: [{ sourceUrl: url, quote }] });
+        const retrieved = sources.map((source) => ({ ...source, sourceUrl: url }));
+        expect(validateSupportReply(value, retrieved)[field]).toBe(details);
+    });
+
+    // The composed string is what the reader receives, and it carries such an
+    // address twice: the autolink the model wrote, and the angle inline destination
+    // publication adds for the same evidence in the sources footer. The field check
+    // and the composed check run the same scans, so both spellings have to survive.
+    it.each(autolinkAddresses)(
+        'publishes a cited autolink holding $character beside its sources footer',
+        ({ url }) => {
+            const { value, retrieved } = grounded(url, `See <${url}> now.`);
+            const composed = supportReplyDetails(validateSupportReply(value, retrieved));
+
+            expect(composed).toContain(`See <${url}> now.`);
+            expect(composed).toContain(`- [Source 1](<${url}>)`);
+        },
+    );
+
+    // The refusals the rows above must not take with them. Those two characters are
+    // the only thing they changed: an address no evidence backs is published just as
+    // clickably with one in it, and every angle form the autolink production
+    // resolves to something other than an evidence-backed absolute HTTP(S) URI stays
+    // refused. The last three bound what the new span masks — the address alone — so
+    // an ungrounded address written beside an autolink, and one the grammar closes
+    // no autolink around, are still reached by the scan.
+    it.each([
+        "See <https://example.invalid/provider's> now.",
+        'See <https://example.invalid/provider`name> now.',
+        "See <https://docs.copilotkit.ai/reference/other's> now.",
+        "See <https://docs.copilotkit.ai/reference/provider's!> now.",
+        'See <ftp://example.invalid/pub`x> now.',
+        "See <https://user:pass@docs.copilotkit.ai/reference/provider's> now.",
+        'See <foo@example.invalid> now.',
+        "See <https://docs.copilotkit.ai/reference/provider's> and https://example.invalid/steal now.",
+        "See https://example.invalid/steal and <https://docs.copilotkit.ai/reference/provider's> now.",
+        // A code span crossing a line is where the mask is deliberately stricter
+        // than the grammar: the renderer publishes no anchor here at all, and this
+        // stays refused rather than credited as inert.
+        "A span `<https://docs.copilotkit.ai/reference/provider's>\ncrossing` a line.",
+    ])('still refuses an angle address the evidence does not close around %#', (details) => {
+        const { value, retrieved } = grounded(autolinkAddresses[0].url, details);
+        expect(() => validateSupportReply(value, retrieved)).toThrow(/link|url/i);
+    });
+
+    // The accept direction of the same boundary: inside code the renderer publishes
+    // no anchor for either character, so neither spelling may be discarded as an
+    // ungrounded link.
+    it.each([
+        "Write `<https://docs.copilotkit.ai/reference/other's>` verbatim.",
+        '```text\n<https://example.invalid/provider`name>\n```',
+    ])('keeps an angle address inside code the renderer publishes no anchor for %#', (details) => {
+        expect(validateSupportReply(reply({ details }), sources).details).toBe(details);
+    });
+
     // `](` is a destination opener only where a link label closed on it. In each of
     // these the renderer publishes no anchor at all and prints the brackets as
     // ordinary punctuation, so reading every `](` as a destination discards a reply

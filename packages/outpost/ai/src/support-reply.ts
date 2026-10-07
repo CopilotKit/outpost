@@ -422,6 +422,48 @@ function autolinkLiterals(text: string): AutolinkLiteral[] {
     });
 }
 
+interface UriAutolink {
+    /** Offsets the address alone spans in `text`, its '<' and '>' excluded. */
+    start: number;
+    end: number;
+    /** The address exactly as written, which is the form this syntax publishes. */
+    address: string;
+}
+
+/**
+ * Every CommonMark `<…>` autolink in `text`: an absolute URI the grammar closes
+ * on its own '>', located with the parser the renderer runs.
+ *
+ * This form was the one link syntax left to the pattern scans alone. They find an
+ * address by pattern and run it to the next character outside a class, and that
+ * class excludes `'` and '`' — characters `parseSourceUrl` accepts in an evidence
+ * URL and this renderer publishes in an href, as `…/provider&#x27;s` and
+ * `…/provider%60name`. So the scan read a prefix of the cited address, failed to
+ * find that prefix in the evidence, and discarded a reply whose only citation was
+ * its own evidence, in the one spelling that had no span to be masked by.
+ *
+ * Widening the class would have answered a different question than the
+ * renderer's, and the class is what has already been wrong twice. Asking the
+ * grammar where the autolink's address begins and ends removes it from the
+ * question here too, exactly as `autolinkLiterals` did for the bare form.
+ *
+ * Only the `<…>` form is returned. The node range covers the delimiters, and what
+ * the syntax publishes is the text between them; a reference, inline or bare
+ * address starts with something else and is already located above, each in the
+ * form its own syntax publishes.
+ */
+function uriAutolinks(text: string): UriAutolink[] {
+    const nodes: (Link | Image)[] = [];
+    collectInlineLinks(parseMarkdown(text), nodes);
+    return nodes.flatMap((node) => {
+        const start = node.position?.start.offset;
+        const end = node.position?.end.offset;
+        if (node.type !== 'link' || start === undefined || end === undefined) return [];
+        if (text[start] !== '<' || text[end - 1] !== '>') return [];
+        return [{ start: start + 1, end: end - 1, address: text.slice(start + 1, end - 1) }];
+    });
+}
+
 interface CodeSpanContents {
     /** Offsets the span encloses, relative to its own line, delimiters excluded. */
     from: number;
@@ -639,6 +681,21 @@ function validateProse(text: string, knownUrls: ReadonlySet<string>): void {
     // was: a literal the parser finds in a region that scan deliberately still
     // reaches — the contents of a code span crossing a line — stays refused.
     for (const { start, end, address } of autolinkLiterals(prose)) {
+        checkUrl(address);
+        maskMarkdownDestination(start, end);
+    }
+    // A CommonMark `<…>` autolink is held to the evidence on the same terms, in
+    // the same spelling, and masked by the span the grammar gives its address
+    // rather than by the pattern below — whose class stops at `'` and '`', both
+    // of them ordinary evidence-URL content, and would otherwise re-read a
+    // truncated prefix of an address this check has just accepted. The
+    // delimiters stay visible: masking in place leaves every other offset where
+    // the grammar found it, and the raw-HTML check below reads the unmasked
+    // prose anyway. Checking before masking is again what keeps the scans no
+    // looser than they were — an address the grammar does not close an autolink
+    // around, in a code span crossing a line, is masked by nothing and stays
+    // subject to them.
+    for (const { start, end, address } of uriAutolinks(prose)) {
         checkUrl(address);
         maskMarkdownDestination(start, end);
     }
