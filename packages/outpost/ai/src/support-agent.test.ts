@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAimock } from './test-utils/aimock.js';
 import {
     SupportAgent,
@@ -79,7 +79,16 @@ function okSourceFile(url: string): Response {
 
 describe('OpenAI support agent', () => {
     const mock = useAimock();
-    afterEach(() => vi.unstubAllGlobals());
+    // The agent now reads App credentials from the environment by default. Clear them so a
+    // developer's exported GITHUB_* does not change which auth path these tests exercise.
+    beforeEach(() => {
+        for (const name of ['GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID'])
+            vi.stubEnv(name, undefined as unknown as string);
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
+    });
     function setup() {
         const searchEvidence = vi
             .fn<PathfinderClient['searchEvidence']>()
@@ -975,5 +984,155 @@ describe('OpenAI support agent', () => {
         expect(searchEvidence).toHaveBeenCalledTimes(6);
         expect(mock().llm.getRequests()).toHaveLength(7);
         expect(mock().llm.getLastRequest()?.body?.tools ?? []).toEqual([]);
+    });
+
+    describe('GitHub evidence authentication', () => {
+        const SYNTHETIC_HEADER = 'Bearer ghs_syntheticplaceholdertoken';
+        const sha = 'a'.repeat(40);
+        const releaseUrl = 'https://github.com/CopilotKit/CopilotKit/releases/tag/v2.0.0';
+
+        /** Records the origin and Authorization header of every captured request. */
+        function captureGithub() {
+            const realFetch = globalThis.fetch;
+            const captured: { url: string; authorization: string | null }[] = [];
+            vi.stubGlobal(
+                'fetch',
+                vi.fn<typeof fetch>(async (input, init) => {
+                    const url = input instanceof Request ? input.url : String(input);
+                    if (!url.startsWith('https://api.github.com/')) return realFetch(input, init);
+                    captured.push({
+                        url,
+                        authorization: new Headers(init?.headers).get('authorization'),
+                    });
+                    return new Response(
+                        JSON.stringify(
+                            url.includes('/commits/')
+                                ? { sha }
+                                : url.includes('/releases/')
+                                  ? {
+                                        tag_name: 'v2.0.0',
+                                        html_url: releaseUrl,
+                                        body: source.content,
+                                        published_at: '2026-01-01',
+                                        draft: false,
+                                        prerelease: false,
+                                    }
+                                  : {
+                                        encoding: 'base64',
+                                        content: Buffer.from(source.content).toString('base64'),
+                                        size: source.content.length,
+                                    },
+                        ),
+                    );
+                }),
+            );
+            return captured;
+        }
+
+        /** read_source, then read_release, then a final answer citing the release. */
+        function sourceThenRelease() {
+            mock().llm.on(
+                { toolCallId: 'call_release' },
+                {
+                    content: JSON.stringify({
+                        ...reply,
+                        evidence: [{ sourceUrl: releaseUrl, quote: source.content }],
+                    }),
+                },
+            );
+            mock().llm.on(
+                { toolCallId: 'call_source' },
+                {
+                    toolCalls: [
+                        {
+                            id: 'call_release',
+                            name: 'read_release',
+                            arguments: { repository: 'CopilotKit/CopilotKit', tag: 'v2.0.0' },
+                        },
+                    ],
+                },
+            );
+            mock().llm.onMessage(/./, {
+                toolCalls: [
+                    {
+                        id: 'call_source',
+                        name: 'read_source',
+                        arguments: {
+                            repository: 'CopilotKit/CopilotKit',
+                            path: 'packages/tools.ts',
+                            ref: 'v2.0.0',
+                        },
+                    },
+                ],
+            });
+        }
+
+        it('authorizes every source and release request against the GitHub API origin alone', async () => {
+            const captured = captureGithub();
+            sourceThenRelease();
+            const authorization = vi.fn(async () => SYNTHETIC_HEADER);
+            const agent = new SupportAgent({
+                apiKey: 'test-key',
+                baseURL: mock().url,
+                tracingDisabled: true,
+                pathfinder: { searchEvidence: vi.fn<PathfinderClient['searchEvidence']>() },
+                githubAuth: { authorization },
+            });
+            const result = await agent.investigate({ question: 'Shipped?', source: 'github' });
+            expect(result.reply.decision).toBe('answer');
+            expect(captured.map((request) => request.url)).toEqual([
+                'https://api.github.com/repos/CopilotKit/CopilotKit/commits/v2.0.0',
+                `https://api.github.com/repos/CopilotKit/CopilotKit/contents/packages/tools.ts?ref=${sha}`,
+                'https://api.github.com/repos/CopilotKit/CopilotKit/releases/tags/v2.0.0',
+            ]);
+            expect(captured.map((request) => request.authorization)).toEqual([
+                SYNTHETIC_HEADER,
+                SYNTHETIC_HEADER,
+                SYNTHETIC_HEADER,
+            ]);
+            // Resolved per request, so a token that expires mid-investigation is re-minted.
+            expect(authorization).toHaveBeenCalledTimes(3);
+        });
+
+        it('reads public sources anonymously when the host configures no App credential', async () => {
+            for (const name of ['GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID'])
+                vi.stubEnv(name, undefined as unknown as string);
+            const captured = captureGithub();
+            sourceThenRelease();
+            // No githubAuth: this is the constructor default every pipeline consumer gets.
+            const result = await setup().agent.investigate({
+                question: 'Shipped?',
+                source: 'github',
+            });
+            expect(result.reply.decision).toBe('answer');
+            expect(captured).toHaveLength(3);
+            expect(captured.map((request) => request.authorization)).toEqual([null, null, null]);
+        });
+
+        // A credential failure is now shaped like every other recoverable evidence failure:
+        // the investigator sees a bounded status it can route on instead of the run aborting.
+        // What must not change is that the request is abandoned rather than retried bare.
+        it('reports a partially configured credential as a bounded failure, never an anonymous read', async () => {
+            vi.stubEnv('GITHUB_APP_ID', '123456');
+            for (const name of ['GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID'])
+                vi.stubEnv(name, undefined as unknown as string);
+            const githubRequests = stubGitHub(okSourceFile);
+            scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
+
+            const result = await setup().agent.investigate({
+                question: 'Shipped?',
+                source: 'github',
+            });
+
+            expect(result.reply.decision).toBe('route');
+            expect(result.sources).toEqual([]);
+            // Not one request left the process, so the credential was never dropped to retry.
+            expect(githubRequests).toEqual([]);
+            const failure = toolResultSentToModel(0);
+            expect(failure).toContain('unavailable');
+            expect(failure).toContain('auth_unavailable');
+            // Which variable is missing is a host configuration detail, not model evidence.
+            expect(failure).not.toContain('GITHUB_PRIVATE_KEY');
+        });
     });
 });

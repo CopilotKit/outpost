@@ -11,6 +11,12 @@ import { z } from 'zod';
 import { config } from './config.js';
 import { StructuredOpenAIProvider } from './structured-openai-provider.js';
 import { PathfinderClient } from './pathfinder.js';
+import {
+    GitHubEvidenceAuthError,
+    githubEvidenceAuthFromEnv,
+    githubEvidenceHeaders,
+} from './github-evidence-auth.js';
+import type { GitHubEvidenceAuth } from './github-evidence-auth.js';
 import { supportReplySchema, validateSupportReply } from './support-reply.js';
 import type { SupportReply } from './support-reply.js';
 import type { ConversationMessage, PipelineContext, SearchResult, TokenUsage } from './types.js';
@@ -64,7 +70,8 @@ type GithubFailureReason =
     | 'rate_limited'
     | 'upstream_error'
     | 'invalid_response'
-    | 'transport_error';
+    | 'transport_error'
+    | 'auth_unavailable';
 
 type GithubResult =
     | { ok: true; data: unknown }
@@ -78,13 +85,31 @@ function rethrowIfTerminal(error: unknown, signal: AbortSignal): void {
 }
 
 /** Only public, allowlisted repositories; callers never provide an arbitrary fetch URL.
- * Predictable API, transport and payload failures are reported rather than thrown, so the
- * investigator can correct the request or fall back to other evidence. */
-async function githubJson(path: string, signal: AbortSignal): Promise<GithubResult> {
+ * Predictable API, transport, credential and payload failures are reported rather than
+ * thrown, so the investigator can correct the request or fall back to other evidence. */
+async function githubJson(
+    path: string,
+    signal: AbortSignal,
+    auth: GitHubEvidenceAuth,
+): Promise<GithubResult> {
+    // The origin is fixed below and the headers are built here, so an installation token
+    // can only ever ride on a request to GitHub's API for an allowlisted repository.
+    let headers: Record<string, string>;
+    try {
+        headers = await githubEvidenceHeaders(auth);
+    } catch (error) {
+        rethrowIfTerminal(error, signal);
+        // Only a credential failure becomes tool output, and only as this bare reason:
+        // anything else is a programmer error and must still escape the model loop.
+        if (!(error instanceof GitHubEvidenceAuthError)) throw error;
+        // Returning here rather than retrying bare is deliberate — a configured but
+        // unusable credential must not silently degrade into an anonymous read.
+        return { ok: false, reason: 'auth_unavailable' };
+    }
     let response: Response;
     try {
         response = await fetch(`https://api.github.com/repos/${path}`, {
-            headers: { Accept: 'application/vnd.github+json' },
+            headers,
             signal,
         });
     } catch (error) {
@@ -144,6 +169,7 @@ export class SupportAgent {
     private readonly pathfinder: Pick<PathfinderClient, 'searchEvidence'>;
     private readonly runner: Runner;
     private readonly model: string;
+    private readonly githubAuth: GitHubEvidenceAuth;
 
     constructor(
         options: {
@@ -152,9 +178,14 @@ export class SupportAgent {
             model?: string;
             tracingDisabled?: boolean;
             pathfinder?: Pick<PathfinderClient, 'searchEvidence'>;
+            /** Test seam only. Production callers get the worker's configured App credentials. */
+            githubAuth?: GitHubEvidenceAuth;
         } = {},
     ) {
         this.pathfinder = options.pathfinder ?? new PathfinderClient();
+        // Defaulted rather than required, so every pipeline consumer that constructs a
+        // SupportAgent authenticates its evidence reads without opting in.
+        this.githubAuth = options.githubAuth ?? githubEvidenceAuthFromEnv();
         this.model = options.model ?? 'gpt-5.6-luna';
         this.runner = new Runner({
             modelProvider: new StructuredOpenAIProvider({
@@ -174,6 +205,7 @@ export class SupportAgent {
         history: ConversationMessage[] = [],
     ): Promise<Investigation> {
         const signal = AbortSignal.timeout(60_000);
+        const githubAuth = this.githubAuth;
         const sources: SearchResult[] = [];
         let calls = 0;
         const spend = () => {
@@ -290,6 +322,7 @@ export class SupportAgent {
                 const commitResult = await githubJson(
                     `${repository}/commits/${encodeURIComponent(ref)}`,
                     signal,
+                    githubAuth,
                 );
                 if (!commitResult.ok)
                     return commitResult.reason === 'not_found'
@@ -308,6 +341,7 @@ export class SupportAgent {
                 const fileResult = await githubJson(
                     `${repository}/contents/${encodedPath}?ref=${sha}`,
                     signal,
+                    githubAuth,
                 );
                 if (!fileResult.ok)
                     return fileResult.reason === 'not_found'
@@ -380,6 +414,7 @@ export class SupportAgent {
                 const releaseResult = await githubJson(
                     `${repository}/releases/tags/${encodeURIComponent(tag)}`,
                     signal,
+                    githubAuth,
                 );
                 if (!releaseResult.ok)
                     return releaseResult.reason === 'not_found'
