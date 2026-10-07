@@ -6,6 +6,10 @@ import {
     InvestigationBudgetError,
 } from './support-agent.js';
 import { validateSupportReply, type SupportReply } from './support-reply.js';
+import {
+    githubEvidenceAuthFromEnv,
+    type InstallationTokenFactory,
+} from './github-evidence-auth.js';
 import type { PathfinderClient } from './pathfinder.js';
 
 const source = {
@@ -1133,6 +1137,63 @@ describe('OpenAI support agent', () => {
             expect(failure).toContain('auth_unavailable');
             // Which variable is missing is a host configuration detail, not model evidence.
             expect(failure).not.toContain('GITHUB_PRIVATE_KEY');
+        });
+
+        it('keeps the signing key out of the model-visible result when the token exchange fails', async () => {
+            const pem =
+                '-----BEGIN RSA PRIVATE KEY-----\nplaceholder\n-----END RSA PRIVATE KEY-----';
+            const githubRequests = stubGitHub(okSourceFile);
+            scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
+            const failingExchange: InstallationTokenFactory = () => async () => {
+                // @octokit/auth-app quotes the key it could not parse; that must not travel.
+                throw new Error(`could not sign JWT with ${pem}`);
+            };
+            const agent = new SupportAgent({
+                apiKey: 'test-key',
+                baseURL: mock().url,
+                tracingDisabled: true,
+                pathfinder: { searchEvidence: vi.fn<PathfinderClient['searchEvidence']>() },
+                githubAuth: githubEvidenceAuthFromEnv(
+                    {
+                        GITHUB_APP_ID: '123456',
+                        GITHUB_PRIVATE_KEY: pem,
+                        GITHUB_INSTALLATION_ID: '7890',
+                    },
+                    failingExchange,
+                ),
+            });
+
+            const result = await agent.investigate({ question: 'Shipped?', source: 'github' });
+
+            expect(result.reply.decision).toBe('route');
+            expect(githubRequests).toEqual([]);
+            const failure = toolResultSentToModel(0);
+            expect(failure).toContain('auth_unavailable');
+            expect(failure).not.toContain('BEGIN RSA PRIVATE KEY');
+            expect(failure).not.toContain('placeholder');
+        });
+
+        it('still surfaces a non-credential fault in the auth resolver instead of shaping it as evidence', async () => {
+            const githubRequests = stubGitHub(okSourceFile);
+            scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
+            const agent = new SupportAgent({
+                apiKey: 'test-key',
+                baseURL: mock().url,
+                tracingDisabled: true,
+                pathfinder: { searchEvidence: vi.fn<PathfinderClient['searchEvidence']>() },
+                // Not a GitHubEvidenceAuthError: a bug here must escape the model loop rather
+                // than be laundered into a bounded status the investigator routes past.
+                githubAuth: {
+                    authorization: async () => {
+                        throw new TypeError('resolver is not a function');
+                    },
+                },
+            });
+
+            await expect(
+                agent.investigate({ question: 'Shipped?', source: 'github' }),
+            ).rejects.toThrow('resolver is not a function');
+            expect(githubRequests).toEqual([]);
         });
     });
 });
