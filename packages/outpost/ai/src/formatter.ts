@@ -295,15 +295,24 @@ export class ResponseFormatter {
     /**
      * Strip the raw HTML an UNVALIDATED body could be carrying as markup.
      *
-     * This is the legacy `format()` path's defence, and it is a blunt one: it
-     * deletes a `<script>` or `<iframe>` element whole and drops every `on*`
-     * attribute, with no notion of whether what it found was markup or an example.
-     * That is the right trade for a free-text body nothing else has checked.
+     * This is `formatWeb`'s defence, and it is a blunt one: it deletes a `<script>`
+     * or `<iframe>` element whole and drops every `on*` attribute, with no notion of
+     * whether what it found was markup or an example. That is the right trade for a
+     * free-text body nothing else has checked, which is what the legacy `format()`
+     * path hands it.
      *
      * It is the wrong trade for a validated reply's own fields, which have already
-     * been held to a stricter rule by a real parser. That is why `formatStructured`
-     * runs it over the caller-supplied disclaimer only — see the web composition
-     * for what the difference costs a reader.
+     * been held to a stricter rule by a real parser. That is why the `web` branch of
+     * `formatStructured` runs it over the caller-supplied disclaimer only — see the
+     * web composition for what the difference costs a reader.
+     *
+     * That narrowing is the `web` branch's alone. `formatStructured` still falls
+     * through to the legacy `formatWeb` for `slack` and `teams`, so on those two
+     * platforms the whole composed body — validated summary and details included —
+     * is sanitized, and a validated answer carrying a `<script>`/`<iframe>` element
+     * or an `on*` attribute pays there exactly the cost the web composition
+     * describes. Routing them off `formatWeb` is a tracked follow-up, not something
+     * this docblock should be read as claiming already happened.
      */
     private sanitizeWeb(text: string): string {
         return text
