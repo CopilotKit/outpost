@@ -34,6 +34,48 @@ const reply: SupportReply = {
     evidence: [{ sourceUrl: source.sourceUrl, quote: source.content }],
     handoffReason: '',
 };
+const routeReply = {
+    ...reply,
+    decision: 'route',
+    summary: 'Source evidence was unavailable, so a maintainer should confirm this.',
+    details: '',
+    evidence: [],
+    handoffReason: 'Requested GitHub evidence was unavailable during the investigation',
+};
+const PINNED_SHA = 'a'.repeat(40);
+const SOURCE_PATH = 'packages/tools.ts';
+const BLOB_URL = `https://github.com/CopilotKit/CopilotKit/blob/${PINNED_SHA}/${SOURCE_PATH}`;
+const groundedReply = { ...reply, evidence: [{ sourceUrl: BLOB_URL, quote: source.content }] };
+
+/** Routes only api.github.com through the stub so the aimock HTTP server stays reachable. */
+function stubGitHub(respond: (url: string) => Response): string[] {
+    const realFetch = globalThis.fetch;
+    const requests: string[] = [];
+    vi.stubGlobal(
+        'fetch',
+        vi.fn<typeof fetch>(async (input, init) => {
+            const url = input instanceof Request ? input.url : String(input);
+            if (!url.startsWith('https://api.github.com/')) return realFetch(input, init);
+            requests.push(url);
+            return respond(url);
+        }),
+    );
+    return requests;
+}
+
+function okSourceFile(url: string): Response {
+    return new Response(
+        JSON.stringify(
+            url.includes('/commits/')
+                ? { sha: PINNED_SHA }
+                : {
+                      encoding: 'base64',
+                      content: Buffer.from(source.content).toString('base64'),
+                      size: source.content.length,
+                  },
+        ),
+    );
+}
 
 describe('OpenAI support agent', () => {
     const mock = useAimock();
@@ -69,6 +111,40 @@ describe('OpenAI support agent', () => {
                 },
             ],
         });
+    }
+    type ScriptedTurn =
+        | { tool: 'read_source'; path: string; ref?: string }
+        | { tool: 'read_release'; tag: string }
+        | { output: unknown };
+    /** One scripted response per run turn, so a failed tool result can be followed by a correction. */
+    function scriptTurns(turns: ScriptedTurn[]) {
+        turns.forEach((turn, index) => {
+            const match = { userMessage: /./, sequenceIndex: index };
+            if ('output' in turn) {
+                mock().llm.on(match, { content: JSON.stringify(turn.output) });
+                return;
+            }
+            mock().llm.on(match, {
+                toolCalls: [
+                    {
+                        id: `call_${turn.tool}_${index}`,
+                        name: turn.tool,
+                        arguments:
+                            turn.tool === 'read_source'
+                                ? {
+                                      repository: 'CopilotKit/CopilotKit',
+                                      path: turn.path,
+                                      ref: turn.ref ?? 'v2.0.0',
+                                  }
+                                : { repository: 'CopilotKit/CopilotKit', tag: turn.tag },
+                    },
+                ],
+            });
+        });
+    }
+    /** The model request that carries the result of the tool call made on `turn`. */
+    function toolResultSentToModel(turn: number): string {
+        return JSON.stringify(mock().llm.getRequests()[turn + 1]?.body);
     }
     it('executes the SDK tool loop and validates the final output against actual sources', async () => {
         toolRoundtrip();
@@ -302,23 +378,131 @@ describe('OpenAI support agent', () => {
         expect(result.sources).toEqual([]);
         expect(JSON.stringify(mock().llm.getLastRequest()?.body)).toContain('not_found');
     });
-    it('rejects source paths escaping the repository before making a GitHub request', async () => {
-        mock().llm.onMessage(/./, {
-            toolCalls: [
-                {
-                    id: 'call_source',
-                    name: 'read_source',
-                    arguments: {
-                        repository: 'CopilotKit/CopilotKit',
-                        path: '../secret',
-                        ref: 'main',
-                    },
-                },
-            ],
+    it.each(['../secret', '/etc/passwd', 'packages//tools.ts', 'docs/./guide.md', 'a?b', 'a\\b'])(
+        'returns invalid_path without contacting GitHub and still spends the call: %s',
+        async (path) => {
+            const githubRequests = stubGitHub(okSourceFile);
+            scriptTurns([
+                { tool: 'read_source', path },
+                { tool: 'read_source', path: SOURCE_PATH },
+                { output: groundedReply },
+            ]);
+
+            const result = await setup().agent.investigate({
+                question: 'Tools?',
+                source: 'github',
+            });
+
+            expect(result.reply.decision).toBe('answer');
+            expect(result.sources).toHaveLength(1);
+            expect(result.sources[0].sourceUrl).toBe(BLOB_URL);
+            // The rejected path never reaches the network; only the corrective read does.
+            expect(githubRequests).toEqual([
+                'https://api.github.com/repos/CopilotKit/CopilotKit/commits/v2.0.0',
+                `https://api.github.com/repos/CopilotKit/CopilotKit/contents/${SOURCE_PATH}?ref=${PINNED_SHA}`,
+            ]);
+            expect(toolResultSentToModel(0)).toContain('invalid_path');
+            expect(mock().llm.getRequests()).toHaveLength(3);
+        },
+    );
+    it('recovers from a rate-limited source read without leaking the GitHub response', async () => {
+        const rateLimitBody = JSON.stringify({
+            message: 'API rate limit exceeded for 203.0.113.7.',
+            documentation_url: 'https://docs.github.com/rest/rate-limit',
         });
+        let refLookups = 0;
+        const githubRequests = stubGitHub((url) =>
+            url.includes('/commits/') && refLookups++ === 0
+                ? new Response(rateLimitBody, { status: 403 })
+                : okSourceFile(url),
+        );
+        scriptTurns([
+            { tool: 'read_source', path: SOURCE_PATH },
+            { tool: 'read_source', path: SOURCE_PATH, ref: 'main' },
+            { output: groundedReply },
+        ]);
+
+        const result = await setup().agent.investigate({ question: 'Tools?', source: 'github' });
+
+        expect(result.reply.decision).toBe('answer');
+        expect(result.sources).toHaveLength(1);
+        expect(result.sources[0].sourceUrl).toBe(BLOB_URL);
+        expect(githubRequests).toHaveLength(3);
+        const failure = toolResultSentToModel(0);
+        expect(failure).toContain('unavailable');
+        expect(failure).toContain('access_denied');
+        expect(failure).not.toContain('203.0.113.7');
+        expect(failure).not.toContain('API rate limit exceeded');
+    });
+    it('returns a directory read as a correctable not_a_file result', async () => {
+        const listing = JSON.stringify([
+            {
+                name: 'tools.ts',
+                path: SOURCE_PATH,
+                type: 'file',
+                download_url: 'https://raw.githubusercontent.com/CopilotKit/CopilotKit/main/x.ts',
+            },
+        ]);
+        const githubRequests = stubGitHub((url) =>
+            url.includes('/contents/packages?') ? new Response(listing) : okSourceFile(url),
+        );
+        scriptTurns([
+            { tool: 'read_source', path: 'packages' },
+            { tool: 'read_source', path: SOURCE_PATH },
+            { output: groundedReply },
+        ]);
+
+        const result = await setup().agent.investigate({ question: 'Tools?', source: 'github' });
+
+        expect(result.sources).toEqual([
+            expect.objectContaining({ sourceUrl: BLOB_URL, content: source.content }),
+        ]);
+        expect(githubRequests).toHaveLength(4);
+        const failure = toolResultSentToModel(0);
+        expect(failure).toContain('not_a_file');
+        expect(failure).not.toContain('download_url');
+    });
+    it('spends the tool budget on failed evidence reads without resetting it', async () => {
+        const githubRequests = stubGitHub(
+            () => new Response('{"message":"server boom"}', { status: 503 }),
+        );
+        scriptTurns([
+            ...Array.from(
+                { length: 6 },
+                () => ({ tool: 'read_source', path: SOURCE_PATH }) as ScriptedTurn,
+            ),
+            { output: routeReply },
+        ]);
+
+        const result = await setup().agent.investigate({ question: 'Tools?', source: 'github' });
+
+        expect(result.reply.decision).toBe('route');
+        expect(result.sources).toEqual([]);
+        expect(githubRequests).toHaveLength(6);
+        expect(mock().llm.getRequests()).toHaveLength(7);
+        expect(mock().llm.getLastRequest()?.body?.tools ?? []).toEqual([]);
+    });
+    it.each([
+        {
+            kind: 'AbortError',
+            failure: Object.assign(new Error('The operation was aborted.'), {
+                name: 'AbortError',
+            }),
+        },
+        {
+            kind: 'TimeoutError',
+            failure: Object.assign(new Error('The operation was aborted due to timeout.'), {
+                name: 'TimeoutError',
+            }),
+        },
+    ])('still terminates the run when the evidence fetch raises $kind', async ({ failure }) => {
+        stubGitHub(() => {
+            throw failure;
+        });
+        scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
         await expect(
             setup().agent.investigate({ question: 'Tools?', source: 'github' }),
-        ).rejects.toBeInstanceOf(InvalidSupportReplyError);
+        ).rejects.toThrow('aborted');
     });
     it('returns a model-visible too_large result for oversized source files', async () => {
         const sha = 'a'.repeat(40);
@@ -444,42 +628,107 @@ describe('OpenAI support agent', () => {
         expect(modelInput).toContain('1000000');
         expect(modelInput).toContain('500000');
     });
-    it('still rejects malformed in-limit source file payloads', async () => {
-        const sha = 'a'.repeat(40);
-        const realFetch = globalThis.fetch;
-        vi.stubGlobal(
-            'fetch',
-            vi.fn<typeof fetch>(async (input, init) => {
-                const requestUrl = input instanceof Request ? input.url : String(input);
-                if (!requestUrl.startsWith('https://api.github.com/'))
-                    return realFetch(input, init);
-                return new Response(
-                    JSON.stringify(
-                        requestUrl.includes('/commits/')
-                            ? { sha }
-                            : { encoding: 'none', content: '', size: 500_000 },
-                    ),
-                );
-            }),
-        );
-        mock().llm.onMessage(/./, {
-            toolCalls: [
-                {
-                    id: 'call_source',
-                    name: 'read_source',
-                    arguments: {
-                        repository: 'CopilotKit/CopilotKit',
-                        path: 'pnpm-lock.yaml',
-                        ref: 'main',
-                    },
-                },
-            ],
-        });
+    it.each([
+        {
+            kind: 'symlink',
+            payload: {
+                type: 'symlink',
+                size: 23,
+                encoding: 'none',
+                content: '',
+                target: '../../elsewhere/tools.ts',
+            },
+            secret: 'elsewhere',
+        },
+        {
+            kind: 'submodule',
+            payload: {
+                type: 'submodule',
+                size: 0,
+                submodule_git_url: 'https://github.com/other/vendored.git',
+            },
+            secret: 'vendored.git',
+        },
+        {
+            kind: 'in-limit malformed',
+            payload: { encoding: 'none', content: '', size: 500_000 },
+            secret: undefined,
+        },
+    ])(
+        'returns a model-visible unreadable result for $kind file metadata',
+        async ({ payload, secret }) => {
+            stubGitHub((url) =>
+                url.includes('/commits/')
+                    ? new Response(JSON.stringify({ sha: PINNED_SHA }))
+                    : new Response(JSON.stringify(payload)),
+            );
+            scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
 
-        await expect(
-            setup().agent.investigate({ question: 'Inspect lockfile', source: 'github' }),
-        ).rejects.toThrow('base64');
+            const result = await setup().agent.investigate({
+                question: 'Tools?',
+                source: 'github',
+            });
+
+            expect(result.reply.decision).toBe('route');
+            expect(result.sources).toEqual([]);
+            const failure = toolResultSentToModel(0);
+            expect(failure).toContain('unreadable');
+            expect(failure).toContain(SOURCE_PATH);
+            if (secret) expect(failure).not.toContain(secret);
+        },
+    );
+    it('returns an unavailable ref result when the commit payload is unusable', async () => {
+        stubGitHub(() => new Response(JSON.stringify({ sha: 'not-a-commit-sha' })));
+        scriptTurns([{ tool: 'read_source', path: SOURCE_PATH }, { output: routeReply }]);
+
+        const result = await setup().agent.investigate({ question: 'Tools?', source: 'github' });
+
+        expect(result.reply.decision).toBe('route');
+        expect(toolResultSentToModel(0)).toContain('invalid_response');
     });
+    it.each([
+        {
+            kind: 'server error',
+            respond: () => new Response('{"message":"server boom"}', { status: 500 }),
+            reason: 'upstream_error',
+            secret: 'server boom',
+        },
+        {
+            kind: 'unparseable body',
+            respond: () => new Response('<html>blocked by edge-proxy</html>'),
+            reason: 'invalid_response',
+            secret: 'edge-proxy',
+        },
+        {
+            kind: 'transport failure',
+            respond: (): Response => {
+                throw new TypeError('fetch failed: ECONNRESET 10.0.0.4:443');
+            },
+            reason: 'transport_error',
+            secret: '10.0.0.4',
+        },
+    ])(
+        'returns a bounded unavailable release result on a $kind',
+        async ({ respond, reason, secret }) => {
+            const githubRequests = stubGitHub(respond);
+            scriptTurns([{ tool: 'read_release', tag: 'v2.0.0' }, { output: routeReply }]);
+
+            const result = await setup().agent.investigate({
+                question: 'Shipped?',
+                source: 'github',
+            });
+
+            expect(result.reply.decision).toBe('route');
+            expect(result.sources).toEqual([]);
+            expect(githubRequests).toEqual([
+                'https://api.github.com/repos/CopilotKit/CopilotKit/releases/tags/v2.0.0',
+            ]);
+            const failure = toolResultSentToModel(0);
+            expect(failure).toContain('unavailable');
+            expect(failure).toContain(reason);
+            expect(failure).not.toContain(secret);
+        },
+    );
     it('accepts source files at the maximum reported size', async () => {
         const sha = 'a'.repeat(40);
         const url = `https://github.com/CopilotKit/CopilotKit/blob/${sha}/packages/tools.ts`;
