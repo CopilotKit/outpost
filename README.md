@@ -14,7 +14,7 @@ AI-powered support operations platform by CopilotKit. Outpost unifies customer s
 ├──────────┬──────────┬─────────────┼────────────┬────────────────┤
 │  pkg/ai  │ pkg/queue│  pkg/shared │   pkg/db   │                │
 │ Pathfinder│ Postgres │  Types &    │   Prisma   │                │
-│ + Claude │ Job Queue│  Constants  │   Schema   │                │
+│ + OpenAI │ Job Queue│  Constants  │   Schema   │                │
 ├──────────┴──────────┴─────────────┴────────────┘                │
 │                      PostgreSQL 16 + pgvector                    │
 └─────────────────────────────────────────────────────────────────┘
@@ -24,7 +24,7 @@ AI-powered support operations platform by CopilotKit. Outpost unifies customer s
 
 ### Prerequisites
 
-- Node.js >= 20
+- Node.js >= 24
 - pnpm >= 9
 - Docker (for local PostgreSQL)
 
@@ -56,16 +56,18 @@ pnpm db:seed
 pnpm dev
 ```
 
+Set `OPENAI_API_KEY` for the default Luna support investigator, independent verifier, classifier, and sentiment analyzer. `ANTHROPIC_API_KEY` is only needed for the explicit Anthropic rollback or direct legacy generator. See [support-agent configuration](docs/support-agent.md).
+
 ### Key Commands
 
-| Command | Description |
-|---------|-------------|
-| `pnpm dev` | Start all apps in development mode |
-| `pnpm build` | Build all apps and packages |
-| `pnpm lint` | Lint all packages |
-| `pnpm typecheck` | Type-check all packages |
-| `pnpm test` | Run all tests |
-| `pnpm format` | Format code with Prettier |
+| Command          | Description                        |
+| ---------------- | ---------------------------------- |
+| `pnpm dev`       | Start all apps in development mode |
+| `pnpm build`     | Build all apps and packages        |
+| `pnpm lint`      | Lint all packages                  |
+| `pnpm typecheck` | Type-check all packages            |
+| `pnpm test`      | Run all tests                      |
+| `pnpm format`    | Format code with Prettier          |
 
 ## Project Structure
 
@@ -77,7 +79,7 @@ outpost/
 │   ├── github-app/       # GitHub App for issue/discussion tracking
 │   └── docs/             # Public documentation site
 ├── packages/
-│   ├── ai/               # AI pipeline (Pathfinder + Claude)
+│   ├── ai/               # AI pipeline (Pathfinder + OpenAI)
 │   ├── db/               # Prisma schema and database client
 │   ├── queue/            # Postgres-based job queue
 │   └── shared/           # Shared types, constants, utilities

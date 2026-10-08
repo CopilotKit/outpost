@@ -7,39 +7,65 @@
 
 import { AI_CONFIDENCE } from '@copilotkit/outpost/shared';
 
+// Validate during config loading so direct Pathfinder clients are protected too.
+const maxQueryChars = Number(process.env.PATHFINDER_MAX_QUERY_CHARS ?? '1000');
+if (!Number.isSafeInteger(maxQueryChars) || maxQueryChars <= 0) {
+    throw new Error('[AI Config] PATHFINDER_MAX_QUERY_CHARS must be a positive safe integer');
+}
+
+const auxiliaryDefaultModel =
+    process.env.AI_RESPONSE_PROVIDER === 'anthropic' ? 'claude-haiku-4-5-20251001' : 'gpt-5.6-luna';
+
+function envValueOrDefault(value: string | undefined, fallback: string): string {
+    const normalized = value?.trim();
+    return normalized ? normalized : fallback;
+}
+
+function isBlank(value: string | undefined): boolean {
+    return value === undefined || value.trim().length === 0;
+}
+
 export const config = {
     /** Anthropic API key — required for Claude calls */
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
 
+    openaiApiKey: process.env.OPENAI_API_KEY ?? '',
+    responseProvider: process.env.AI_RESPONSE_PROVIDER || 'openai',
+    draftLintMode: process.env.AI_DRAFT_LINT_MODE || 'report',
+
     /** Pathfinder MCP server URL */
-    pathfinderMcpUrl: process.env.PATHFINDER_MCP_URL ?? 'https://mcp.copilotkit.ai',
+    pathfinderMcpUrl: process.env.PATHFINDER_MCP_URL || 'https://mcp.copilotkit.ai',
 
     /** Fallback docs URL when MCP is unavailable */
-    fallbackDocsUrl: process.env.FALLBACK_DOCS_URL ?? 'https://docs.copilotkit.ai/llms-full.txt',
+    fallbackDocsUrl: process.env.FALLBACK_DOCS_URL || 'https://docs.copilotkit.ai/llms-full.txt',
 
     /** Model used for response generation */
-    responseModel: process.env.AI_RESPONSE_MODEL ?? 'claude-sonnet-4-6',
+    responseModel: envValueOrDefault(
+        process.env.AI_RESPONSE_MODEL,
+        process.env.AI_RESPONSE_PROVIDER === 'anthropic' ? 'claude-sonnet-4-6' : 'gpt-5.6-luna',
+    ),
+    legacyResponseModel: process.env.AI_LEGACY_RESPONSE_MODEL || 'claude-sonnet-4-6',
 
     /** Model used for confidence scoring (cheaper, faster) */
-    confidenceModel: process.env.AI_CONFIDENCE_MODEL ?? 'claude-haiku-4-5-20251001',
+    confidenceModel: envValueOrDefault(process.env.AI_CONFIDENCE_MODEL, auxiliaryDefaultModel),
 
     /** Model used for ticket classification (cheaper, faster) */
-    classifierModel: process.env.AI_CLASSIFIER_MODEL ?? 'claude-haiku-4-5-20251001',
+    classifierModel: envValueOrDefault(process.env.AI_CLASSIFIER_MODEL, auxiliaryDefaultModel),
 
     /** Maximum tokens for response generation */
     maxResponseTokens: 2048,
 
-    /** Maximum tokens for confidence scoring */
-    maxConfidenceTokens: 256,
+    /** Includes reasoning and the complete-draft confidence judgment. */
+    maxConfidenceTokens: 4096,
 
-    /** Maximum tokens for classification */
-    maxClassifierTokens: 512,
+    /** Includes low-effort reasoning and structured classification output. */
+    maxClassifierTokens: 2048,
 
     /** Model used for sentiment analysis (cheap, fast) */
-    sentimentModel: process.env.AI_SENTIMENT_MODEL ?? 'claude-haiku-4-5-20251001',
+    sentimentModel: envValueOrDefault(process.env.AI_SENTIMENT_MODEL, auxiliaryDefaultModel),
 
-    /** Maximum tokens for sentiment analysis */
-    maxSentimentTokens: 512,
+    /** Includes low-effort reasoning and structured sentiment output. */
+    maxSentimentTokens: 2048,
 
     /** Temperature for sentiment analysis */
     sentimentTemperature: 0.1,
@@ -75,6 +101,7 @@ export const config = {
         refreshBeforeExpiryMs: 5 * 60 * 1000,
         /**
          * Hard cap on the characters sent as an MCP search `query`.
+         * Overrides must be positive safe integers; malformed values fail startup.
          *
          * A retrieval query is an embedding input, not a transcript: the issue
          * body still reaches the generator in full, only the SEARCH string is
@@ -84,7 +111,7 @@ export const config = {
          * scored a feeble 0.33-0.43 cosine for it, so the long tail was buying
          * nothing. 1000 leaves ~5x headroom over every observed human query.
          */
-        maxQueryChars: parseInt(process.env.PATHFINDER_MAX_QUERY_CHARS ?? '1000', 10),
+        maxQueryChars,
         /**
          * Value sent as `X-Pathfinder-Source` on the MCP `initialize` request.
          *
@@ -106,11 +133,73 @@ export type AIConfig = typeof config;
  * Validate that required configuration values are present.
  * Throws if any critical config is missing.
  */
-export function validateConfig(): void {
-    if (!config.anthropicApiKey) {
+export function validateConfig(
+    values: Pick<
+        AIConfig,
+        'anthropicApiKey' | 'openaiApiKey' | 'responseProvider' | 'responseModel' | 'draftLintMode'
+    > &
+        Partial<Pick<AIConfig, 'confidenceModel' | 'classifierModel' | 'sentimentModel'>> = config,
+): void {
+    if (values.responseProvider === 'anthropic' && isBlank(values.anthropicApiKey)) {
         throw new Error(
             '[AI Config] ANTHROPIC_API_KEY is required but not set. ' +
                 'Set the ANTHROPIC_API_KEY environment variable before starting the pipeline.',
         );
     }
+    if (!['openai', 'anthropic'].includes(values.responseProvider))
+        throw new Error('[AI Config] AI_RESPONSE_PROVIDER must be openai or anthropic');
+    if (values.responseProvider === 'openai' && isBlank(values.openaiApiKey))
+        throw new Error('[AI Config] OPENAI_API_KEY is required for the OpenAI support agent');
+    for (const [name, model] of [
+        ['AI_RESPONSE_MODEL', values.responseModel],
+        ['AI_CONFIDENCE_MODEL', values.confidenceModel],
+        ['AI_CLASSIFIER_MODEL', values.classifierModel],
+        ['AI_SENTIMENT_MODEL', values.sentimentModel],
+    ] as const) {
+        if (model !== undefined) validateModelProvider(values.responseProvider, model, name);
+    }
+    if (!['report', 'enforce'].includes(values.draftLintMode))
+        throw new Error('[AI Config] AI_DRAFT_LINT_MODE must be report or enforce');
+}
+
+/** Reject mismatched overrides instead of silently switching providers. */
+export function validateModelProvider(provider: string, model: string, name: string): void {
+    if (!['openai', 'anthropic'].includes(provider))
+        throw new Error('[AI Config] AI_RESPONSE_PROVIDER must be openai or anthropic');
+    const normalizedModel = model.trim();
+    if (!normalizedModel) throw new Error(`[AI Config] ${name} must not be blank`);
+    if (
+        (provider === 'openai' && normalizedModel.startsWith('claude-')) ||
+        (provider === 'anthropic' && isKnownOpenAIModel(normalizedModel))
+    )
+        throw new Error(`[AI Config] ${name} does not match AI_RESPONSE_PROVIDER`);
+}
+
+/**
+ * Recognize known families and aliases without rejecting custom provider deployment names.
+ *
+ * A fine-tune is resolved to the base family it was trained from rather than matched as its own
+ * prefix, so every family recognized bare is recognized under `ft:` too — previously `ft:gpt-`
+ * was recognized while the o-series fine-tunes of the same helper's own `/^o[134]/` families
+ * were not, and that mismatch reached a runtime provider call instead of failing at startup.
+ */
+function isKnownOpenAIModel(model: string): boolean {
+    return isRecognizedOpenAIBase(fineTuneBase(model));
+}
+
+/**
+ * The base model of an OpenAI fine-tune output ID, or the value unchanged when it is not one.
+ *
+ * Customer model IDs are `ft:<base>:<org>[:<suffix>[:<id>]]` and the base itself carries no
+ * colon, so the first segment after the prefix is the base. Taking the segment (not the whole
+ * remainder) is what lets a bare-family test anchored to `-` or end-of-string — `/^o[134](?:-|$)/`
+ * — still match when a fine-tune suffix follows it.
+ */
+function fineTuneBase(model: string): string {
+    return model.startsWith('ft:') ? model.slice(3).split(':')[0] : model;
+}
+
+/** Bare family membership. Compared exactly: custom deployment names keep their own casing. */
+function isRecognizedOpenAIBase(base: string): boolean {
+    return base === 'chat-latest' || base.startsWith('gpt-') || /^o[134](?:-|$)/.test(base);
 }

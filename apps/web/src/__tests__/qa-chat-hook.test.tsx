@@ -114,6 +114,25 @@ describe('useQAChat', () => {
         expect(secondCallBody.conversationHistory[1].content).toBe('First answer');
     });
 
+    it('retains details when SSE JSON and unicode are split across network chunks', async () => {
+        const bytes = new TextEncoder().encode(
+            'data: {"type":"token","text":"Use tools ✓"}\n\ndata: {"type":"metadata","details":"Verified **details**","sources":[]}\n\ndata: [DONE]\n\n',
+        );
+        const stream = new ReadableStream({
+            start(controller) {
+                for (let i = 0; i < bytes.length; i += 3) controller.enqueue(bytes.slice(i, i + 3));
+                controller.close();
+            },
+        });
+        mockFetch.mockResolvedValue(new Response(stream));
+        const { result } = renderHook(() => useQAChat());
+        await act(async () => {
+            await result.current.sendMessage('Tools?');
+        });
+        expect(result.current.messages[1].content).toBe('Use tools ✓');
+        expect(result.current.messages[1].details).toBe('Verified **details**');
+    });
+
     it('clears conversation', async () => {
         mockFetch.mockResolvedValue(
             createMockSSEResponse([

@@ -44,7 +44,10 @@ describe('getSentimentTrend', () => {
         const result = await getSentimentTrend(
             [
                 { content: 'Great product!', createdAt: new Date(twoWeeksAgo.getTime() + 1000) },
-                { content: 'This is terrible now.', createdAt: new Date(oneWeekAgo.getTime() + 1000) },
+                {
+                    content: 'This is terrible now.',
+                    createdAt: new Date(oneWeekAgo.getTime() + 1000),
+                },
             ],
             [
                 { start: twoWeeksAgo, end: oneWeekAgo },
@@ -148,9 +151,19 @@ describe('getSentimentTrend', () => {
         expect(result.periods).toHaveLength(3);
         expect(result.periods[0].messageCount).toBe(1);
         expect(result.periods[1].messageCount).toBe(0);
-        expect(result.periods[1].score).toBe(50); // Default NEUTRAL
-        expect(result.periods[2].messageCount).toBe(0);
+        expect(result.periods[1]).toMatchObject({
+            score: 25,
+            label: SentimentLabel.NEUTRAL,
+            messageCount: 0,
+        });
+        expect(result.periods[2]).toMatchObject({
+            score: 25,
+            label: SentimentLabel.NEUTRAL,
+            messageCount: 0,
+        });
         // Only one non-empty period, so trend is STABLE (can't compare)
+        expect(result.trend).toBe('STABLE');
+        expect(result.delta).toBe(0);
         expect(mockAnalyzeSentiment).toHaveBeenCalledTimes(1);
     });
 

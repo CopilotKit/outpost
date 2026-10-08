@@ -84,9 +84,14 @@ const fakeMessage = {
         for (const row of matched) Object.assign(row, args.data);
         return { count: matched.length };
     }),
-    findUnique: vi.fn(async (args: any) => {
+    findUnique: vi.fn(async (args: { where: { id: string } }) => {
         const row = messages.find((m) => m.id === args.where.id);
-        return row ? { responseState: row.responseState } : null;
+        return row
+            ? {
+                  responseState: row.responseState,
+                  escalationRequiredReason: row.escalationRequiredReason,
+              }
+            : null;
     }),
 };
 
@@ -178,6 +183,30 @@ function escalationJobs() {
     return createdJobs.filter((j) => j.type === 'ESCALATION');
 }
 
+/** Move the stored row after the sweep reads its PENDING snapshot. */
+function settleAfterRead(
+    row: FakeMessage,
+    responseState: 'DELIVERED' | 'ESCALATED',
+    escalationRequiredReason: string | null = null,
+): void {
+    fakeMessage.findMany.mockImplementationOnce(async () => {
+        const snapshot = [
+            {
+                id: row.id,
+                ticketId: row.ticketId,
+                responseJobId: row.responseJobId,
+                responseError: row.responseError,
+                escalationRequiredReason: row.escalationRequiredReason,
+                deliveryConfirmed: row.deliveryConfirmed,
+                ticket: { source: row.ticketSource },
+            },
+        ];
+        row.responseState = responseState;
+        row.escalationRequiredReason = escalationRequiredReason;
+        return snapshot;
+    });
+}
+
 beforeEach(() => {
     vi.clearAllMocks();
     messages = [];
@@ -216,10 +245,17 @@ describe('handlePendingResponseSweep', () => {
 
         await handlePendingResponseSweep({}, makeContext());
 
-        expect(escalationJobs()[0].payload).toMatchObject({
-            ticketId: 'tkt-1',
-            reason: 'Low AI confidence (12%) — automated escalation',
-        });
+        const payload = escalationJobs()[0].payload as { ticketId: string; reason: string };
+        expect(payload.ticketId).toBe('tkt-1');
+        // Verbatim, and first: it is the promise the response made.
+        expect(payload.reason).toContain('Low AI confidence (12%) — automated escalation');
+        expect(payload.reason.indexOf('Low AI confidence (12%) — automated escalation')).toBe(0);
+        // This row records no delivery outcome, and the stored reason predates
+        // publication — so on its own it would read as "a weak answer went out"
+        // to the human who may in fact need to answer from scratch.
+        expect(payload.reason).toContain('DISCORD');
+        expect(payload.reason).toContain('may have received no response at all');
+        expect(payload.reason).toContain('A human must verify the thread and answer if needed.');
     });
 
     it('reports the last delivery error in its own reason when none was recorded', async () => {
@@ -300,6 +336,38 @@ describe('handlePendingResponseSweep', () => {
 
     // ── Confirmed delivery ──────────────────────────────────────────────────
 
+    it('escalates a confirmed delivery that still owes a human handoff', async () => {
+        // Delivery proof settles a row that owes nothing else. This one is
+        // PENDING *because* of its marker — a low-confidence answer the reporter
+        // did receive — so repairing it to DELIVERED would drop the promised
+        // human and strand the marker next to a settled state, which is the one
+        // pair no path can act on afterwards.
+        const reason = 'Low AI confidence (12%) — automated escalation';
+        const row = addMessage({ deliveryConfirmed: true, escalationRequiredReason: reason });
+
+        const result = await handlePendingResponseSweep({}, makeContext());
+
+        expect(result.success).toBe(true);
+        expect(result.data).toMatchObject({ escalated: 1, repaired: 0, failed: 0 });
+        expect(row.responseState).toBe('ESCALATED');
+        expect(row.escalationRequiredReason).toBeNull();
+        // Delivery is proven, so the reason stays exactly as promised.
+        expect((escalationJobs()[0].payload as { reason: string }).reason).toBe(reason);
+    });
+
+    it('keeps a recorded delivery failure diagnostic as the whole reason', async () => {
+        // The delivery path already folded the failure into the stored reason,
+        // so there is no uncertainty left to append.
+        const reason =
+            'AI response generated but not delivered to DISCORD (discord 503) — ' +
+            'needs a human to answer the reporter';
+        addMessage({ escalationRequiredReason: reason, responseError: 'discord 503' });
+
+        await handlePendingResponseSweep({}, makeContext());
+
+        expect((escalationJobs()[0].payload as { reason: string }).reason).toBe(reason);
+    });
+
     it('repairs a confirmed delivery to DELIVERED instead of summoning a human', async () => {
         const row = addMessage({
             deliveryConfirmed: true,
@@ -335,21 +403,38 @@ describe('handlePendingResponseSweep', () => {
         const row = addMessage();
         // Another actor escalates after this sweep has already read the row —
         // the compare-and-set must find the row outside PENDING and no-op.
-        fakeMessage.findMany.mockImplementationOnce(async () => {
-            const snapshot = [
-                {
-                    id: row.id,
-                    ticketId: row.ticketId,
-                    responseJobId: row.responseJobId,
-                    responseError: row.responseError,
-                    escalationRequiredReason: row.escalationRequiredReason,
-                    deliveryConfirmed: row.deliveryConfirmed,
-                    ticket: { source: row.ticketSource },
-                },
-            ];
-            row.responseState = 'ESCALATED';
-            return snapshot;
+        settleAfterRead(row, 'ESCALATED');
+
+        const result = await handlePendingResponseSweep({}, makeContext());
+
+        expect(result.success).toBe(true);
+        expect(result.data).toMatchObject({ escalated: 0, alreadySettled: 1, failed: 0 });
+        expect(escalationJobs()).toHaveLength(0);
+    });
+
+    it('fails when a no-op escalation finds DELIVERED with an owed-escalation marker', async () => {
+        const reason = 'Low AI confidence (12%) — automated escalation';
+        const row = addMessage({ escalationRequiredReason: reason });
+        settleAfterRead(row, 'DELIVERED', reason);
+
+        const result = await handlePendingResponseSweep({}, makeContext());
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('could not be settled');
+        expect(result.data).toBeUndefined();
+        expect(escalationJobs()).toHaveLength(0);
+        expect(row.escalationRequiredReason).toBe(reason);
+        expect(fakeMessage.findUnique).toHaveBeenCalledWith({
+            where: { id: row.id },
+            select: { responseState: true, escalationRequiredReason: true },
         });
+    });
+
+    it('accepts a no-op escalation when DELIVERED has no owed-escalation marker', async () => {
+        const row = addMessage({
+            escalationRequiredReason: 'Low AI confidence (12%) — automated escalation',
+        });
+        settleAfterRead(row, 'DELIVERED');
 
         const result = await handlePendingResponseSweep({}, makeContext());
 

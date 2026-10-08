@@ -119,9 +119,13 @@ model Message {
     responseError      String?     // Last real delivery/bookkeeping error text — never lifecycle state
     // Two sub-states of a PENDING primary response, kept OUT of responseError so
     // that column stays readable as "what went wrong" on an ops surface.
-    //   deliveryConfirmed        — the platform post succeeded but the
-    //                              PENDING -> DELIVERED write did not, so a retry
-    //                              must repair state instead of reposting.
+    //   deliveryConfirmed        — the platform post succeeded while responseState
+    //                              could not say so: either the PENDING -> DELIVERED
+    //                              write failed, or the row owes a handoff and must
+    //                              stay PENDING until it is durable. Either way a
+    //                              retry repairs or escalates instead of reposting,
+    //                              and its absence means the outcome is UNKNOWN —
+    //                              not that delivery failed.
     //   escalationRequiredReason — non-null means a human handoff is owed and not
     //                              yet durable; it holds the reason to enqueue.
     // Neither is a MessageResponseState value: responseState records the OUTCOME

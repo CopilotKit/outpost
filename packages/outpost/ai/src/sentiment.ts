@@ -1,17 +1,17 @@
 /**
  * Sentiment analyzer for account health scoring.
  *
- * Analyzes message content using Claude Haiku to determine the percentage
+ * Analyzes message content using Luna to determine the percentage
  * of negative sentiment, frustration level, and satisfaction signals.
  * Designed for batch analysis of all messages from an account in a single call.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import type { SentimentResult, TokenUsage } from './types.js';
+import { z } from 'zod';
+import { AuxiliaryModel, auxiliaryErrorUsage } from './auxiliary-model.js';
+import type { AuxiliaryModelOptions } from './auxiliary-model.js';
+import type { SentimentResult } from './types.js';
 import { SentimentLabel } from './types.js';
 import { config } from './config.js';
-import { samplingParams } from './model-capabilities.js';
-import { extractResponseText } from './generator.js';
 
 const SENTIMENT_SYSTEM_PROMPT = `You are a sentiment analyzer for a developer support platform. Analyze the provided messages and respond with ONLY a JSON object (no markdown, no explanation):
 
@@ -32,15 +32,23 @@ Label thresholds:
 - NEGATIVE: score 46-70 (frustrated, unhappy, complaining)
 - CRITICAL: score 71-100 (angry, threatening to churn, hostile, escalation-worthy)`;
 
+/** Apply the documented thresholds to the final rounded score. */
+function sentimentLabelForScore(score: number): SentimentLabel {
+    if (score <= 20) return SentimentLabel.POSITIVE;
+    if (score <= 45) return SentimentLabel.NEUTRAL;
+    if (score <= 70) return SentimentLabel.NEGATIVE;
+    return SentimentLabel.CRITICAL;
+}
+
 /**
  * Analyze sentiment across a batch of messages.
  *
- * Sends all messages to Claude Haiku in a single call for cost-effective
+ * Sends all messages to Luna in a single call for cost-effective
  * batch analysis. Returns a score (0-100, % negative) and a label.
  */
 export async function analyzeSentiment(
     messages: string[],
-    options?: { apiKey?: string; model?: string },
+    options?: AuxiliaryModelOptions,
 ): Promise<SentimentResult & { degraded: boolean }> {
     if (messages.length === 0) {
         return {
@@ -51,99 +59,41 @@ export async function analyzeSentiment(
         };
     }
 
-    const client = new Anthropic({
-        apiKey: options?.apiKey ?? config.anthropicApiKey,
-    });
-    const model = options?.model ?? config.sentimentModel;
-
     // Format messages as a numbered list for the prompt
-    const formatted = messages
-        .map((msg, i) => `[Message ${i + 1}]: ${msg}`)
-        .join('\n\n');
+    const formatted = messages.map((msg, i) => `[Message ${i + 1}]: ${msg}`).join('\n\n');
 
     // Truncate to ~8000 chars to stay within reasonable token limits
     const truncated = formatted.slice(0, 8000);
 
     try {
-        const response = await client.messages.create({
-            model,
-            max_tokens: config.maxSentimentTokens,
-            ...samplingParams(model, config.sentimentTemperature),
-            system: SENTIMENT_SYSTEM_PROMPT,
-            messages: [{ role: 'user', content: truncated }],
+        const model = new AuxiliaryModel(config.sentimentModel, options);
+        const { output: parsed, tokenUsage } = await model.run({
+            name: 'Outpost sentiment analysis',
+            instructions: SENTIMENT_SYSTEM_PROMPT,
+            input: truncated,
+            schema: z.object({ score: z.number().min(0).max(100), label: z.enum(SentimentLabel) }),
+            maxTokens: config.maxSentimentTokens,
+            temperature: config.sentimentTemperature,
         });
 
-        const text = extractResponseText(response.content);
-
-        // An empty extraction is a FAILURE, not a neutral reading. This one has
-        // teeth: account-scoring.ts skips its DB write only when `degraded` is
-        // set, so a fabricated NEUTRAL reported as healthy flipped a fail-closed
-        // gate to fail-open and persisted a sentiment nobody measured. Reachable
-        // as soon as a thinking-default model is configured.
-        if (!text.trim()) {
-            throw new Error('Model response contained no usable text');
-        }
-
-        const tokenUsage: TokenUsage = {
-            inputTokens: response.usage.input_tokens,
-            outputTokens: response.usage.output_tokens,
-        };
-
-        const parsed = parseSentimentResponse(text);
-
+        const score = Math.round(parsed.score);
         return {
-            ...parsed,
+            score,
+            label: sentimentLabelForScore(score),
             tokenUsage,
             degraded: false,
         };
     } catch (error) {
-        console.error(`[Sentiment] Analysis failed, returning neutral fallback:`, error);
+        console.error(
+            `[Sentiment] Analysis failed, returning neutral fallback:`,
+            error instanceof Error ? error.message : 'Unknown error',
+        );
         // Fallback: return neutral on failure
         return {
-            score: 50,
+            score: 25,
             label: SentimentLabel.NEUTRAL,
-            tokenUsage: { inputTokens: 0, outputTokens: 0 },
+            tokenUsage: auxiliaryErrorUsage(error),
             degraded: true,
         };
     }
-}
-
-/**
- * Parse the JSON response from Claude into a SentimentResult.
- */
-function parseSentimentResponse(text: string): Omit<SentimentResult, 'tokenUsage'> {
-    try {
-        const cleaned = text.replace(/```json?\s*/g, '').replace(/```\s*/g, '').trim();
-        const parsed = JSON.parse(cleaned) as { score?: number; label?: string };
-
-        const score = clampScore(parsed.score);
-        const label = parseLabel(parsed.label) ?? labelFromScore(score);
-
-        return { score, label };
-    } catch (error) {
-        console.warn(`[Sentiment] Failed to parse sentiment response JSON:`, error);
-        return { score: 50, label: SentimentLabel.NEUTRAL };
-    }
-}
-
-function clampScore(value: unknown): number {
-    if (typeof value !== 'number' || isNaN(value)) return 50;
-    return Math.max(0, Math.min(100, Math.round(value)));
-}
-
-function parseLabel(value: unknown): SentimentLabel | null {
-    if (typeof value !== 'string') return null;
-    const upper = value.toUpperCase();
-    if (upper === 'POSITIVE') return SentimentLabel.POSITIVE;
-    if (upper === 'NEUTRAL') return SentimentLabel.NEUTRAL;
-    if (upper === 'NEGATIVE') return SentimentLabel.NEGATIVE;
-    if (upper === 'CRITICAL') return SentimentLabel.CRITICAL;
-    return null;
-}
-
-function labelFromScore(score: number): SentimentLabel {
-    if (score <= 20) return SentimentLabel.POSITIVE;
-    if (score <= 45) return SentimentLabel.NEUTRAL;
-    if (score <= 70) return SentimentLabel.NEGATIVE;
-    return SentimentLabel.CRITICAL;
 }
