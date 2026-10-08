@@ -129,6 +129,8 @@ Covering the **most recent complete Friday→Friday week** (Friday end-date incl
    **A claim comment is not a fix PR, and a fix PR is not a merge.** Record all three states distinctly: someone volunteered · a PR is open awaiting review · a PR is merged (→ ✅ Resolved).
    **The MERGED/OPEN marker must come from the live PR state (`mergedAt` non-null), never inferred from the thread — always read the actual PR.** A **MERGED** closing PR (or a CLOSED issue) means the item is **resolved** → it goes to ✅ Resolved (step 9), not into Pain/Top issues with a "fix PR merged" note. "Fix PR MERGED" on a *still-open* issue is only valid when the merge genuinely didn't resolve it (e.g. partial fix) — say why. Procedurally-closed PRs (branch-name violation etc.) don't count as competing fixes — read the closing comment.
 
+10b. **Build the carry-over map — before writing any card.** Match every candidate item against the PRIOR report(s) on its canonical id (`repo#number`, Discord thread id, Reddit post id — never card titles, same matching as `carry-forward-owners`). For each match record (a) **weeks running** — the number of consecutive reports it has appeared in, counting this one, so walk back report by report until it's missing (an item opened after the previous window started can only be Week 2); and (b) **what changed since the last report**, from evidence in the window: new comments from a maintainer or reporter, a PR opened/reviewed/merged/closed, a release that did or didn't include the fix, a priority or section move. "Nothing" is a valid answer and decides where the item renders (see "Carry-overs and what changed").
+
 11. **Score & rank the Top issues** (see the ranking rubric in `front-door-triage`). First **record the naive order** — what you'd get ranking the candidates by loudness alone (engagement: 👍 + comments, recency, reporter count) — so the comparison page can show the delta. Then **score each candidate on the five axes** (surface tier · blast radius · severity · exposure · signal), using measurable inputs — `gh issue view --json reactionGroups,comments,labels`, fix-PR status from step 10, Discord distinct-reporter counts, and the enrichment. Sum, sort descending; the top 3–5 are the Top issues, ranked. Keep BOTH the scored table and the naive order — they get published in the ranking + comparison child pages (step 12). Community (CK vs AG-UI) is never an axis.
 
 12. **Build the Notion pages** via `mcp__plugin_Notion_notion__notion-create-pages`. Create the AG-UI sub-page FIRST (as a child of the main page), then the main CopilotKit page references it at top with a `<page url="…">` block. **Then create the child pages** at the bottom of the main report (children of the main page):
@@ -183,6 +185,9 @@ Covering the **most recent complete Friday→Friday week** (Friday end-date incl
 ## 📈 Trends {toggle="true"}                    ← collapsible context strip, cross-community. ONE ~12-week filed-vs-resolved table (Week · Filed · Resolved, counts + bars) + the per-community month-over-month table + a Reddit-mentions note. See "Trends section".
 ---
 
+## 🆕 What changed since last report            ← ALWAYS-OPEN, 3–5 bullets: new on the Top list · carried over with movement · carried over with no change · new elsewhere · closed. Every item linked. See "Carry-overs and what changed".
+---
+
 ## 🔝 Top issues of the week                    ← THE LEAD body section — cross-community, ranked by importance. Each item a toggle: what · impact · fix plan · owner · priority, tagged [CK]/[AG-UI]. Lead with the biggest front-door break. See "Top issues of the week".
 ---
 
@@ -201,6 +206,7 @@ Covering the **most recent complete Friday→Friday week** (Friday end-date incl
    ### 🔥 Demand                               ← CopilotKit community body; plain `###` header, each item a `#### {toggle}` card (see "Section item cards")
    ### 💢 Pain                                  ← plain `###` header, each item a `#### {toggle}` card (What/Impact/Fix plan)
    ### 📚 Docs                                  ← standing weekly section; plain `###` header, each item a `#### {toggle}` card (see "Docs section")
+   ### ↩ Still open, no change                  ← XML table of carry-overs (outside Top issues) with nothing new this week: Item · Weeks · Section · Where it stands · Owner · Priority. Omit when empty. See "Carry-overs and what changed".
    ### ✅ Resolved this week                    ← XML table
    ### 🌱 Early signals                         ← CONDITIONAL — `<details><summary>` block; singletons / one-off low-volume items not yet a pattern (step 7 routes them here). Tables / one-liners, NOT full cards. Omit when there are none.
 ---
@@ -229,12 +235,16 @@ Covering the **most recent complete Friday→Friday week** (Friday end-date incl
 ## 📈 Trends — AG-UI {toggle="true"}            ← collapsible context strip, AG-UI-scoped: ONE filed-vs-resolved table + per-community month-over-month table + Reddit-mentions note, ~12 weeks. (Enterprise + prospects stay cross-community on the main page — not duplicated here.)
 ---
 
+## 🆕 What changed since last report            ← AG-UI-scoped version of the main page's block
+---
+
 ## 🔝 Top issues of the week — AG-UI            ← AG-UI's OWN ranked list. AG-UI front-door breaks appear here AND on the main page; CopilotKit-only issues NEVER appear here. Same card format (### 1. … {toggle}, with owner + priority). Note "(also Top issue #N on the CopilotKit report)" on the shared ones.
 ---
 
    ### 💢 Pain                                 ← AG-UI community body; plain `###` header, each item a `#### {toggle}` card (see "Section item cards")
    ### 🔥 Demand                                ← plain `###` header, each item a `#### {toggle}` card
    ### 📚 Docs                                  ← plain `###` header, each item a `#### {toggle}` card
+   ### ↩ Still open, no change                  ← AG-UI carry-overs with nothing new; omit when empty
    ### ✅ Resolved this week
    ### 🌱 Early signals                         ← CONDITIONAL — `<details><summary>` block; AG-UI singletons not yet a pattern. Tables / one-liners, not full cards. Omit when there are none.
 ---
@@ -259,7 +269,7 @@ If a per-community subsection is empty, render "No X this week." Don't omit the 
 
 ## Page rendering rules
 
-- **Always-open sections:** Header, 📦/🔷 community header + companion link, 🔝 Top issues of the week, 🏢 Enterprise (all subsections), ✅ Resolved this week, Gaps & follow-ups.
+- **Always-open sections:** Header, 📦/🔷 community header + companion link, 🆕 What changed since last report, 🔝 Top issues of the week, 🏢 Enterprise (all subsections), ✅ Resolved this week, Gaps & follow-ups.
 - **📈 Trends is a collapsible heading toggle** (`## 📈 Trends {toggle="true"}`) — its whole body (both tables + notes) is **tab-indented** to nest inside the toggle. (Notion heading-toggles only collapse children that are indented; un-indented tables render outside the toggle.)
 - **Toggle headings:** every Top-issue card (`### N. … {toggle="true"}`), **every item card in 🔥 Demand / 💢 Pain / 📚 Docs** (`#### … {toggle="true"}` — see "Section item cards"; the 🔥/💢/📚 section headers themselves are plain `###`, not toggles), and **each 🟠 Reddit Pulse section** (`## … {toggle="true"}`, with its score + band in the heading so it reads while collapsed). Card/body lines **tab-indented** to sit inside the toggle.
 - **No 🚨 sirens on the Top-issue cards.** Rank them `### 1.` / `### 2.` … — the numbering carries the priority.
@@ -291,6 +301,17 @@ Every reported item — in 🔝 Top issues, 🔥 Demand, 💢 Pain, and 📚 Doc
 - **Docs cards:** prefix *What it is* with the type — `Drift` / `Gap` / `Links-bot`.
 - **Deprecated `@copilotkitnext/*` (still true, just relocated):** it's the useAgent-era experimental v2 line, deprecated on npm 2026-06-18 → merged into `@copilotkit` v2 (`@copilotkitnext/core`→`@copilotkit/core`, `/react`→`@copilotkit/react-core/v2`, `/runtime`→`@copilotkit/runtime/v2`; last publish 1.54.1). When a reporter is on it: say so in **What it is** (plain: "on a retired/experimental package"), keep **CPK version** to the bare number, and have **Fix plan** lead with "ask them to migrate to `@copilotkit` v2 — the bug may already be gone there." Cite the exact subpackage, never the bare scope; only when the reporter's own text used it (agents invent it from training data).
 - **One item, one card — no exceptions, no bundling to save space.** Don't merge two unrelated reports; depth lives in **Description** or the linked issue, never a run-on paragraph. **This holds even for small "housekeeping" items**: a release-cut request, a docs-table addition, and an SDK chore are three different issues → three cards, in whichever section each belongs (they rarely share one). Never combine multiple issue numbers into a single card. If several issues are genuinely the same root cause (e.g. two bugs in one adapter by one reporter), a shared card is fine — but distinct asks are never bundled.
+
+## Carry-overs and what changed
+
+A report whose cards look identical to last week's fails the reader even when every fact is right (precedent 2026-10-08: 12 of 22 cards repeated the prior report, including 4 of 5 Top issues, and nothing marked which was which — Nathan read it as "the exact same report"). The ranking stays honest; repeats are just made visible. Uses the map from step 10b.
+
+- **`## 🆕 What changed since last report`** sits between 📈 Trends and 🔝 Top issues on both pages, always open, 3–5 bullets in this order: *New on the Top list* · *Carried over, with movement* (one clause each: what moved) · *Carried over, no change* · *New elsewhere* · *Closed*. Every item linked. A reader who stops here knows what's different.
+- **Every carry-over card gets `↩ Week N · ` at the start of its heading** (after the rank number on Top issues: `### 2. ↩ Week 2 · <title> {toggle="true"}`), and **its first body line is `**↩ Since last report:** <only the change>`** — one or two plain sentences, or "No change." plus the reason it's still open. The rest of the card stays as normal.
+- **New Top issues get `🆕 ` in the heading** (`### 3. 🆕 <title>`), so the list reads new-vs-carried at a glance while collapsed.
+- **Carry-overs with no change, outside 🔝 Top issues, collapse into one `### ↩ Still open, no change` table** (before ✅ Resolved): `Item (linked) · Weeks · Section · Where it stands · Owner · Priority`. Owner and Priority stay, so owners can still be re-tagged. An item moves back to a full card the week something happens to it. **Top issues never collapse** — a ranked item keeps its card and says "No change."
+- Pointers elsewhere on the page (🧵 table, Surfaces, Patterns) must follow the item to its new home.
+- **Editing gotcha:** to add the `↩ Week N` prefix to an existing toggle heading with `update_content`, put the WHOLE heading line including `{toggle="true"}` AND the card's first body line in both `old_str` and `new_str`. Matching only part of the heading lets Notion auto-extend the match and drop the toggle, which un-indents the body (happened 2026-10-08).
 
 Sections that do NOT use this card format: ✅ Resolved (XML table), 🟠 Reddit Pulse (one-line post bullets), 🎯 Prospective enterprise customers (its own company-first block — see that section), Early signals — these stay tables / one-liners as specified.
 

@@ -40,7 +40,7 @@ The Top issues are the core of the briefing. Deliver them as a **numbered list m
 
 **CopilotKit page (in page order):**
 1. **Trends** — one or two sentences: heavy or quiet week, and are we keeping up. Note capped bulk-close sweeps so the resolved number isn't misread.
-2. **Top issues — NUMBERED, one beat each** ("number one … number two …"), a `[beat]` between, each with a time marker. Per issue: what it means for a user + status (fixed / fix in review / needs an owner). Never how it broke internally; never blur two into one paragraph. (See "Top issues are numbered.")
+2. **Top issues — NUMBERED, one beat each** ("number one … number two …"), a `[beat]` between, each with a time marker. Per issue: what it means for a user + status (fixed / fix in review / needs an owner). **For a `↩ Week N` carry-over, say it's a carry-over and lead with the "Since last report" change** ("second week — the fix is approved but missed this week's release"); don't re-explain an issue the team heard last week. Open the walk with one sentence from 🆕 What changed since last report. Never how it broke internally; never blur two into one paragraph. (See "Top issues are numbered.")
 3. **Product surface contradictions** (only if present) — the page-vs-page conflicts and whose job it is to reconcile the pages.
 4. **Enterprise** — who showed up + the one or two to hand to sales + any enterprise-surface questions.
 5. **Demand** — the notable feature asks, briefly (these are asks, not bugs).
