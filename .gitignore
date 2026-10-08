@@ -70,3 +70,6 @@ yarn.lock
 
 # Local AI review pipeline session state (create-review / review-changes)
 .chalk/
+
+# Reddit Pulse dedup ledger — operational state, kept local (repo is public)
+docs/community-signal/reddit-pulse-seen.json
