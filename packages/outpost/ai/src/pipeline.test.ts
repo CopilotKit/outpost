@@ -1,7 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('./config.js', () => ({
+import type * as ConfigModule from './config.js';
+
+const mockConfigState = vi.hoisted(() => ({
+    draftLintMode: 'report' as 'report' | 'enforce',
+}));
+
+vi.mock('./config.js', async (importOriginal) => ({
+    ...(await importOriginal<typeof ConfigModule>()),
     config: {
+        responseProvider: 'anthropic',
         anthropicApiKey: 'test-key',
         pathfinderMcpUrl: 'http://localhost:8787',
         responseModel: 'claude-sonnet-4-6',
@@ -12,12 +20,17 @@ vi.mock('./config.js', () => ({
         responseTemperature: 0.3,
         confidence: { highThreshold: 0.8, mediumThreshold: 0.5 },
         pathfinder: { defaultLimit: 8, defaultMinScore: 0.3 },
+        get draftLintMode() {
+            return mockConfigState.draftLintMode;
+        },
     },
     validateConfig: vi.fn(),
 }));
 
 import { AI_CONFIDENCE } from '@copilotkit/outpost/shared';
 import { AIPipeline, SUPPRESSED_RESPONSE_TEXT } from './pipeline.js';
+import { assessGroundedness } from './groundedness.js';
+import { describeVerdict, lintDraft } from './eval/linter.js';
 import { AI_DISCLAIMER, AI_DISCLAIMER_ESCALATED, AI_DISCLAIMER_REVIEWED } from './formatter.js';
 import { ConfidenceLevel, TicketPriority, TicketType } from './types.js';
 import type { SearchResult, GeneratedResponse } from './types.js';
@@ -92,6 +105,11 @@ const sampleConfidence: ConfidenceAssessment = {
     degraded: false,
 };
 
+const lintBlockedDraft =
+    'Great question! I cannot inspect your runtime from here, but the documented answer is to use the CopilotChat component with the instructions prop. '.repeat(
+        4,
+    );
+
 describe('AIPipeline', () => {
     let pipeline: AIPipeline;
 
@@ -108,6 +126,7 @@ describe('AIPipeline', () => {
             text: 'Formatted response',
             truncated: false,
         });
+        mockConfigState.draftLintMode = 'report';
     });
 
     // Phase 2: retrieval reads the SOURCE as well as the docs. Until this, only
@@ -250,9 +269,7 @@ describe('AIPipeline', () => {
         });
 
         it('caps the merged list so the prompt cannot silently double', async () => {
-            mockSearchDocs.mockResolvedValue(
-                Array.from({ length: 8 }, (_, i) => docHit(`d${i}`)),
-            );
+            mockSearchDocs.mockResolvedValue(Array.from({ length: 8 }, (_, i) => docHit(`d${i}`)));
             mockSearchCode.mockResolvedValue(
                 Array.from({ length: 8 }, (_, i) => codeHit(`p/c${i}.ts`)),
             );
@@ -637,6 +654,52 @@ describe('AIPipeline', () => {
                 expect(result.confidenceScore).toBeLessThan(AI_CONFIDENCE.ESCALATE);
             });
 
+            // The clamp above guarantees a human picks this up, so the reason the
+            // clamp fired has to travel with it. Suppression is NOT the trigger —
+            // this draft publishes — so a reason gated on `suppressed` alone hands
+            // the reviewer an escalation with no explanation of what to check.
+            it('carries the own-verification reason on a forced escalation that still publishes', async () => {
+                mockGenerate.mockResolvedValue({
+                    ...sampleGeneratedResponse,
+                    text: '## Bug Confirmed: Cursor Jump\n\nRoot cause is a re-render.',
+                });
+
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(false);
+                expect(result.groundedness.forcesEscalation).toBe(true);
+                expect(result.confidenceScore).toBeLessThan(AI_CONFIDENCE.ESCALATE);
+                expect(result.handoffReason).toEqual(expect.any(String));
+                expect(result.handoffReason ?? '').toContain('asserts own verification');
+            });
+
+            // The complement of the test above, and the bound on it: a score under
+            // the gate is not by itself something a reviewer can act on, so a
+            // published answer that merely scored low must stay reason-free rather
+            // than carry a restatement of its own confidence number.
+            it('does not manufacture a handoff reason for a merely low-scoring published answer', async () => {
+                mockScore.mockResolvedValue({
+                    ...sampleConfidence,
+                    score: 0.2,
+                    level: ConfidenceLevel.LOW,
+                });
+
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(false);
+                expect(result.groundedness.forcesEscalation).toBe(false);
+                expect(result.confidenceScore).toBeLessThan(AI_CONFIDENCE.ESCALATE);
+                expect(result.handoffReason).toBeUndefined();
+            });
+
+            it('leaves a published grounded answer without a handoff reason', async () => {
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(false);
+                expect(result.groundedness.forcesEscalation).toBe(false);
+                expect(result.handoffReason).toBeUndefined();
+            });
+
             it('marks a response naming identifiers absent from the sources as suppressed', async () => {
                 mockGenerate.mockResolvedValue({
                     ...sampleGeneratedResponse,
@@ -652,6 +715,60 @@ describe('AIPipeline', () => {
                 expect(result.suppressed).toBe(true);
                 expect(result.groundedness.suppress).toBe(true);
                 expect(result.confidenceScore).toBeLessThan(AI_CONFIDENCE.ESCALATE);
+            });
+
+            it('reports groundedness before generic legacy generator reasoning for a withheld draft', async () => {
+                const draft = 'Override `.copilotKitGhostA` and `.copilotKitGhostB` to fix it.';
+                const genericReason = 'Based on 2 sources with average relevance 0.88.';
+                mockGenerate.mockResolvedValue({
+                    ...sampleGeneratedResponse,
+                    text: draft,
+                    reasoning: genericReason,
+                });
+
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(true);
+                expect(result.handoffReason).toEqual(expect.any(String));
+                const handoffReason = result.handoffReason ?? '';
+                expect(handoffReason).toContain('copilotKitGhostA');
+                expect(handoffReason).toContain('copilotKitGhostB');
+                expect(handoffReason.indexOf('copilotKitGhostA')).toBeLessThan(
+                    handoffReason.indexOf(genericReason),
+                );
+                expect(mockFormat).toHaveBeenCalledWith(
+                    SUPPRESSED_RESPONSE_TEXT,
+                    'github',
+                    expect.any(Object),
+                );
+                expect(result.formatted.text).not.toContain(draft);
+            });
+
+            it('reports enforced lint before generic legacy generator reasoning for a withheld draft', async () => {
+                const draft = lintBlockedDraft;
+                const genericReason = 'Based on 2 sources with average relevance 0.88.';
+                mockConfigState.draftLintMode = 'enforce';
+                mockGenerate.mockResolvedValue({
+                    ...sampleGeneratedResponse,
+                    text: draft,
+                    reasoning: genericReason,
+                });
+
+                const result = await pipeline.generateSupportResponse('q', { source: 'github' });
+
+                expect(result.suppressed).toBe(true);
+                expect(result.handoffReason).toEqual(expect.any(String));
+                const handoffReason = result.handoffReason ?? '';
+                expect(handoffReason).toContain('no-banned-phrases');
+                expect(handoffReason.indexOf('no-banned-phrases')).toBeLessThan(
+                    handoffReason.indexOf(genericReason),
+                );
+                expect(mockFormat).toHaveBeenCalledWith(
+                    SUPPRESSED_RESPONSE_TEXT,
+                    'github',
+                    expect.any(Object),
+                );
+                expect(result.formatted.text).not.toContain(draft);
             });
 
             // Positive feedback tunes how we weigh well-formed answers. It must not
@@ -881,6 +998,89 @@ describe('AIPipeline', () => {
             for await (const chunk of stream) out.push(chunk);
             return out;
         }
+
+        describe.each(['buffered', 'streaming'] as const)('%s draft lint delivery', (delivery) => {
+            const citedDraft =
+                'Use the CopilotChat component with the instructions prop to tell the assistant how to help with your application. ' +
+                'This prop supplies additional context for the assistant while the chat component displays its response. ' +
+                'Keep the instructions specific to the task and provide the application context the assistant needs to answer. ' +
+                'See the retrieved documentation for the component setup and the complete list of supported properties: https://docs.copilotkit.ai/actions.';
+
+            it.each([
+                { name: 'enforce blocks', mode: 'enforce', draft: lintBlockedDraft, blocked: true },
+                { name: 'enforce passes', mode: 'enforce', draft: citedDraft, blocked: false },
+                {
+                    name: 'report records failures',
+                    mode: 'report',
+                    draft: lintBlockedDraft,
+                    blocked: false,
+                },
+            ] as const)(
+                '$name with nonsuppressing groundedness',
+                async ({ mode, draft, blocked }) => {
+                    mockConfigState.draftLintMode = mode;
+                    const groundedness = assessGroundedness(draft, sampleSearchResults);
+                    expect(groundedness.suppress).toBe(false);
+                    expect(groundedness.forcesEscalation).toBe(false);
+                    const verdict = lintDraft(draft, sampleSearchResults, mode);
+                    expect(verdict.publish).toBe(!blocked);
+                    expect(verdict.wouldCollapse).toBe(draft === lintBlockedDraft);
+                    if (draft === citedDraft) {
+                        // This answer needs the actual retrieved citation to pass enforcement.
+                        expect(lintDraft(draft, [], 'enforce').publish).toBe(false);
+                    } else {
+                        expect(lintDraft(draft, sampleSearchResults, 'enforce').publish).toBe(
+                            false,
+                        );
+                        expect(verdict.failed).toContain('no-banned-phrases');
+                    }
+
+                    const originalChunks = [draft.slice(0, 3), draft.slice(3, 22), draft.slice(22)];
+                    mockGenerate.mockResolvedValue({ ...sampleGeneratedResponse, text: draft });
+                    mockGenerateStream.mockReturnValue(streamOf(...originalChunks));
+                    mockFormat.mockImplementation((text: string) => ({ text, truncated: false }));
+                    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+                    try {
+                        let emitted: string[];
+                        if (delivery === 'buffered') {
+                            const result = await pipeline.generateSupportResponse('q', {
+                                source: 'web',
+                            });
+                            expect(result.suppressed).toBe(blocked);
+                            expect(result.response).toBe(draft);
+                            emitted = [result.formatted.text];
+                        } else {
+                            emitted = await collect(
+                                pipeline.generateStreamingResponse('q', { source: 'web' }),
+                            );
+                        }
+
+                        expect(emitted).toEqual(
+                            blocked
+                                ? [SUPPRESSED_RESPONSE_TEXT]
+                                : delivery === 'buffered'
+                                  ? [draft]
+                                  : originalChunks,
+                        );
+                        if (blocked) {
+                            for (const chunk of emitted) {
+                                expect(chunk).not.toContain('CopilotChat');
+                                expect(chunk).not.toContain('Great question');
+                            }
+                        }
+                        if (verdict.wouldCollapse) {
+                            expect(warn).toHaveBeenCalledExactlyOnceWith(
+                                describeVerdict(verdict, 'web'),
+                            );
+                        } else {
+                            expect(warn).not.toHaveBeenCalled();
+                        }
+                    } finally {
+                        warn.mockRestore();
+                    }
+                },
+            );
+        });
 
         it('yields the model chunks unchanged when the draft is grounded', async () => {
             mockGenerateStream.mockReturnValue(

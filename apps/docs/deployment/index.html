@@ -39,7 +39,7 @@
         <h2>Requirements</h2>
         <ul>
           <li><strong>PostgreSQL 16</strong> with pgvector extension (required by Pathfinder for embeddings)</li>
-          <li><strong>Node.js 20+</strong> runtime for all five services</li>
+          <li><strong>Node.js 24+</strong> runtime for all five services</li>
           <li><strong>Persistent process manager</strong> for the Discord and Slack bots (they maintain WebSocket connections)</li>
           <li><strong>Public HTTPS endpoint</strong> for the GitHub App and Teams bot webhook receivers</li>
         </ul>
@@ -151,7 +151,7 @@
             </ul>
           </li>
           <li>Share <code>DATABASE_URL</code> across all services via Railway's variable references (<code>${{Postgres.DATABASE_URL}}</code>)</li>
-          <li>Fill in secret environment variables (<code>DISCORD_TOKEN</code>, <code>ANTHROPIC_API_KEY</code>, etc.)</li>
+          <li>Fill in secret environment variables (<code>DISCORD_TOKEN</code>, <code>OPENAI_API_KEY</code>, etc.)</li>
           <li>Configure custom domains for the web dashboard and GitHub App webhook endpoint</li>
         </ol>
 
@@ -200,7 +200,8 @@
         <p>Before deploying, verify these are all set:</p>
         <ul>
           <li>&#9745; <code>DATABASE_URL</code> pointing to production PostgreSQL</li>
-          <li>&#9745; <code>ANTHROPIC_API_KEY</code> for AI features</li>
+          <li>&#9745; <code>OPENAI_API_KEY</code> on the worker and web service for all default AI features</li>
+          <li><code>ANTHROPIC_API_KEY</code> only if selecting <code>AI_RESPONSE_PROVIDER=anthropic</code> for rollback or using the legacy generator directly</li>
           <li>&#9745; <code>DISCORD_BOT_TOKEN</code> and related Discord vars</li>
           <li>&#9745; <code>GITHUB_APP_ID</code>, <code>GITHUB_PRIVATE_KEY</code>, and webhook secret</li>
           <li>&#9745; <code>SLACK_BOT_TOKEN</code>, <code>SLACK_APP_TOKEN</code>, <code>SLACK_SIGNING_SECRET</code></li>

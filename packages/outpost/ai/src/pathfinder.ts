@@ -1,5 +1,23 @@
 import type { SearchResult, PathfinderQuery } from './types.js';
+import { z } from 'zod';
 import { config } from './config.js';
+import { parseSourceUrl } from './support-reply.js';
+
+// Validate selected legacy fields before the public parser can coerce them.
+const legacyEvidenceFields = z
+    .object({
+        content: z.unknown().optional(),
+        snippet: z.unknown().optional(),
+        text: z.unknown().optional(),
+        similarity: z.unknown().optional(),
+        score: z.unknown().optional(),
+        relevance: z.unknown().optional(),
+    })
+    .transform((entry) => ({
+        content: entry.content ?? entry.snippet ?? entry.text,
+        score: entry.similarity ?? entry.score ?? entry.relevance,
+    }))
+    .pipe(z.object({ content: z.string().trim().min(1), score: z.number().finite() }));
 
 /**
  * Turn a code hit's REPOSITORY + PATH into a link a reader can open.
@@ -23,7 +41,7 @@ function blobUrl(repository: string | undefined, path: string | undefined): stri
     // collapse a correct code-grounded answer into a two-sentence handoff. That is
     // the same silent-degradation shape this whole change exists to remove, so it
     // has to leave a trace.
-    const repo = repository?.replace(/\.git$/, '').replace(/\/$/, '');
+    const repo = repository?.replace(/\/$/, '').replace(/\.git$/, '');
     if (!repo || !/^https?:\/\/github\.com\//i.test(repo)) {
         console.warn(
             `[Pathfinder] code hit for "${path}" has no usable REPOSITORY ` +
@@ -65,7 +83,11 @@ export function capQuery(query: string, maxChars: number): string {
  * https://mcp.copilotkit.ai/mcp. All four take the same arguments
  * (`query`, `limit`, `min_score`, `version`).
  */
-type SearchTool = 'search-docs' | 'search-code' | 'search-ag-ui-docs' | 'search-ag-ui-code';
+export type SearchTool = 'search-docs' | 'search-code' | 'search-ag-ui-docs' | 'search-ag-ui-code';
+
+function isCodeSearchTool(tool: SearchTool): boolean {
+    return tool === 'search-code' || tool === 'search-ag-ui-code';
+}
 
 /**
  * Pathfinder MCP client for CopilotKit + AG-UI retrieval, over docs AND source.
@@ -97,7 +119,8 @@ export class PathfinderClient {
     /**
      * Initialize the MCP session. Reuses an existing session while it is valid.
      */
-    async connect(): Promise<void> {
+    async connect(signal?: AbortSignal): Promise<void> {
+        signal?.throwIfAborted();
         if (this.sessionId && !this.isSessionExpired()) {
             return;
         }
@@ -105,7 +128,7 @@ export class PathfinderClient {
         if (this.connecting) {
             return this.connecting;
         }
-        this.connecting = this.doConnect();
+        this.connecting = this.doConnect(signal);
         try {
             await this.connecting;
         } finally {
@@ -113,7 +136,7 @@ export class PathfinderClient {
         }
     }
 
-    private async doConnect(): Promise<void> {
+    private async doConnect(signal?: AbortSignal): Promise<void> {
         // Clear any stale session before (re-)initializing: `initialize` is what
         // mints a session, so it must not carry an old `Mcp-Session-Id` (a server
         // MAY answer a terminated id with 404). Resetting up front also means a
@@ -136,6 +159,7 @@ export class PathfinderClient {
             // the request that mints the session and closes over it for every
             // later tool call, so `initialize` is the one place it can be set.
             { 'X-Pathfinder-Source': config.pathfinder.sourceTag },
+            signal,
         );
 
         const parsed = this.parseJsonRpc(body);
@@ -154,9 +178,17 @@ export class PathfinderClient {
         // Best-effort "initialized" notification — the session is already usable,
         // so a failure here is non-fatal.
         try {
-            await this.post({ jsonrpc: '2.0', method: 'notifications/initialized' });
+            await this.post(
+                { jsonrpc: '2.0', method: 'notifications/initialized' },
+                undefined,
+                signal,
+            );
         } catch {
-            // ignore
+            if (signal?.aborted) {
+                this.reset();
+            }
+            signal?.throwIfAborted();
+            // Non-cancellation notification failures remain best-effort.
         }
     }
 
@@ -177,7 +209,9 @@ export class PathfinderClient {
     private async post(
         message: Record<string, unknown>,
         extraHeaders?: Record<string, string>,
+        signal?: AbortSignal,
     ): Promise<{ body: string; sessionId: string | null }> {
+        signal?.throwIfAborted();
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), config.pathfinder.requestTimeoutMs);
 
@@ -195,7 +229,7 @@ export class PathfinderClient {
                 method: 'POST',
                 headers,
                 body: JSON.stringify(message),
-                signal: controller.signal,
+                signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
             });
 
             if (!response.ok) {
@@ -206,6 +240,7 @@ export class PathfinderClient {
             const body = await response.text();
             return { body, sessionId: response.headers.get('mcp-session-id') };
         } catch (error) {
+            signal?.throwIfAborted();
             if (error instanceof DOMException && error.name === 'AbortError') {
                 throw new Error(
                     `MCP request timed out after ${config.pathfinder.requestTimeoutMs}ms`,
@@ -244,20 +279,30 @@ export class PathfinderClient {
     /**
      * Call an MCP tool on the Pathfinder server.
      */
-    private async callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
-        await this.connect();
+    private async callTool(
+        toolName: string,
+        args: Record<string, unknown>,
+        signal?: AbortSignal,
+    ): Promise<unknown> {
+        signal?.throwIfAborted();
+        await this.connect(signal);
+        signal?.throwIfAborted();
 
         let body: string;
         try {
-            ({ body } = await this.post({
-                jsonrpc: '2.0',
-                id: this.nextId++,
-                method: 'tools/call',
-                params: {
-                    name: toolName,
-                    arguments: args,
+            ({ body } = await this.post(
+                {
+                    jsonrpc: '2.0',
+                    id: this.nextId++,
+                    method: 'tools/call',
+                    params: {
+                        name: toolName,
+                        arguments: args,
+                    },
                 },
-            }));
+                undefined,
+                signal,
+            ));
         } catch (error) {
             // Force a fresh session on the next call after any transport failure.
             this.reset();
@@ -270,6 +315,69 @@ export class PathfinderClient {
             throw new Error(`MCP error: ${parsed.error.message}`);
         }
         return parsed.result;
+    }
+
+    /** Strict retrieval for the agent: failures must not masquerade as no evidence. */
+    async searchEvidence(
+        tool: SearchTool,
+        query: PathfinderQuery,
+        signal?: AbortSignal,
+    ): Promise<SearchResult[]> {
+        const result = await this.callTool(
+            tool,
+            {
+                query: capQuery(query.query, config.pathfinder.maxQueryChars),
+                limit: query.limit ?? 4,
+                min_score: query.minScore ?? config.pathfinder.defaultMinScore,
+                ...(query.version ? { version: query.version } : {}),
+            },
+            signal,
+        );
+        if (!result || typeof result !== 'object' || ('isError' in result && result.isError)) {
+            throw new Error(`Pathfinder ${tool} failed`);
+        }
+        const payload = z
+            .object({ content: z.array(z.object({ type: z.literal('text'), text: z.string() })) })
+            .safeParse(result);
+        if (!payload.success) throw new Error(`Pathfinder ${tool} returned a malformed response`);
+        const text = payload.data.content
+            .map((block) => block.text)
+            .join('\n')
+            .trim();
+        // Pathfinder explicitly marks empty searches; do not mistake arbitrary text for absence.
+        if (payload.data.content.length === 0 || text === '[]') return [];
+        const empty = z.object({
+            results: z.array(z.unknown()).length(0),
+            reason: z.literal('no_results'),
+        });
+        let decoded: unknown;
+        try {
+            decoded = JSON.parse(text);
+        } catch {
+            /* The normal nonempty response uses SNIPPET blocks, not JSON. */
+        }
+        if (empty.safeParse(decoded).success) return [];
+        if (Array.isArray(decoded) && !z.array(legacyEvidenceFields).safeParse(decoded).success) {
+            throw new Error(`Pathfinder ${tool} returned malformed search evidence`);
+        }
+        const results = this.parseSearchResults(result);
+        if (
+            !results.length ||
+            results.some((entry) => !entry.content.trim() || !Number.isFinite(entry.score))
+        ) {
+            throw new Error(`Pathfinder ${tool} returned malformed search evidence`);
+        }
+        const requiresCodeCitation = isCodeSearchTool(tool);
+        if (
+            results.some(
+                (entry) =>
+                    (requiresCodeCitation || entry.kind === 'code') &&
+                    (!entry.sourceUrl || !parseSourceUrl(entry.sourceUrl)),
+            )
+        ) {
+            throw new Error(`Pathfinder ${tool} returned malformed uncitable code evidence`);
+        }
+        return results;
     }
 
     /**
@@ -421,6 +529,7 @@ export class PathfinderClient {
                 query: capQuery(query.query, config.pathfinder.maxQueryChars),
                 limit: query.limit ?? config.pathfinder.defaultLimit,
                 min_score: query.minScore ?? config.pathfinder.defaultMinScore,
+                ...(query.version ? { version: query.version } : {}),
             });
             return this.parseSearchResults(result);
         } catch (error) {
@@ -464,6 +573,7 @@ export class PathfinderClient {
                 query: capQuery(query.query, config.pathfinder.maxQueryChars),
                 limit: query.limit ?? config.pathfinder.defaultLimit,
                 min_score: query.minScore ?? config.pathfinder.defaultMinScore,
+                ...(query.version ? { version: query.version } : {}),
             });
             return this.parseSearchResults(result);
         } catch (error) {

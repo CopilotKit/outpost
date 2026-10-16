@@ -7,7 +7,7 @@ import type { ConfidenceLevel, SearchResult } from '@copilotkit/outpost/ai';
  * POST /api/qa
  *
  * Accepts a question and optional conversation history. Runs the full
- * AI pipeline (Pathfinder search + Claude generation) and streams
+ * AI pipeline (bounded investigation, verification, and formatting) and streams
  * the response back using Server-Sent Events.
  *
  * Request body: { question: string, conversationHistory?: Array<{ role, content }> }
@@ -21,29 +21,32 @@ export async function POST(request: Request) {
     // Auth check
     const session = await getServerSession(authOptions);
     if (!session) {
-        return new Response(
-            JSON.stringify({ error: 'Unauthorized' }),
-            { status: 401, headers: { 'Content-Type': 'application/json' } },
-        );
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+        });
     }
 
-    let body: { question?: string; conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }> };
+    let body: {
+        question?: string;
+        conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+    };
 
     try {
         body = await request.json();
     } catch {
-        return new Response(
-            JSON.stringify({ error: 'Invalid JSON body' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-        );
+        return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
     }
 
     const question = body.question?.trim();
     if (!question) {
-        return new Response(
-            JSON.stringify({ error: 'question is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-        );
+        return new Response(JSON.stringify({ error: 'question is required' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
     }
 
     const pipeline = new AIPipeline();
@@ -59,13 +62,10 @@ export async function POST(request: Request) {
                 }
 
                 try {
-                    const result = await pipeline.generateSupportResponse(
-                        question,
-                        {
-                            source: 'web',
-                            conversationHistory: body.conversationHistory,
-                        },
-                    );
+                    const result = await pipeline.generateSupportResponse(question, {
+                        source: 'web',
+                        conversationHistory: body.conversationHistory,
+                    });
 
                     // Stream the PUBLISHED text, not `result.response`.
                     //
@@ -88,6 +88,7 @@ export async function POST(request: Request) {
                     sendEvent(
                         JSON.stringify({
                             type: 'metadata',
+                            details: result.formatted.details,
                             confidence: result.confidenceLevel as ConfidenceLevel,
                             sources: result.searchResults.map((s: SearchResult) => ({
                                 title: s.title,
@@ -102,8 +103,7 @@ export async function POST(request: Request) {
 
                     sendEvent('[DONE]');
                 } catch (error) {
-                    const errorMsg =
-                        error instanceof Error ? error.message : 'Pipeline error';
+                    const errorMsg = error instanceof Error ? error.message : 'Pipeline error';
                     sendEvent(
                         JSON.stringify({
                             type: 'token',
@@ -136,9 +136,9 @@ export async function POST(request: Request) {
     } catch (error) {
         pipeline.destroy();
         const message = error instanceof Error ? error.message : 'Internal server error';
-        return new Response(
-            JSON.stringify({ error: message }),
-            { status: 500, headers: { 'Content-Type': 'application/json' } },
-        );
+        return new Response(JSON.stringify({ error: message }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
     }
 }

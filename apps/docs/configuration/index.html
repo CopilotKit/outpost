@@ -51,11 +51,26 @@
         <table class="env-table">
           <thead><tr><th>Variable</th><th>Description</th><th>Default</th></tr></thead>
           <tbody>
-            <tr><td>ANTHROPIC_API_KEY</td><td>Anthropic API key for Claude</td><td>&mdash;</td></tr>
-            <tr><td>AI_MODEL</td><td>Claude model to use for triage and responses</td><td>claude-sonnet-4-6</td></tr>
+            <tr><td>OPENAI_API_KEY</td><td>Required for the default Luna investigator, independent verifier, classifier, and sentiment analyzer</td><td>&mdash;</td></tr>
+            <tr><td>ANTHROPIC_API_KEY</td><td>Optional; required only for the Anthropic rollback or direct legacy generator</td><td>&mdash;</td></tr>
+            <tr><td>AI_RESPONSE_PROVIDER</td><td>Provider for response generation and auxiliary checks: <code>openai</code> or <code>anthropic</code></td><td>openai</td></tr>
+            <tr><td>AI_RESPONSE_MODEL</td><td>Investigator model; defaults to <code>claude-sonnet-4-6</code> for Anthropic</td><td>gpt-5.6-luna</td></tr>
+            <tr><td>AI_CONFIDENCE_MODEL</td><td>Independent confidence verifier; defaults to <code>claude-haiku-4-5-20251001</code> for Anthropic</td><td>gpt-5.6-luna</td></tr>
+            <tr><td>AI_CLASSIFIER_MODEL</td><td>Ticket classifier; defaults to <code>claude-haiku-4-5-20251001</code> for Anthropic</td><td>gpt-5.6-luna</td></tr>
+            <tr><td>AI_SENTIMENT_MODEL</td><td>Sentiment analyzer; defaults to <code>claude-haiku-4-5-20251001</code> for Anthropic</td><td>gpt-5.6-luna</td></tr>
+            <tr><td>AI_LEGACY_RESPONSE_MODEL</td><td>Direct legacy-generator model when the pipeline provider is OpenAI</td><td>claude-sonnet-4-6</td></tr>
+            <tr><td>AI_DRAFT_LINT_MODE</td><td><code>report</code> records violations; <code>enforce</code> routes blocking violations to review</td><td>report</td></tr>
+            <tr><td>OPENAI_AGENTS_DISABLE_TRACING</td><td>Set to <code>1</code> to disable SDK tracing; sensitive trace payloads are always excluded</td><td>0</td></tr>
             <tr><td>PATHFINDER_MCP_URL</td><td>Pathfinder MCP server URL for knowledge base search</td><td>https://mcp.copilotkit.ai</td></tr>
           </tbody>
         </table>
+
+        <p>
+          Configure <code>OPENAI_API_KEY</code> on the worker and web service. To roll back, set
+          <code>AI_RESPONSE_PROVIDER=anthropic</code>, provide <code>ANTHROPIC_API_KEY</code>,
+          and clear any OpenAI model overrides above. Model overrides must match the selected
+          provider; failures never switch providers automatically.
+        </p>
 
         <h2>Discord Bot</h2>
         <table class="env-table">

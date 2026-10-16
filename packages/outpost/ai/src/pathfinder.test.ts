@@ -179,6 +179,32 @@ describe('PathfinderClient', () => {
             );
         });
 
+        it.each([
+            'https://github.com/CopilotKit/CopilotKit',
+            'https://github.com/CopilotKit/CopilotKit/',
+            'https://github.com/CopilotKit/CopilotKit.git',
+            'https://github.com/CopilotKit/CopilotKit.git/',
+        ])('normalizes repository spelling %s before building the blob URL', async (repository) => {
+            const snippet = [
+                'SNIPPET 1',
+                `REPOSITORY: ${repository}`,
+                'PATH: packages/core/src/core/run-handler.ts',
+                'CONTENT:',
+                '1114 |     const agent = this._internal.getAgent(resolvedAgentId);',
+            ].join('\n');
+
+            mockConnect();
+            mockFetch.mockResolvedValueOnce(
+                mkResp({ body: jsonRpc({ content: [{ type: 'text', text: snippet }] }) }),
+            );
+
+            const results = await client.searchCode({ query: 'x' });
+
+            expect(results[0].sourceUrl).toBe(
+                'https://github.com/CopilotKit/CopilotKit/blob/main/packages/core/src/core/run-handler.ts',
+            );
+        });
+
         // The header regexes were unanchored, so the first `title:`/`source:`
         // ANYWHERE in the block won — and a code block's body is source code,
         // where `title: "Chat"` and `source: 'user'` are everyday object
@@ -230,6 +256,39 @@ describe('PathfinderClient', () => {
             const body = JSON.parse(mockFetch.mock.calls[2][1].body);
             expect(body.params.name).toBe('search-code');
             expect(body.params.arguments.query).toBe('subagent');
+        });
+
+        it('keeps the public wrapper tolerant for legacy JSON-array code results without URLs', async () => {
+            mockConnect();
+            mockFetch.mockResolvedValueOnce(
+                mkResp({
+                    body: jsonRpc({
+                        content: [
+                            {
+                                text: JSON.stringify([
+                                    {
+                                        title: 'packages/foo.ts',
+                                        content: 'export const x = 1;',
+                                        score: 0.9,
+                                    },
+                                ]),
+                            },
+                        ],
+                    }),
+                }),
+            );
+
+            const results = await client.searchCode({ query: 'x' });
+
+            expect(results).toEqual([
+                {
+                    title: 'packages/foo.ts',
+                    content: 'export const x = 1;',
+                    score: 0.9,
+                    sourceUrl: undefined,
+                    category: undefined,
+                },
+            ]);
         });
 
         it('returns [] rather than throwing when the tool errors', async () => {

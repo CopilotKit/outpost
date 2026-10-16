@@ -33,7 +33,7 @@ beforeEach(() => {
 
 const highQualityResults: SearchResult[] = [
     { title: 'Actions Guide', content: 'Detailed guide...', score: 0.95 },
-    { title: 'API Reference', content: 'API docs...', score: 0.90 },
+    { title: 'API Reference', content: 'API docs...', score: 0.9 },
     { title: 'Examples', content: 'Code examples...', score: 0.88 },
 ];
 
@@ -47,7 +47,7 @@ describe('ConfidenceScorer', () => {
     let scorer: ConfidenceScorer;
 
     beforeEach(() => {
-        scorer = new ConfidenceScorer({ apiKey: 'test-key' });
+        scorer = new ConfidenceScorer({ provider: 'anthropic', apiKey: 'test-key' });
     });
 
     describe('score', () => {
@@ -60,11 +60,11 @@ describe('ConfidenceScorer', () => {
                 usage: { input_tokens: 10, output_tokens: 10 },
             });
 
-            await new ConfidenceScorer({ apiKey: 'test-key', model: 'claude-opus-5' }).score(
-                'q',
-                'a',
-                highQualityResults,
-            );
+            await new ConfidenceScorer({
+                provider: 'anthropic',
+                apiKey: 'test-key',
+                model: 'claude-opus-5',
+            }).score('q', 'a', highQualityResults);
 
             const body = mock.getLastRequest()?.body as Record<string, unknown>;
             expect(body.model).toBe('claude-opus-5');
@@ -155,11 +155,7 @@ describe('ConfidenceScorer', () => {
         it('should fall back to heuristic scoring on API error', async () => {
             mock.nextRequestError(500, { message: 'API error' });
 
-            const result = await scorer.score(
-                'test question',
-                'test response',
-                highQualityResults,
-            );
+            const result = await scorer.score('test question', 'test response', highQualityResults);
 
             // Heuristic should still produce a reasonable score for high-quality results
             expect(result.score).toBeGreaterThan(0.5);
@@ -172,20 +168,18 @@ describe('ConfidenceScorer', () => {
                 usage: { input_tokens: 100, output_tokens: 20 },
             });
 
-            const result = await scorer.score(
-                'test',
-                'test response',
-                highQualityResults,
-            );
+            const result = await scorer.score('test', 'test response', highQualityResults);
 
-            // Should get a fallback MEDIUM score
-            expect(result.level).toBe(ConfidenceLevel.MEDIUM);
-            expect(result.score).toBe(0.5);
+            // Preserve the heuristic only as an explicitly degraded signal.
+            expect(result.degraded).toBe(true);
+            expect(result.score).toBe(scorer.heuristicScore(highQualityResults).score);
+            expect(result.tokenUsage).toEqual({ inputTokens: 100, outputTokens: 20 });
         });
 
         it('should handle JSON wrapped in code fences', async () => {
             mock.onMessage(/./, {
-                content: '```json\n{"score": 0.85, "level": "HIGH", "reasoning": "Good match"}\n```',
+                content:
+                    '```json\n{"score": 0.85, "level": "HIGH", "reasoning": "Good match"}\n```',
                 usage: { input_tokens: 100, output_tokens: 20 },
             });
 

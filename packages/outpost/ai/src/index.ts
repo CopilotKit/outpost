@@ -1,3 +1,19 @@
+export {
+    SupportAgent,
+    SUPPORT_AGENT_INSTRUCTIONS,
+    InvalidSupportReplyError,
+    InvestigationBudgetError,
+    supportConversation,
+} from './support-agent.js';
+export type { Investigation } from './support-agent.js';
+export {
+    supportReplySchema,
+    validateSupportReply,
+    supportReplyText,
+    supportReplyDetails,
+} from './support-reply.js';
+export type { SupportReply } from './support-reply.js';
+export type { SearchTool } from './pathfinder.js';
 export { PathfinderClient } from './pathfinder.js';
 export { ResponseGenerator, GROUNDING_RULES, SYSTEM_PROMPT_PREFIX } from './generator.js';
 export { ConfidenceScorer } from './confidence.js';
@@ -15,6 +31,7 @@ export {
     AI_DISCLAIMER_ESCALATED,
     AI_DISCLAIMER_REVIEWED,
     ResponseFormatter,
+    publishableText,
 } from './formatter.js';
 export { AIPipeline, SUPPRESSED_RESPONSE_TEXT } from './pipeline.js';
 export { analyzeSentiment } from './sentiment.js';

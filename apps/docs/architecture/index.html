@@ -58,7 +58,7 @@
 ├─────────┬────────┴──┬───────────┬───┴──────────────────┴────────────────────┤
 │ <span class="str">pkg/ai</span>  │<span class="str">pkg/queue</span>  │<span class="str">pkg/shared</span> │              <span class="str">pkg/db</span>                        │
 │Pathfinder│ Postgres  │ Types &amp;   │              Prisma                       │
-│+ Claude │ Job Queue │ Constants │              Schema                       │
+│+ OpenAI │ Job Queue │ Constants │              Schema                       │
 ├─────────┴───────────┴───────────┴───────────────────────────────────────────┤
 │                          PostgreSQL 16                                        │
 └──────────────────────────────────────────────────────────────────────────────┘</code></pre>
@@ -108,8 +108,8 @@
         <h3>packages/ai — AI Pipeline</h3>
         <p>
           The intelligence layer. Uses <a href="https://pathfinder.copilotkit.dev" target="_blank">Pathfinder</a>
-          for semantic search across the knowledge base and Claude for ticket classification,
-          priority assignment, response drafting, and routing decisions. All AI operations go
+          for semantic search across the knowledge base and OpenAI Agents SDK with Luna for ticket classification,
+          priority assignment, response drafting, independent verification, sentiment analysis, and routing decisions. All AI operations go
           through this package.
         </p>
 
@@ -198,7 +198,7 @@
             <tr><td>Language</td><td>TypeScript</td></tr>
             <tr><td>Database</td><td>PostgreSQL 16</td></tr>
             <tr><td>ORM</td><td>Prisma</td></tr>
-            <tr><td>AI</td><td>Claude (Anthropic) + Pathfinder</td></tr>
+            <tr><td>AI</td><td>OpenAI Agents SDK (Luna) + Pathfinder</td></tr>
             <tr><td>Discord</td><td>discord.js</td></tr>
             <tr><td>Slack</td><td>@slack/bolt</td></tr>
             <tr><td>Teams</td><td>Bot Framework SDK (botbuilder)</td></tr>

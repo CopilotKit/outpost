@@ -7,11 +7,7 @@
  */
 
 import { analyzeSentiment } from './sentiment.js';
-import type {
-    SentimentPeriod,
-    SentimentTrendResult,
-    TokenUsage,
-} from './types.js';
+import type { SentimentPeriod, SentimentTrendResult } from './types.js';
 import { SentimentLabel } from './types.js';
 
 export interface TimestampedMessage {
@@ -74,7 +70,7 @@ export async function getSentimentTrend(
             results.push({
                 periodStart: group.start.toISOString(),
                 periodEnd: group.end.toISOString(),
-                score: 50,
+                score: 25,
                 label: SentimentLabel.NEUTRAL,
                 messageCount: 0,
             });

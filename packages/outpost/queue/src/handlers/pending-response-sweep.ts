@@ -19,14 +19,19 @@
  * stranded in PENDING with no live job left to advance them, and settles each
  * one the same way the owning job would have:
  *
+ *   - an owed handoff    -> escalate to a human, keeping the reason the response
+ *                           already recorded in escalationRequiredReason over
+ *                           this sweep's generic one. First, because the promise
+ *                           of a human is what kept the row PENDING: repairing
+ *                           it to DELIVERED on the strength of the flag below
+ *                           would drop that promise AND leave its marker on a
+ *                           settled row, a pair no path can act on.
  *   - deliveryConfirmed  -> repair to DELIVERED. The platform post is a proven
  *                           fact; only the state write failed. Escalating here
  *                           would summon a human for an already-answered
  *                           reporter, so this precedence mirrors the owning
  *                           handler's prior-response gate exactly.
- *   - anything else      -> escalate to a human, preferring the reason the
- *                           response already recorded in escalationRequiredReason
- *                           over this sweep's generic one.
+ *   - anything else      -> escalate to a human with this sweep's generic reason.
  *
  * It never regenerates and never reposts, so the one-response-per-ticket rule
  * holds. Escalation goes through enqueueEscalationAtomically — the single
@@ -38,6 +43,7 @@ import {
     PRIMARY_AI_RESPONSE_KEY,
     RESPONSE_RECOVERY_AFTER_MS,
     enqueueEscalationAtomically,
+    recoveredHandoffReason,
 } from './ai-response.js';
 import { JobType } from '../types.js';
 import type { PendingResponseSweepPayload, JobResult, JobHandlerContext } from '../types.js';
@@ -110,15 +116,19 @@ async function findLiveOwnerJobIds(responses: StrandedResponse[]): Promise<Set<s
  * — the compare-and-set legitimately reports no-op when the row left PENDING
  * between the sweep's read and its write, which is exactly what makes a second
  * sweep over the same response harmless. But it is only benign if the row
- * actually settled: DELIVERED or ESCALATED means someone got there first, while
- * a row still PENDING (or unreadable, or gone) means the handoff this sweep
- * promised was never made. Discarding that distinction would recreate the bug
- * this handler exists to fix, one level up.
+ * actually settled: DELIVERED with no owed-escalation marker or ESCALATED means
+ * someone got there first. A retained marker on DELIVERED, a row still PENDING,
+ * or an unreadable/missing row leaves this sweep's handoff unaccounted for.
+ * Discarding that distinction would recreate the bug this handler exists to
+ * fix, one level up.
  */
 async function settleStrandedResponse(
     response: StrandedResponse,
 ): Promise<'repaired' | 'escalated' | 'alreadySettled' | 'failed'> {
-    if (response.deliveryConfirmed) {
+    // Delivery proof only settles a row that owes nothing else. A response
+    // still carrying its handoff marker is PENDING *because* of that marker, so
+    // the repair below would answer the wrong question about it.
+    if (!response.escalationRequiredReason && response.deliveryConfirmed) {
         await prisma.message.updateMany({
             where: {
                 id: response.id,
@@ -133,25 +143,39 @@ async function settleStrandedResponse(
     const deliveryDetail = response.responseError
         ? `Last recorded error: ${response.responseError}.`
         : 'The job that owned it stopped before delivery became durable.';
-    const reason =
-        response.escalationRequiredReason ??
-        `AI response for ${response.ticket.source} was left pending with no job left to finish it. ` +
-            `${deliveryDetail} A human must verify the thread and answer if needed.`;
+    const reason = response.escalationRequiredReason
+        ? // The owning handler composes this the same way, so a response that
+          // reaches a human through the sweep instead of through a takeover
+          // reads identically.
+          recoveredHandoffReason({
+              owedReason: response.escalationRequiredReason,
+              ticketSource: response.ticket.source,
+              deliveryConfirmed: response.deliveryConfirmed,
+              responseError: response.responseError,
+          })
+        : `AI response for ${response.ticket.source} was left pending with no job left to finish it. ` +
+          `${deliveryDetail} A human must verify the thread and answer if needed.`;
 
     const escalated = await enqueueEscalationAtomically(response.ticketId, response.id, reason);
     if (escalated) return 'escalated';
 
     const settled = await prisma.message.findUnique({
         where: { id: response.id },
-        select: { responseState: true },
+        select: { responseState: true, escalationRequiredReason: true },
     });
-    if (settled?.responseState === 'DELIVERED' || settled?.responseState === 'ESCALATED') {
+    if (
+        (settled?.responseState === 'DELIVERED' && settled.escalationRequiredReason === null) ||
+        settled?.responseState === 'ESCALATED'
+    ) {
         return 'alreadySettled';
     }
 
     console.error(
         `[PendingResponseSweep] Response ${response.id} on ticket ${response.ticketId} could not ` +
-            `be escalated and did not settle — state is ${settled?.responseState ?? 'missing'}`,
+            `be escalated and did not settle — state is ${settled?.responseState ?? 'missing'}` +
+            (settled?.escalationRequiredReason != null
+                ? `; owed-escalation marker remains (${settled.escalationRequiredReason}) — needs manual attention`
+                : ''),
     );
     return 'failed';
 }
