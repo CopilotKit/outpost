@@ -496,6 +496,61 @@ describe('Worker', () => {
         );
     });
 
+    // A handler that reports retryable:false has told the worker the failure
+    // cannot succeed on a retry (malformed payload, missing referenced row,
+    // permanent API rejection like Slack's not_in_channel). Retrying those burns
+    // every attempt and leaves a dead-letter trail that reads like a transient
+    // fault.
+    it('dead-letters immediately when a handler reports the failure as permanent', async () => {
+        const jobRow = makeJobRow({ attempts: 0, maxAttempts: 5 }); // attempt would be 1
+        mockPrisma.$queryRaw.mockResolvedValueOnce([jobRow]);
+        mockPrisma.$queryRaw.mockResolvedValue([]);
+        mockPrismaJob.updateMany.mockResolvedValue({ count: 1 });
+
+        worker.on(JobType.AI_RESPONSE, async () => {
+            return { success: false, error: 'not_in_channel', retryable: false };
+        });
+
+        worker.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(mockPrismaJob.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { id: 'job-1', status: 'PROCESSING', claimToken: 'claim-1' },
+                data: expect.objectContaining({
+                    status: 'DEAD_LETTER',
+                    // The TRUE attempt count. Writing maxAttempts here would
+                    // fabricate an exhausted-retry trail for a job that ran once.
+                    attempts: 1,
+                    error: 'not_in_channel',
+                }),
+            }),
+        );
+    });
+
+    // The flag is opt-in: every pre-existing handler omits it and must keep
+    // retrying exactly as before.
+    it('still retries a failure that does not set retryable', async () => {
+        const jobRow = makeJobRow({ attempts: 0, maxAttempts: 5 });
+        mockPrisma.$queryRaw.mockResolvedValueOnce([jobRow]);
+        mockPrisma.$queryRaw.mockResolvedValue([]);
+        mockPrismaJob.updateMany.mockResolvedValue({ count: 1 });
+
+        worker.on(JobType.AI_RESPONSE, async () => {
+            return { success: false, error: 'transient' };
+        });
+
+        worker.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(mockPrismaJob.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { id: 'job-1', status: 'PROCESSING', claimToken: 'claim-1' },
+                data: expect.objectContaining({ status: 'PENDING', attempts: 1 }),
+            }),
+        );
+    });
+
     it('retries failed jobs with backoff when attempts remain', async () => {
         const jobRow = makeJobRow({ attempts: 1, maxAttempts: 5 }); // attempt will be 2
         mockPrisma.$queryRaw.mockResolvedValueOnce([jobRow]);
@@ -1445,10 +1500,16 @@ describe('JobType enum', () => {
         expect(JobType.SLA_CHECK).toBe('SLA_CHECK');
         expect(JobType.ESCALATION).toBe('ESCALATION');
         expect(JobType.ONBOARDING_DIGEST).toBe('ONBOARDING_DIGEST');
+        expect(JobType.SLACK_MIRROR).toBe('SLACK_MIRROR');
+        expect(JobType.PENDING_RESPONSE_SWEEP).toBe('PENDING_RESPONSE_SWEEP');
     });
 
-    it('has exactly 11 job types', () => {
+    // The count is here so adding a type without registering a handler in
+    // apps/worker/src/index.ts is caught. A bare length assertion says nothing
+    // about WHICH type is missing, so the two most recently added are named
+    // above — this merge landed both at once and only the count moved.
+    it('has exactly 12 job types', () => {
         const values = Object.values(JobType);
-        expect(values).toHaveLength(11);
+        expect(values).toHaveLength(12);
     });
 });

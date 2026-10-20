@@ -107,6 +107,41 @@ export class Worker {
     /** Track active job counts per type for per-type concurrency enforcement */
     private activeJobsByType = new Map<string, number>();
     private lastPollTime: Date | null = null;
+    /**
+     * When the in-flight poll began, or null when no poll is running.
+     *
+     * `lastPollTime` alone cannot distinguish "busy" from "wedged": poll()
+     * stamps it and then awaits Promise.allSettled over every claimed job, so a
+     * 300s job freezes the stamp for 300s on a perfectly healthy worker. A
+     * health check that reads only the stamp reports such a worker stalled and
+     * the container probe kills it mid-job. These two fields separate the
+     * question "is a poll running right now" from "how long since one finished".
+     */
+    private pollStartedAt: Date | null = null;
+    /** Start time and own timeout of every in-flight job, keyed by job id. */
+    private activeJobStarts = new Map<
+        string,
+        { type: string; startedAt: Date; timeoutMs: number }
+    >();
+    /** When a job last reached its `finally`, whatever the outcome. */
+    private lastJobSettledAt: Date | null = null;
+    /**
+     * When the current unbroken run of poll failures began, or null if the last
+     * poll returned normally.
+     *
+     * A poll that THROWS is not a poll that found nothing, but `completePoll()`
+     * runs on the error path too — deliberately, so a dead loop is not reported
+     * as busy forever — and that stamps `lastPollCompletedAt` exactly as success
+     * would. Without this, a worker whose every claim query fails is
+     * indistinguishable from an idle one, and answers 200 forever.
+     *
+     * A window rather than a count, so one blip during a Postgres failover does
+     * not flap the probe.
+     */
+    private pollFailingSince: Date | null = null;
+    private consecutivePollFailures = 0;
+    /** When the last poll returned. Only meaningful while pollStartedAt is null. */
+    private lastPollCompletedAt: Date | null = null;
     private upSince: Date | null = null;
     private shutdownResolve: (() => void) | null = null;
     /** Rotates the per-type claim order so a spent budget starves a different tail each poll. */
@@ -189,6 +224,11 @@ export class Worker {
         this.shuttingDown = true;
         this.running = false;
 
+        // A stopped worker has no poll in flight, whatever the poll that is
+        // still unwinding thinks. Health checks read `running` first, but leaving
+        // a marker set here would make the snapshot self-contradictory.
+        this.pollStartedAt = null;
+
         if (this.pollTimer) {
             clearTimeout(this.pollTimer);
             this.pollTimer = null;
@@ -233,9 +273,51 @@ export class Worker {
             activeJobCount: this.activeJobs.size,
             activeJobsByType: Object.fromEntries(this.activeJobsByType),
             lastPollTime: this.lastPollTime,
+            pollStartedAt: this.pollStartedAt,
+            lastPollCompletedAt: this.lastPollCompletedAt,
+            overdueJobCount: this.overdueJobCount(),
+            lastJobSettledAt: this.lastJobSettledAt,
+            pollFailingSince: this.pollFailingSince,
+            consecutivePollFailures: this.consecutivePollFailures,
             registeredHandlers: Array.from(this.handlers.keys()),
             upSince: this.upSince,
         };
+    }
+
+    /**
+     * How far past its own timeout an in-flight job may run before it counts as
+     * overdue.
+     *
+     * runWithTimeout bounds only the handler; the status write that follows it is
+     * untimed (see processJob), so a job legitimately overshoots its timeout by a
+     * little on a slow database. It does not overshoot by a minute.
+     */
+    private static readonly JOB_OVERRUN_GRACE_MS = 60_000;
+
+    /**
+     * In-flight jobs that have outlived their own timeout plus the grace.
+     *
+     * This is the liveness signal, and it is deliberately per-job rather than
+     * derived from poll duration. An earlier version of the health check bounded
+     * the whole poll at `max(jobTimeouts) + grace`, which is simply not what a
+     * poll is: claimJobsByType awaits each type's batch SEQUENTIALLY, so one poll
+     * can legitimately run the SUM of every registered type's timeout — 930s
+     * against the worker's real configuration, versus a 360s bound. A healthy
+     * worker working through a backlog was reported stalled and the container
+     * probe killed it mid-job.
+     *
+     * Asking whether any single job has outlived its own timeout needs no
+     * scheduling arithmetic, so it cannot drift out of step with how poll()
+     * batches. A non-zero count means the timeout machinery itself failed —
+     * which also catches the case where a job's untimed status write hangs, its
+     * `finally` never runs, and the poll spins at capacity looking healthy.
+     */
+    private overdueJobCount(now: number = Date.now()): number {
+        let overdue = 0;
+        for (const { startedAt, timeoutMs } of this.activeJobStarts.values()) {
+            if (now - startedAt.getTime() > timeoutMs + Worker.JOB_OVERRUN_GRACE_MS) overdue++;
+        }
+        return overdue;
     }
 
     private registerSignalHandlers(): void {
@@ -272,8 +354,9 @@ export class Worker {
     private async poll(): Promise<void> {
         if (!this.running) return;
 
+        this.pollStartedAt = new Date();
         try {
-            this.lastPollTime = new Date();
+            this.lastPollTime = this.pollStartedAt;
 
             // Ahead of the capacity check, not behind it. Reclaiming is a global
             // sweep over abandoned rows and has nothing to do with this replica's
@@ -296,12 +379,16 @@ export class Worker {
             } catch (error) {
                 console.error('[Queue Worker] Reclaim sweep failed, continuing:', error);
             }
-            if (!this.running) return;
+            if (!this.running) {
+                this.completePoll();
+                return;
+            }
 
             const availableSlots = this.maxConcurrency - this.activeJobs.size;
 
             if (availableSlots <= 0) {
                 // At capacity, wait and retry
+                this.completePoll();
                 this.schedulePoll(this.pollIntervalMs);
                 return;
             }
@@ -319,11 +406,35 @@ export class Worker {
 
             // If we processed jobs, poll immediately for more
             const nextPollDelay = processedCount > 0 ? 0 : this.pollIntervalMs;
+            // Belt and braces: a poll that claimed nothing at all still proves
+            // the database answered.
+            this.recordPollSuccess();
+            this.completePoll();
             this.schedulePoll(nextPollDelay);
         } catch (error) {
             console.error('[Queue Worker] Poll error:', error);
+            this.consecutivePollFailures++;
+            this.pollFailingSince ??= new Date();
+            this.completePoll();
             this.schedulePoll(this.pollIntervalMs);
         }
+    }
+
+    /**
+     * Mark the in-flight poll finished. Called on every exit path out of poll()
+     * — including the error path, because a poll that threw has still stopped
+     * running, and leaving pollStartedAt set would report a dead loop as busy
+     * forever.
+     */
+    private completePoll(): void {
+        this.pollStartedAt = null;
+        this.lastPollCompletedAt = new Date();
+    }
+
+    /** The database answered a claim, so any open failure window is closed. */
+    private recordPollSuccess(): void {
+        this.pollFailingSince = null;
+        this.consecutivePollFailures = 0;
     }
 
     /**
@@ -486,6 +597,13 @@ export class Worker {
                 const limit = Math.min(available, remainingGlobalSlots, this.batchSize);
                 const jobs = await this.claimJobsForType(type, limit);
 
+                // The claim came back, so the database is answering. Cleared here
+                // rather than at the end of the poll body: a poll that recovers then
+                // spends 300s processing what it claimed would otherwise report
+                // "every poll has failed" for that whole window, about a poll in the
+                // middle of succeeding.
+                this.recordPollSuccess();
+
                 claimed.push(...jobs);
                 // Charged here, against rows this poll actually holds, and before
                 // anything is dispatched.
@@ -557,6 +675,7 @@ export class Worker {
             )
             RETURNING id, type, payload, attempts, "maxAttempts", "claimToken"
         `;
+        this.recordPollSuccess();
 
         await this.processClaimedJobs(jobs);
 
@@ -608,6 +727,11 @@ export class Worker {
 
         this.activeJobs.add(job.id);
         this.activeJobsByType.set(job.type, (this.activeJobsByType.get(job.type) ?? 0) + 1);
+        this.activeJobStarts.set(job.id, {
+            type: job.type,
+            startedAt: new Date(),
+            timeoutMs: this.jobTimeouts[job.type as JobType] ?? this.defaultTimeoutMs,
+        });
 
         try {
             const handler = this.handlers.get(job.type);
@@ -670,6 +794,11 @@ export class Worker {
             }
 
             if (!result.success) {
+                // A handler that reports `retryable: false` has told us the
+                // failure cannot succeed on a retry (malformed payload, missing
+                // referenced row, permanent API rejection). Retrying it burns
+                // every attempt and leaves a dead-letter trail that reads like a
+                // transient fault.
                 await this.handleFailure(
                     job.id,
                     job.type,
@@ -677,6 +806,7 @@ export class Worker {
                     attempt,
                     job.maxAttempts,
                     result.error ?? 'Unknown error',
+                    result.retryable === false,
                 );
                 return;
             }
@@ -724,6 +854,8 @@ export class Worker {
             }
         } finally {
             this.activeJobs.delete(job.id);
+            this.activeJobStarts.delete(job.id);
+            this.lastJobSettledAt = new Date();
             const currentCount = this.activeJobsByType.get(job.type) ?? 1;
             if (currentCount <= 1) {
                 this.activeJobsByType.delete(job.type);
@@ -761,8 +893,15 @@ export class Worker {
         attempt: number,
         maxAttempts: number,
         error: string,
+        /**
+         * The handler declared this failure permanent. Dead-letter it now, but
+         * record the TRUE attempt count — writing `maxAttempts` here would
+         * fabricate an exhausted-retry trail for a job that ran once, and an
+         * operator requeueing it could not tell the two cases apart.
+         */
+        permanent = false,
     ): Promise<void> {
-        if (attempt >= maxAttempts) {
+        if (permanent || attempt >= maxAttempts) {
             // Dead letter: job has exhausted all retries
             const result = await prisma.job.updateMany({
                 where: { id: jobId, status: 'PROCESSING', claimToken },
@@ -778,7 +917,9 @@ export class Worker {
             });
             if (result.count > 0) {
                 console.error(
-                    `[Queue Worker] Job ${jobId} (${jobType}) moved to dead letter queue after ${attempt} attempts: ${error}`,
+                    `[Queue Worker] Job ${jobId} (${jobType}) moved to dead letter queue ` +
+                        `after ${attempt} attempt(s)` +
+                        `${permanent ? ' (handler reported the failure as permanent)' : ''}: ${error}`,
                 );
             } else {
                 // Pre-fence this always logged. Staying silent here would lose both
