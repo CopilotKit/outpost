@@ -144,6 +144,8 @@ export class Worker {
     private lastPollCompletedAt: Date | null = null;
     private upSince: Date | null = null;
     private shutdownResolve: (() => void) | null = null;
+    /** Rotates the per-type claim order so a spent budget starves a different tail each poll. */
+    private claimCursor = 0;
     private stopPromise: Promise<void> | null = null;
     private signalHandlers: { signal: string; handler: () => void }[] = [];
 
@@ -297,12 +299,14 @@ export class Worker {
      *
      * This is the liveness signal, and it is deliberately per-job rather than
      * derived from poll duration. An earlier version of the health check bounded
-     * the whole poll at `max(jobTimeouts) + grace`, which is simply not what a
-     * poll is: claimJobsByType awaits each type's batch SEQUENTIALLY, so one poll
-     * can legitimately run the SUM of every registered type's timeout — 930s
-     * against the worker's real configuration, versus a 360s bound. A healthy
-     * worker working through a backlog was reported stalled and the container
-     * probe killed it mid-job.
+     * the whole poll at `max(jobTimeouts) + grace`. At the time claimJobsByType
+     * awaited each type's batch in turn, so one poll could run the sum of every
+     * registered type's timeout, and a healthy worker working through a backlog
+     * was reported stalled and killed mid-job. claimJobsByType now claims every
+     * type up front and runs the whole batch at once, so a poll lasts about as
+     * long as its slowest job. That is still not a bound worth encoding: the
+     * status write after each handler is untimed, and any poll-level bound has
+     * to be kept in step with the timeout table and with how poll() batches.
      *
      * Asking whether any single job has outlived its own timeout needs no
      * scheduling arithmetic, so it cannot drift out of step with how poll()
@@ -551,60 +555,76 @@ export class Worker {
 
     /**
      * Claim jobs respecting per-type concurrency limits.
-     * For each registered job type that has available capacity, claim up to
-     * the available slots for that type.
+     *
+     * Every type is claimed before any handler runs, and the global budget is
+     * charged as each claim returns rather than after its batch has been
+     * processed. Both halves matter:
+     *
+     * - Charging after `processClaimedJobs` meant finished work still held
+     *   slots, so a broad backlog exhausted the budget partway down
+     *   `this.handlers` insertion order. The types past that point were never
+     *   claimed, and because a productive poll reschedules at 0ms against the
+     *   same state, the next poll made the identical choice. That is indefinite
+     *   starvation of a fixed tail, not delay.
+     * - Awaiting each batch inside the loop meant type N+1 was not claimed until
+     *   type N had fully drained, so one slow `AI_RESPONSE` (120s timeout) held
+     *   up `ESCALATION`, the path that exists for when things are going wrong.
+     *
+     * The starting offset rotates each poll so that when the budget genuinely
+     * does run out, it does not run out at the same place every time. Without
+     * it a permanently saturated queue still starves whatever sorts last.
      */
     private async claimJobsByType(globalSlots: number): Promise<number> {
-        let totalProcessed = 0;
+        const types = Array.from(this.handlers.keys());
+        if (types.length === 0) return 0;
+
+        const offset = this.claimCursor % types.length;
+        this.claimCursor = (this.claimCursor + 1) % types.length;
+        const ordered = [...types.slice(offset), ...types.slice(0, offset)];
+
         let remainingGlobalSlots = globalSlots;
+        const claimed: Array<ClaimedJob> = [];
 
-        // Determine which types have capacity
-        const typesWithCapacity: Array<{ type: string; available: number }> = [];
+        try {
+            for (const type of ordered) {
+                if (remainingGlobalSlots <= 0) break;
 
-        for (const [type] of this.handlers) {
-            if (remainingGlobalSlots <= 0) break;
+                const typeLimit = this.concurrencyByType[type];
+                const available =
+                    typeLimit === undefined
+                        ? remainingGlobalSlots
+                        : typeLimit - (this.activeJobsByType.get(type) ?? 0);
+                if (available <= 0) continue;
 
-            const typeLimit = this.concurrencyByType[type];
-            const activeForType = this.activeJobsByType.get(type) ?? 0;
+                const limit = Math.min(available, remainingGlobalSlots, this.batchSize);
+                const jobs = await this.claimJobsForType(type, limit);
 
-            if (typeLimit !== undefined) {
-                const available = typeLimit - activeForType;
-                if (available > 0) {
-                    typesWithCapacity.push({
-                        type,
-                        available: Math.min(available, remainingGlobalSlots),
-                    });
-                }
-            } else {
-                // No per-type limit; bound by global slots only
-                typesWithCapacity.push({
-                    type,
-                    available: remainingGlobalSlots,
-                });
-            }
-        }
+                // The claim came back, so the database is answering. Cleared here
+                // rather than at the end of the poll body: a poll that recovers then
+                // spends 300s processing what it claimed would otherwise report
+                // "every poll has failed" for that whole window, about a poll in the
+                // middle of succeeding.
+                this.recordPollSuccess();
 
-        // Claim jobs for each type that has capacity
-        for (const { type, available } of typesWithCapacity) {
-            if (remainingGlobalSlots <= 0) break;
-
-            const limit = Math.min(available, remainingGlobalSlots, this.batchSize);
-            const jobs = await this.claimJobsForType(type, limit);
-            // The claim came back, so the database is answering. Cleared here
-            // rather than at the end of the poll body: a poll that recovers then
-            // spends 300s processing what it claimed would otherwise report
-            // "every poll has failed" for that whole window, about a poll in the
-            // middle of succeeding.
-            this.recordPollSuccess();
-
-            if (jobs.length > 0) {
-                await this.processClaimedJobs(jobs);
-                totalProcessed += jobs.length;
+                claimed.push(...jobs);
+                // Charged here, against rows this poll actually holds, and before
+                // anything is dispatched.
                 remainingGlobalSlots -= jobs.length;
             }
+        } finally {
+            // Dispatch whatever was claimed even if a later claim threw. Claiming
+            // every type before processing any of them means one failed claim
+            // mid-loop would otherwise drop rows that are already PROCESSING with
+            // a live token. Nothing would be holding them, so they would wait for
+            // the reclaim sweep, which consumes an attempt and moves them toward
+            // DEAD_LETTER. The previous shape processed each batch as it was
+            // claimed and so had no such window.
+            if (claimed.length > 0) {
+                await this.processClaimedJobs(claimed);
+            }
         }
 
-        return totalProcessed;
+        return claimed.length;
     }
 
     /**

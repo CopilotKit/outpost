@@ -148,10 +148,12 @@ describe('buildHealthResponse', () => {
     // ─── busy is not stalled ───────────────────────────────────────────────
     //
     // THE REGRESSION THIS MODEL EXISTS FOR, and the one that got the previous
-    // attempt reverted. Two facts together: poll() stamps lastPollTime and then
-    // awaits its jobs, and claimJobsByType awaits each TYPE's batch sequentially
-    // (worker.ts) — so a single poll may legitimately run the SUM of every
-    // registered type's timeout. Against the config in index.ts that is 930s.
+    // attempt reverted. poll() stamps lastPollTime and then awaits every job it
+    // claimed, so a single poll legitimately runs as long as its slowest job.
+    // When claimJobsByType awaited each type's batch in turn, that was the sum
+    // of every registered type's timeout, 930s against the config in index.ts.
+    // Claims now all happen before dispatch, but the status writes after each
+    // handler are untimed, so the poll still has no fixed upper bound.
     //
     // Both earlier bounds were therefore wrong: `now - lastPollTime > 60s`, and
     // its replacement `pollDuration > max(jobTimeouts) + 60s` = 360s. Either one
@@ -168,7 +170,8 @@ describe('buildHealthResponse', () => {
             ...over,
         });
 
-        // 930_000 is the real sequential worst case for the ten registered types.
+        // 930_000 was the worst case when each type's batch ran in turn. It stays
+        // as a long-poll case: the probe must not care how the poll batches.
         it.each([61_000, 360_001, 600_000, 930_000, 1_200_000])(
             'reports 200 after %ims of polling while jobs are in flight and none is overdue',
             (pollAgeMs) => {
@@ -740,11 +743,11 @@ describe('a poll that keeps failing is not healthy', () => {
 });
 
 // The claim clock runs from the later of "this poll started" and "a job last
-// settled". claimJobsByType awaits each type's batch sequentially, so after a
-// long batch finishes, the remaining claim queries each run with
-// activeJobCount === 0 while pollDuration already carries that batch. Measuring
-// the whole poll reported a healthy worker stalled — the reverted defect, moved
-// rather than removed.
+// settled". Claims all happen before dispatch, but after the last job of a long
+// batch settles there is a short gap before the poll returns. In that gap
+// activeJobCount === 0 while pollDuration already carries the batch. Measuring
+// the whole poll would report a healthy worker stalled, the reverted defect
+// moved rather than removed.
 describe('a settled job resets the claim clock', () => {
     it('stays 200 when a batch settled recently, however long the poll has run', () => {
         const afterLongBatch: WorkerHealthStatus = {
@@ -752,8 +755,8 @@ describe('a settled job resets the claim clock', () => {
             activeJobCount: 0,
             pollStartedAt: new Date(NOW - 118_000),
             lastPollTime: new Date(NOW - 118_000),
-            // The AI_RESPONSE batch finished a moment ago; the poll is now
-            // issuing the next type's claim query.
+            // The AI_RESPONSE batch finished a moment ago and the poll is
+            // about to return.
             lastJobSettledAt: new Date(NOW - 200),
         };
 
