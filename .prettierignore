@@ -34,3 +34,8 @@ packages/outpost/db/prisma/migrations/
 # it to the repo's 4-space width reindents all 412 lines and would do so again
 # after every run.
 /docs/community-signal/reddit-pulse-seen.json
+
+# CLAUDE.md is the same class as the skill definitions above: hand-maintained
+# spec prose carrying a wide trigger/skill reference table, where padding every
+# cell to the widest one buries the real change on any future edit.
+/CLAUDE.md
