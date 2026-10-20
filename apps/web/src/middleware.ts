@@ -3,7 +3,16 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { requiresCsrfValidation, validateCsrfToken, setCsrfCookie } from '@/lib/csrf';
 
-const PUBLIC_PATHS = ['/login', '/api/auth', '/setup', '/api/setup', '/api/health', '/invite/accept', '/api/team/invite/accept', '/api/webhooks'];
+const PUBLIC_PATHS = [
+    '/login',
+    '/api/auth',
+    '/setup',
+    '/api/setup',
+    '/api/health',
+    '/invite/accept',
+    '/api/team/invite/accept',
+    '/api/webhooks',
+];
 
 /**
  * Extensions served as static files out of `public/`.
@@ -11,7 +20,7 @@ const PUBLIC_PATHS = ['/login', '/api/auth', '/setup', '/api/setup', '/api/healt
  * This replaces a bare `pathname.includes('.')` check. That heuristic treated ANY
  * dotted path as a static asset, and because it ran ahead of the auth and CSRF
  * checks below, `PATCH /api/accounts/x.json` reached the handler with neither
- * applied (outpost#225).
+ * applied.
  *
  * Deliberately an allowlist of extensions rather than "has a dot": a request path
  * is attacker-controlled, so anything that decides "skip the security checks" has
@@ -36,7 +45,8 @@ const PUBLIC_PATHS = ['/login', '/api/auth', '/setup', '/api/setup', '/api/healt
  * finished removing. If a domain-verification file is ever needed there, exempt that
  * exact path rather than the tree.
  */
-const STATIC_ASSET_PATH = /\.(?:js|mjs|css|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot|txt|xml|webmanifest)$/i;
+const STATIC_ASSET_PATH =
+    /\.(?:js|mjs|css|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot|txt|xml|webmanifest)$/i;
 
 export async function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl;

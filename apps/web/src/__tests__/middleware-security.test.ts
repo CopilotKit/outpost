@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * use the REAL csrf module so the assertions are about the middleware's actual
  * behaviour rather than about a stub.
  *
- * Covers outpost#225 item 1: a convenience early-return (static assets / any path
+ * Covers the ordering guarantee: a convenience early-return (static assets / any path
  * containing a dot) sat above both the auth check and the CSRF check, so
  * `PATCH /api/accounts/x.json` reached the handler with neither applied.
  */
@@ -66,7 +66,7 @@ function responseStub(type: string) {
     return { type, cookies: { set: vi.fn() } };
 }
 
-describe('middleware security ordering (outpost#225)', () => {
+describe('middleware security ordering', () => {
     beforeEach(() => {
         mockGetToken.mockReset();
         mockNext.mockReset();

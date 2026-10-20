@@ -135,7 +135,7 @@ export default function TemplatesPage() {
             // shape as the rest of this screen's history. Wiring the lookup is
             // tracked separately, and per outpost#253 would not make an edited
             // template reach an invitee today either.
-            setSuccess('Saved. Not yet used for outgoing email — see outpost#226.');
+            setSuccess('Saved. Not yet used for outgoing email — see outpost#279.');
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Save failed');
         } finally {
@@ -174,7 +174,7 @@ export default function TemplatesPage() {
         <div>
             <PageHeader
                 title="Email Templates"
-                description="Edit and preview outbound email templates. Saved edits are not yet used for outgoing email — see outpost#226."
+                description="Edit and preview outbound email templates. Saved edits are not yet used for outgoing email — see outpost#279."
                 icon={Mail}
                 breadcrumbs={[{ label: 'Settings', href: '/settings' }, { label: 'Templates' }]}
             />
