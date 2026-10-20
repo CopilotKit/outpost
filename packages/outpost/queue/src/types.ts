@@ -262,10 +262,10 @@ export interface WorkerHealthStatus {
     /**
      * In-flight jobs that have outlived their OWN timeout plus a grace.
      *
-     * The honest liveness signal. Poll duration is not: claimJobsByType awaits
-     * each type's batch sequentially, so a single poll may legitimately run the
-     * sum of every registered type's timeout. Non-zero here means the timeout
-     * machinery failed, not that the worker is slow.
+     * The honest liveness signal. Poll duration is not: a poll waits for its
+     * whole claimed batch, so it legitimately runs as long as its slowest job
+     * plus an untimed status write. Non-zero here means the timeout machinery
+     * failed, not that the worker is slow.
      */
     overdueJobCount: number;
     /** When a job last settled, whatever the outcome. Null before the first one. */

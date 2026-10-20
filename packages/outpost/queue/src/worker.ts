@@ -299,12 +299,14 @@ export class Worker {
      *
      * This is the liveness signal, and it is deliberately per-job rather than
      * derived from poll duration. An earlier version of the health check bounded
-     * the whole poll at `max(jobTimeouts) + grace`, which is simply not what a
-     * poll is: claimJobsByType awaits each type's batch SEQUENTIALLY, so one poll
-     * can legitimately run the SUM of every registered type's timeout — 930s
-     * against the worker's real configuration, versus a 360s bound. A healthy
-     * worker working through a backlog was reported stalled and the container
-     * probe killed it mid-job.
+     * the whole poll at `max(jobTimeouts) + grace`. At the time claimJobsByType
+     * awaited each type's batch in turn, so one poll could run the sum of every
+     * registered type's timeout, and a healthy worker working through a backlog
+     * was reported stalled and killed mid-job. claimJobsByType now claims every
+     * type up front and runs the whole batch at once, so a poll lasts about as
+     * long as its slowest job. That is still not a bound worth encoding: the
+     * status write after each handler is untimed, and any poll-level bound has
+     * to be kept in step with the timeout table and with how poll() batches.
      *
      * Asking whether any single job has outlived its own timeout needs no
      * scheduling arithmetic, so it cannot drift out of step with how poll()

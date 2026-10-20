@@ -78,14 +78,14 @@ export const STALE_POLL_MS = 60_000;
  * query, so a poll that has not returned in a minute with no job to blame is
  * blocked on the database rather than working.
  *
- * Deliberately NOT a bound on poll duration in general. claimJobsByType awaits
- * each type's batch sequentially, so one poll can legitimately run the sum of
- * every registered type's timeout — 930s against the real worker config. An
- * earlier version of this module bounded the whole poll at
- * `max(jobTimeouts) + 60s` = 360s and reported a healthy worker stalled, which
- * is what got the previous attempt at this endpoint reverted. Whether the jobs
- * themselves are overdue is the worker's own question to answer, and it answers
- * it per job in `overdueJobCount`.
+ * Deliberately NOT a bound on poll duration in general. A poll claims every
+ * type up front and then waits for the whole batch, so it legitimately runs as
+ * long as its slowest job, and longer if a status write is slow. An earlier
+ * version of this module bounded the whole poll at `max(jobTimeouts) + 60s`,
+ * back when claiming awaited each type's batch in turn, and reported a healthy
+ * worker stalled. That is what got the previous attempt at this endpoint
+ * reverted. Whether the jobs themselves are overdue is the worker's own
+ * question to answer, and it answers it per job in `overdueJobCount`.
  */
 export const CLAIM_STALL_MS = 60_000;
 
@@ -439,16 +439,15 @@ export function buildHealthResponse(
 
     if (workerHealth.pollStartedAt) {
         // Nothing claimed and still not back: the claim query itself is blocked.
-        // With jobs in flight the duration says nothing, since a poll waits out
-        // every type's batch in turn.
+        // With jobs in flight the duration says nothing, since a poll waits for
+        // its whole claimed batch to settle.
         // Measured from the later of "this poll started" and "a job last
-        // settled", NOT from the start of the poll. claimJobsByType awaits each
-        // type's batch sequentially, so after a 118s batch of AI_RESPONSE jobs
-        // finishes, the nine remaining claim queries each run with
-        // activeJobCount === 0 and a pollDuration already carrying those 118s.
-        // Bounding the whole poll reported a healthy worker as stalled — the
-        // same mistake that got the previous two attempts reverted, moved rather
-        // than removed.
+        // settled", NOT from the start of the poll. Claims all happen before
+        // dispatch, but once the last job of a 118s batch settles there is a
+        // short gap before the poll returns. In that gap activeJobCount is 0 and
+        // the poll already carries those 118s. Bounding the whole poll would read
+        // that as a blocked claim and report a healthy worker as stalled, the
+        // same mistake that got the previous two attempts reverted.
         const claimingSince = Math.max(
             workerHealth.pollStartedAt.getTime(),
             workerHealth.lastJobSettledAt?.getTime() ?? 0,
