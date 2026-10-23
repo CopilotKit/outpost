@@ -21,13 +21,13 @@ A new Notion page under **Community Signals** parent (`3673aa38-1852-80bc-a71f-d
 Weekly Community Signal — <Mon DD>-<DD>, <YYYY>
 ```
 
-The main page is the **CopilotKit** report. It opens with the `## 📦 CopilotKit` header + a link to the AG-UI companion sub-page, then **leads the body with the cross-community `## 🔝 Top issues of the week`** (ranked), then the CopilotKit community sections, then the cross-community 🏢 Enterprise, 🟠 Reddit Pulse — CopilotKit, and 🔄 Patterns sections. **AG-UI always lives on its own sub-page**, created as a child of the main page and linked at the top (via a `<page url="…">` block). The AG-UI sub-page holds AG-UI's per-community detail — including its **own** `## 🔝 Top issues of the week — AG-UI` (AG-UI-scoped) and its own 🟠 Reddit Pulse — AG-UI section. The main page's Top issues are cross-community (and may include AG-UI front-door breaks); the cross-community Patterns takeaways stay on the main page.
+The main page is the **CopilotKit** report. It opens with the `## 📦 CopilotKit` header + a link to the AG-UI companion sub-page, then **leads the body with the cross-community `## 🔝 Top issues of the week`** (ranked), then the four cross-community builder-insight sections (🛠️ What people are building · 🎯 Biggest pain points · 🚫 Not a pain point · 🌡️ Vibe check — see `builder-insights`), then the CopilotKit community sections, then the cross-community 🏢 Enterprise, 🟠 Reddit Pulse — CopilotKit, and 🔄 Patterns sections. **AG-UI always lives on its own sub-page**, created as a child of the main page and linked at the top (via a `<page url="…">` block). The AG-UI sub-page holds AG-UI's per-community detail — including its **own** `## 🔝 Top issues of the week — AG-UI` (AG-UI-scoped) and its own 🟠 Reddit Pulse — AG-UI section. The main page's Top issues are cross-community (and may include AG-UI front-door breaks); the cross-community Patterns takeaways stay on the main page.
 
 Covering the **most recent complete Friday→Friday week** (Friday end-date inclusive) for Discord + GitHub. (Reddit Pulse uses a rolling 90-day window — see step 6.) State the window before pulling data.
 
 ## The orchestrator verifies every subagent's work (supervisor rule)
 
-**The orchestrator is accountable for everything published — a subagent's return is INPUT, not truth.** Every subagent (Discord pull, GitHub pull, deep-read, release-scan, enrich-reporter, enrich-prospect, Reddit Pulse, product-surface, link-review, report-sources) can be wrong, stale, or incomplete. Before using any return:
+**The orchestrator is accountable for everything published — a subagent's return is INPUT, not truth.** Every subagent (Discord pull, GitHub pull, deep-read, release-scan, enrich-reporter, enrich-prospect, Reddit Pulse, product-surface, community-conversations, link-review, report-sources) can be wrong, stale, or incomplete. Before using any return:
 
 - **Spot-check its claims against source** — issue/PR numbers + state + dates (`gh`), versions (release-scan), company affiliation (bio, not just the `company` field), links resolve, product-surface quotes appear on the live page. If a claim can't be traced to a source, don't publish it.
 - **Reconcile contradictions between subagents** — if two returns disagree (e.g. deep-read says OPEN but release-scan says shipped), run it down before writing.
@@ -90,6 +90,8 @@ Covering the **most recent complete Friday→Friday week** (Friday end-date incl
 
 6b. **Spawn Subagent G — Release scan** (see `release-scan` skill). Spawn it **in parallel with Subagents A/B** (no other subagent depends on it; the fix-map is only needed by clustering/resolution). It pulls every CopilotKit + AG-UI release shipped in (and just after) the window, **diffs the git tags** — not the release notes, which are often empty stubs — to extract what each release fixed, and returns: the authoritative latest version per repo, the in-cycle release list, and a **fix-map** (`#NNNN · fixed in <version> · via PR #MMMM · what`). This is the source of truth for every version claim AND the input to the open-issue cross-check below.
 
+6c. **Spawn Subagent I — community conversations** (see `community-conversations` skill). Spawn it **in parallel with A/B/G**; nothing depends on it until synthesis. It reads the community bucket of the team's daily Slack scheduling post for the window (channel and labels come from local `.env`, see that skill), matches each booking to its Fireflies recording, reads every held call's transcript, and returns per-call building / pain / not-a-pain / quality evidence plus booked-vs-held counts. It feeds the four builder-insight sections only. If Slack or Fireflies can't be read, it returns a `BLOCKER:` line for Gaps, and those sections render from the other sources with a "community calls unavailable this week" note.
+
 7. **Cluster into Demand + Pain.** Per community. Apply threshold rule:
    - 2+ distinct people this week, OR
    - 1+ this week AND verifiable prior reference (issue #, thread ID, prior-report URL).
@@ -132,6 +134,8 @@ Covering the **most recent complete Friday→Friday week** (Friday end-date incl
 10b. **Build the carry-over map — before writing any card.** Match every candidate item against the PRIOR report(s) on its canonical id (`repo#number`, Discord thread id, Reddit post id — never card titles, same matching as `carry-forward-owners`). For each match record (a) **weeks running** — the number of consecutive reports it has appeared in, counting this one, so walk back report by report until it's missing (an item opened after the previous window started can only be Week 2); and (b) **what changed since the last report**, from evidence in the window: new comments from a maintainer or reporter, a PR opened/reviewed/merged/closed, a release that did or didn't include the fix, a priority or section move. "Nothing" is a valid answer and decides where the item renders (see "Carry-overs and what changed").
 
 11. **Score & rank the Top issues** (see the ranking rubric in `front-door-triage`). First **record the naive order** — what you'd get ranking the candidates by loudness alone (engagement: 👍 + comments, recency, reporter count) — so the comparison page can show the delta. Then **score each candidate on the five axes** (surface tier · blast radius · severity · exposure · signal), using measurable inputs — `gh issue view --json reactionGroups,comments,labels`, fix-PR status from step 10, Discord distinct-reporter counts, and the enrichment. Sum, sort descending; the top 3–5 are the Top issues, ranked. Keep BOTH the scored table and the naive order — they get published in the ranking + comparison child pages (step 12). Community (CK vs AG-UI) is never an axis.
+
+11b. **Write the four builder-insight sections** (see `builder-insights` skill) from the returns already in hand: Subagent I's calls, the GitHub/Discord/Reddit pulls, enrichment, the product-surface list, and the prior 3 reports for measured silence and the vibe trend. Leadership's four questions: what people are building, their biggest pains in our zipcode (including ones we don't offer), what is NOT a pain, and a measured vibe check.
 
 12. **Build the Notion pages** via `mcp__plugin_Notion_notion__notion-create-pages`. Create the AG-UI sub-page FIRST (as a child of the main page), then the main CopilotKit page references it at top with a `<page url="…">` block. **Then create the child pages** at the bottom of the main report (children of the main page):
    - **`📊 Top-issue ranking`** — the rubric + this week's scored table.
@@ -191,10 +195,22 @@ Covering the **most recent complete Friday→Friday week** (Friday end-date incl
 ## 🔝 Top issues of the week                    ← THE LEAD body section — cross-community, ranked by importance. Each item a toggle: what · impact · fix plan · owner · priority, tagged [CK]/[AG-UI]. Lead with the biggest front-door break. See "Top issues of the week".
 ---
 
-## ⚠️ Product surface contradictions            ← CONDITIONAL — render ONLY when `product-surface-scan` finds a page-vs-page (or page-vs-source) conflict; sits here, under Top issues + above Enterprise. One card per contradiction: what conflicts · both quoted claims · both page links · suggested source of truth · Owner blank + Priority. When there are none, OMIT this section — a quiet "Product pages checked for contradictions — none this week." line + the referenced-page list lives inside 🏢 Enterprise instead. See `product-surface-scan`.
+## 🛠️ What people are building                 ← ALWAYS-OPEN, cross-community, main page only. The next four sections answer leadership's four questions, each its own `##` section, in this order, directly under Top issues. Built from community calls + all pulls. See `builder-insights`.
 ---
 
-## 🏢 Enterprise                                ← ELEVATED — sits directly under Top issues / the contradictions category (highlighted near the top, not buried). Cross-community. **Scope: CopilotKit's COMMERCIAL surfaces** (Premium / CopilotKit Enterprise / Intelligence Platform / paid tiers), NOT "CopilotKit used at a big company" — apply the `product-surface-scan` classifier. See "Enterprise section".
+## 🎯 Biggest pain points (in our zipcode)      ← ALWAYS-OPEN. Ranked by distinct people; includes pains we don't offer, tagged. See `builder-insights`.
+---
+
+## 🚫 Not a pain point                          ← ALWAYS-OPEN. Stated · Declined · Measured silence only. See `builder-insights`.
+---
+
+## 🌡️ Vibe check                                ← ALWAYS-OPEN. Measured table + 1–2 sentences, no band. See `builder-insights`.
+---
+
+## ⚠️ Product surface contradictions            ← CONDITIONAL — render ONLY when `product-surface-scan` finds a page-vs-page (or page-vs-source) conflict; sits here, under the four builder-insight sections + above Enterprise. One card per contradiction: what conflicts · both quoted claims · both page links · suggested source of truth · Owner blank + Priority. When there are none, OMIT this section — a quiet "Product pages checked for contradictions — none this week." line + the referenced-page list lives inside 🏢 Enterprise instead. See `product-surface-scan`.
+---
+
+## 🏢 Enterprise                                ← ELEVATED — sits directly under the builder-insight sections / the contradictions category (highlighted near the top, not buried). Cross-community. **Scope: CopilotKit's COMMERCIAL surfaces** (Premium / CopilotKit Enterprise / Intelligence Platform / paid tiers), NOT "CopilotKit used at a big company" — apply the `product-surface-scan` classifier. See "Enterprise section".
    ### 🧵 Threads & Persistence {toggle="true"}  ← STANDING, FIRST subsection, COLLAPSIBLE. Every in-window item whose SUBJECT is a chat thread or persistence, both communities, one linked row each. Always renders — say "None this week." when empty. See "Threads & Persistence watch".
    ### 🚩 Enterprise questions & complaints     ← any enterprise-related question/complaint this week (e.g. threads/persistence = the "enterprise threads" tier). Each a card with owner + priority.
    ### 🎯 Prospective enterprise customers {toggle="true"}   ← COLLAPSIBLE, company-first. Community members who look like enterprise prospects (e.g. Jasper AI), deep-enriched (LinkedIn + company site + size) via `enrich-prospect`, each with a **Passed to (sales):** owner field. See "Prospective enterprise customers".
@@ -263,13 +279,13 @@ If a per-community subsection is empty, render "No X this week." Don't omit the 
 
 **Page split is mandatory, not conditional.** AG-UI always gets its own sub-page (even when thin); the main page is always the CopilotKit report. 🏢 Enterprise, 🔝 Top issues, and 🔄 Patterns — the takeaways are cross-community on the main page. 🟠 Reddit Pulse is split per community (each page scores its own posts). Gaps / Methodology are split per page; AG-UI keeps a short AG-UI-scoped Patterns that points back to the main takeaways.
 
-**Order on the main page:** `## 📦 CopilotKit` header + companion link **first**, then `## 🔝 Top issues of the week`, then the CopilotKit community body. (There is no `## TL;DR` heading — that wrapper was removed; Demand/Pain/Docs/Resolved/Pulse/ops sit directly under Top issues. Front-door breaks are the Top issues, not a separate TL;DR line.) The AG-UI sub-page opens with its `## 🔷 AG-UI` header + companion link, then its **own** `## 🔝 Top issues of the week — AG-UI`.
+**Order on the main page:** `## 📦 CopilotKit` header + companion link **first**, then `## 🔝 Top issues of the week`, then the four builder-insight sections (🛠️ · 🎯 · 🚫 · 🌡️), then ⚠️ contradictions (when present) and 🏢 Enterprise, then the CopilotKit community body. (There is no `## TL;DR` heading — that wrapper was removed; Demand/Pain/Docs/Resolved/Pulse/ops sit directly under Top issues. Front-door breaks are the Top issues, not a separate TL;DR line.) The AG-UI sub-page opens with its `## 🔷 AG-UI` header + companion link, then its **own** `## 🔝 Top issues of the week — AG-UI`.
 
 **Sub-page naming.** Title the AG-UI sub-page `Weekly Community Signal — AG-UI — <Mon DD>-<DD>, <YYYY>`. Main page keeps `Weekly Community Signal — <Mon DD>-<DD>, <YYYY>`.
 
 ## Page rendering rules
 
-- **Always-open sections:** Header, 📦/🔷 community header + companion link, 🆕 What changed since last report, 🔝 Top issues of the week, 🏢 Enterprise (all subsections), ✅ Resolved this week, Gaps & follow-ups.
+- **Always-open sections:** Header, 📦/🔷 community header + companion link, 🆕 What changed since last report, 🔝 Top issues of the week, the four builder-insight sections (🛠️ · 🎯 · 🚫 · 🌡️), 🏢 Enterprise (all subsections), ✅ Resolved this week, Gaps & follow-ups.
 - **📈 Trends is a collapsible heading toggle** (`## 📈 Trends {toggle="true"}`) — its whole body (both tables + notes) is **tab-indented** to nest inside the toggle. (Notion heading-toggles only collapse children that are indented; un-indented tables render outside the toggle.)
 - **Toggle headings:** every Top-issue card (`### N. … {toggle="true"}`), **every item card in 🔥 Demand / 💢 Pain / 📚 Docs** (`#### … {toggle="true"}` — see "Section item cards"; the 🔥/💢/📚 section headers themselves are plain `###`, not toggles), and **each 🟠 Reddit Pulse section** (`## … {toggle="true"}`, with its score + band in the heading so it reads while collapsed). Card/body lines **tab-indented** to sit inside the toggle.
 - **No 🚨 sirens on the Top-issue cards.** Rank them `### 1.` / `### 2.` … — the numbering carries the priority.
@@ -451,7 +467,7 @@ When the algorithm changes, update the child page (don't recreate it) AND this s
 
 ## Enterprise section (elevated, current-employer rule)
 
-🏢 Enterprise is **cross-community and elevated to the top of the main page — directly under 🔝 Top issues (and the ⚠️ contradictions category when present), above the CopilotKit community body** (per Nathan: enterprise gets highlighted, not buried).
+🏢 Enterprise is **cross-community and elevated to the top of the main page — directly under the four builder-insight sections that follow 🔝 Top issues (and the ⚠️ contradictions category when present), above the CopilotKit community body** (per Nathan: enterprise gets highlighted, not buried).
 
 **Scope — commercial surfaces only.** This section is CopilotKit's **commercial product** (Premium / CopilotKit Enterprise / Intelligence Platform / Cloud / paid-tier / license-gated), **not** "CopilotKit running at an enterprise company." Use the `product-surface-scan` **classifier** to decide whether a report belongs here: it belongs only if it hits a commercial surface (threads/persistence paid boundary, Inspector, Cloud/API-keys, self-host license/Helm, SSO/RBAC/SOC 2, analytics/self-learning, premium UI / Angular SDK, Slack/Teams, or a pricing/licensing question). A free-OSS bug (React SDK, AG-UI protocol, a backend/framework connection, a third-party integration's own auth) is a normal community issue **even when the reporter is at a big company** → Pain/Demand, not here. The "Surfaces this week" list is the `product-surface-scan` output, refreshed each run.
 
@@ -613,5 +629,7 @@ Test before publishing: read each parenthetical aloud and ask "would a non-engin
 - `loom-walkthrough` — the ≤10-minute plain-spoken walkthrough briefing, generated after every report (last step)
 - `report-sources` — subagent: the "Report Sources" child page defending every placement with evidence (front-door, rank, section, attribution, resolved, enterprise, maturity)
 - `carry-forward-owners` — diffs this report against the prior one and prints the owners of recurring items so they don't silently reset to blank (print-only; Nathan re-tags)
+- `community-conversations` — subagent: the week's community (non-sales) calls from the Slack scheduling post + Fireflies → per-call building / pain / not-a-pain / quality evidence
+- `builder-insights` — rules for the four sections under Top issues (🛠️ what people build · 🎯 zipcode pains · 🚫 not a pain · 🌡️ measured vibe check)
 - `enterprise` — standalone enterprise view (run separately or invoked here)
 - `topic-search` — ad-hoc cross-repo topic lookup

@@ -17,7 +17,9 @@ This repo carries a runnable Claude Code skill suite under `.claude/skills/` for
 | "go" / "weekly report" / "community signals" / "run routine" | `weekly-report` (orchestrator — spawns subagents for Discord, GitHub, deep-read, enrichment) |
 | "find all reports about X in last N days" / "search across both communities" | `topic-search` |
 | "enterprise report" / "who at enterprise this week" / "enterprise status" | `enterprise` |
-| (invoked by `weekly-report`) | `product-surface-scan` · `front-door-triage` · `deep-read-issue` · `release-scan` · `enrich-reporter` · `enrich-prospect` · `report-sources` |
+| (invoked by `weekly-report`) | `product-surface-scan` · `front-door-triage` · `deep-read-issue` · `release-scan` · `enrich-reporter` · `enrich-prospect` · `report-sources` · `community-conversations` |
+| "builder insights" / "what are people building" / "vibe check on the community" | `builder-insights` (synthesis rules) |
+| "community calls this week" / "what did the non-sales calls say" | `community-conversations` |
 | "draft Slack TL;DR" / "build the Slack message" | `slack-tldr` |
 | "carry forward owners" / "who owned this last week" / "owner continuity" (also auto-run near the end of every report) | `carry-forward-owners` |
 | "loom script" / "record the loom" / "walkthrough script" (also auto-run as the last step of every report) | `loom-walkthrough` |
@@ -35,6 +37,7 @@ weekly-report (main)
 ├─→ deep-read-issue subagent   (file paths, reviewer concerns, hidden bugs)
 ├─→ enrich-reporter subagent   (gh api users/<login>, enterprise classify — all reporters)
 ├─→ enrich-prospect subagent   (deep: LinkedIn + company website + size — prospect shortlist only)
+├─→ community-conversations    (non-sales website-booked calls: Slack scheduling post + Fireflies → the four sections under Top issues)
 ├─→ report-sources subagent    (evidence-backed defense of every placement → "Report Sources" child page)
 ├─→ carry-forward-owners       (diff vs last week's report → print owners of recurring items; Nathan re-tags)
 └─→ Synthesize → Notion page + Slack JSON via slack-tldr
