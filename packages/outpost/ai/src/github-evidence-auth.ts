@@ -16,12 +16,23 @@ import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
 
 /**
- * Evidence reads fetch commits, file contents and release metadata. `contents:read`
- * covers all three; `metadata:read` is implicit in every installation token. Asking
- * for a narrowed token means a leaked one cannot write, and can read nothing the App
- * is installed for beyond repository contents and that implicit repository metadata.
+ * Evidence reads fetch commits, file contents and release metadata, and only from the two
+ * public repositories `support-agent.ts` allowlists. GitHub serves all three for a public
+ * repository to any token, whatever its permissions, so the token asks for nothing beyond
+ * `metadata:read`, which the App already holds. It must not ask for `contents:read`: the App
+ * is not granted it, and GitHub refuses the whole exchange with a 422 rather than narrowing.
+ * The App is deliberately not granted it either: it is installed on every org repository,
+ * private ones included, and reads untrusted issue text.
  */
-const EVIDENCE_PERMISSIONS = { contents: 'read' } as const;
+const EVIDENCE_PERMISSIONS = { metadata: 'read' } as const;
+
+/**
+ * The token is narrowed to the one allowlisted repository this installation covers, so a
+ * leaked one cannot even list metadata of the org's other repositories. `ag-ui-protocol/ag-ui`
+ * belongs to another org and cannot be named here; as a public repository it is readable with
+ * this token all the same.
+ */
+const EVIDENCE_REPOSITORIES: readonly string[] = ['CopilotKit'];
 
 /**
  * Installation ids are positive decimal integers; `Number` alone would accept `1e3` and `0x1f`.
@@ -205,6 +216,8 @@ export type InstallationTokenSource = (options: {
     type: 'installation';
     installationId: number;
     permissions: Record<string, string>;
+    /** Repository names, within the installation's owner, the token is narrowed to. */
+    repositoryNames?: string[];
     /**
      * Skip the strategy's cache and exchange again (`dist-node/index.js:182`). A call that
      * overlaps another for the same installation and permissions still shares that call's
@@ -388,6 +401,7 @@ function installationAuth(
                 type: 'installation',
                 installationId: credentials.installationId,
                 permissions: EVIDENCE_PERMISSIONS,
+                repositoryNames: [...EVIDENCE_REPOSITORIES],
                 ...(skipCache && { refresh: true }),
             });
         });

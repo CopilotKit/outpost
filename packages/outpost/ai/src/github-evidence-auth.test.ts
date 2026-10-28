@@ -51,14 +51,15 @@ describe('GitHub evidence authentication', () => {
         });
     });
 
-    it('authorizes evidence requests with an installation token narrowed to contents:read', async () => {
+    it('authorizes evidence requests with a metadata:read token narrowed to the CopilotKit repository', async () => {
         const { create, auth } = fakeAppAuth();
         const resolver = githubEvidenceAuthFromEnv(CREDENTIALS, create);
         expect(await resolver.authorization()).toBe(`Bearer ${TOKEN}`);
         expect(auth).toHaveBeenCalledWith({
             type: 'installation',
             installationId: 7890,
-            permissions: { contents: 'read' },
+            permissions: { metadata: 'read' },
+            repositoryNames: ['CopilotKit'],
         });
     });
 
@@ -803,8 +804,8 @@ describe('GitHub evidence authentication over the real @octokit/auth-app', () =>
         body: JSON.stringify({
             token,
             expires_at: new Date(Date.now() + 3_600_000).toISOString().replace(/\.\d+Z$/, 'Z'),
-            permissions: { contents: 'read', metadata: 'read' },
-            repository_selection: 'all',
+            permissions: { metadata: 'read' },
+            repository_selection: 'selected',
         }),
     });
 
@@ -859,7 +860,7 @@ describe('GitHub evidence authentication over the real @octokit/auth-app', () =>
     });
     const elapse = (ms: number) => vi.setSystemTime(Date.now() + ms);
 
-    it('mints once, signed as the App and narrowed to contents:read, then serves the SDK cache', async () => {
+    it('mints once, signed as the App and narrowed to metadata:read on CopilotKit, then serves the SDK cache', async () => {
         const exchanges = tokenEndpoint();
         const auth = resolver();
         expect(await auth.authorization()).toBe('Bearer ghs_syntheticexchange1');
@@ -867,7 +868,10 @@ describe('GitHub evidence authentication over the real @octokit/auth-app', () =>
         expect(await auth.authorization()).toBe('Bearer ghs_syntheticexchange1');
         expect(exchanges).toHaveLength(1);
         expect(exchanges[0]?.authorization).toMatch(/^bearer [\w-]+\.[\w-]+\.[\w-]+$/);
-        expect(exchanges[0]?.body).toEqual({ permissions: { contents: 'read' } });
+        expect(exchanges[0]?.body).toEqual({
+            permissions: { metadata: 'read' },
+            repositories: ['CopilotKit'],
+        });
     });
 
     // Each of these is a 2xx the SDK returns as a success and caches on the strategy this
