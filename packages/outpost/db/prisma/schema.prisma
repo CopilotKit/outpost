@@ -106,7 +106,7 @@ model Message {
     isAiGenerated     Boolean     @default(false)
     confidenceScore    Float?
     confidenceLevel    String?     // "HIGH" | "MEDIUM" | "LOW"
-    feedback           String?     // "POSITIVE" | "NEGATIVE" | null (no feedback yet)
+    feedback           String?     // "POSITIVE" | "NEGATIVE" | "COMMENT_DELETED" (GitHub comment gone; reaction poll stops) | null (no feedback yet)
     externalCommentId  String?     // GitHub comment/discussion-comment ID this message was posted as, if applicable
     // Inbound provider message ID this row was created FROM (Postmark MessageID today).
     // A real column rather than a JSON key so redelivery dedup is an indexed lookup and

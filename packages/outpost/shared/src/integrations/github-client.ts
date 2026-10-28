@@ -17,8 +17,11 @@ export interface GithubClientConfig {
     installationId: string;
 }
 
-/** Minimal interface for the one Octokit call this module needs. */
+/** Minimal interface for the Octokit calls this module needs. */
 export interface GithubReactionClient {
+    repos: {
+        get(params: { owner: string; repo: string }): Promise<unknown>;
+    };
     reactions: {
         listForIssueComment(params: {
             owner: string;
@@ -67,4 +70,36 @@ export async function listCommentReactions(
     return response.data
         .filter((r) => r.user !== null)
         .map((r) => ({ content: r.content, login: r.user!.login }));
+}
+
+/**
+ * True when an Octokit call failed with HTTP 404. Octokit's RequestError
+ * carries the response status on `status`.
+ */
+export function isGithubNotFound(error: unknown): boolean {
+    return (
+        typeof error === 'object' &&
+        error !== null &&
+        (error as { status?: unknown }).status === 404
+    );
+}
+
+/**
+ * Whether the App can see `owner/repo`. GitHub answers 404 both for a deleted
+ * comment and for a repo the App cannot see; only the first means the comment
+ * is gone for good, so callers check this before treating a comment 404 as a
+ * deletion. A 404 on the repo returns false; any other failure propagates.
+ */
+export async function isRepoVisible(
+    client: GithubReactionClient,
+    owner: string,
+    repo: string,
+): Promise<boolean> {
+    try {
+        await client.repos.get({ owner, repo });
+        return true;
+    } catch (error) {
+        if (isGithubNotFound(error)) return false;
+        throw error;
+    }
 }
