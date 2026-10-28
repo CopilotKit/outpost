@@ -7,5 +7,10 @@ export type {
     AccountStore,
     ExistingAccount,
 } from './hubspot-sync.js';
-export { createGithubClient, listCommentReactions } from './github-client.js';
+export {
+    createGithubClient,
+    listCommentReactions,
+    isGithubNotFound,
+    isRepoVisible,
+} from './github-client.js';
 export type { GithubClientConfig, GithubReactionClient, CommentReaction } from './github-client.js';

@@ -1,10 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MockInstance } from 'vitest';
 
 const mockMessageFindMany = vi.fn();
 const mockMessageUpdate = vi.fn();
 const mockCreateJob = vi.fn();
 const mockListCommentReactions = vi.fn();
 const mockCreateGithubClient = vi.fn().mockReturnValue({});
+const mockIsRepoVisible = vi.fn();
 
 vi.mock('@copilotkit/outpost/db', () => ({
     prisma: {
@@ -18,6 +20,8 @@ vi.mock('@copilotkit/outpost/db', () => ({
 vi.mock('@copilotkit/outpost/shared', () => ({
     createGithubClient: (...args: unknown[]) => mockCreateGithubClient(...args),
     listCommentReactions: (...args: unknown[]) => mockListCommentReactions(...args),
+    isRepoVisible: (...args: unknown[]) => mockIsRepoVisible(...args),
+    isGithubNotFound: (error: unknown) => (error as { status?: unknown } | null)?.status === 404,
 }));
 
 vi.mock('../../create-job.js', () => ({
@@ -26,6 +30,7 @@ vi.mock('../../create-job.js', () => ({
 
 import {
     handleGithubReactionPoll,
+    COMMENT_DELETED_FEEDBACK,
     GITHUB_REACTION_POLL_CONCURRENCY,
 } from '../github-reaction-poll.js';
 import { JobType } from '../../types.js';
@@ -128,7 +133,7 @@ describe('handleGithubReactionPoll', () => {
         expect(mockMessageUpdate).not.toHaveBeenCalled();
         expect(mockCreateJob).not.toHaveBeenCalled();
         expect(result.success).toBe(true);
-        expect(result.data).toEqual({ checked: 1, updated: 0 });
+        expect(result.data).toEqual({ checked: 1, updated: 0, deleted: 0 });
     });
 
     it('skips a message gracefully when ticket.user.externalId is null', async () => {
@@ -146,7 +151,7 @@ describe('handleGithubReactionPoll', () => {
         expect(mockMessageUpdate).not.toHaveBeenCalled();
         expect(mockCreateJob).not.toHaveBeenCalled();
         expect(result.success).toBe(true);
-        expect(result.data).toEqual({ checked: 1, updated: 0 });
+        expect(result.data).toEqual({ checked: 1, updated: 0, deleted: 0 });
     });
 
     it('catches a listCommentReactions rejection, logs, and continues without updating', async () => {
@@ -249,7 +254,10 @@ describe('handleGithubReactionPoll', () => {
 
             expect(state.peak).toBeGreaterThan(1);
             expect(mockListCommentReactions).toHaveBeenCalledTimes(40);
-            expect(result).toEqual({ success: true, data: { checked: 40, updated: 0 } });
+            expect(result).toEqual({
+                success: true,
+                data: { checked: 40, updated: 0, deleted: 0 },
+            });
         });
 
         it('caps the number of GitHub reads in flight', async () => {
@@ -287,7 +295,105 @@ describe('handleGithubReactionPoll', () => {
                 ticketId: 'ticket-17',
                 reason: expect.stringContaining('GitHub reaction'),
             });
-            expect(result).toEqual({ success: true, data: { checked: 20, updated: 2 } });
+            expect(result).toEqual({
+                success: true,
+                data: { checked: 20, updated: 2, deleted: 0 },
+            });
         });
+    });
+});
+
+describe('handleGithubReactionPoll: comments that 404', () => {
+    // Prod polled the same 12 deleted CopilotKit/CopilotKit comments on every run
+    // and logged a "Failed to list reactions ... Not Found" error for each, forever.
+    function notFound(): Error {
+        return Object.assign(new Error('Not Found'), { status: 404 });
+    }
+
+    function message(id: string, sourceId = 'owner/repo#42') {
+        return {
+            id,
+            ticketId: `ticket-${id}`,
+            externalCommentId: '999',
+            ticket: { sourceId, user: { externalId: 'reporter-login' } },
+        };
+    }
+
+    let consoleErrorSpy: MockInstance<typeof console.error>;
+    let consoleLogSpy: MockInstance<typeof console.log>;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        process.env.GITHUB_APP_ID = 'app-1';
+        process.env.GITHUB_PRIVATE_KEY = 'key';
+        process.env.GITHUB_INSTALLATION_ID = '123';
+        consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+        consoleErrorSpy.mockRestore();
+        consoleLogSpy.mockRestore();
+    });
+
+    it('marks a deleted comment so it is not polled again, with one info line and no error', async () => {
+        mockMessageFindMany.mockResolvedValue([message('msg-1')]);
+        mockListCommentReactions.mockRejectedValue(notFound());
+        mockIsRepoVisible.mockResolvedValue(true);
+
+        const result = await handleGithubReactionPoll({}, context);
+
+        expect(mockMessageUpdate).toHaveBeenCalledWith({
+            where: { id: 'msg-1' },
+            data: { feedback: COMMENT_DELETED_FEEDBACK },
+        });
+        expect(consoleErrorSpy).not.toHaveBeenCalled();
+        const deletedLines = consoleLogSpy.mock.calls.filter((args) =>
+            String(args[0]).includes('no longer exists'),
+        );
+        expect(deletedLines).toHaveLength(1);
+        expect(String(deletedLines[0][0])).toContain('msg-1');
+        expect(mockCreateJob).not.toHaveBeenCalled();
+        expect(result).toEqual({ success: true, data: { checked: 1, updated: 0, deleted: 1 } });
+    });
+
+    it('does not mark anything when the repo itself is not visible, and reports the repo once', async () => {
+        mockMessageFindMany.mockResolvedValue([message('msg-1'), message('msg-2')]);
+        mockListCommentReactions.mockRejectedValue(notFound());
+        mockIsRepoVisible.mockResolvedValue(false);
+
+        const result = await handleGithubReactionPoll({}, context);
+
+        expect(mockMessageUpdate).not.toHaveBeenCalled();
+        expect(mockIsRepoVisible).toHaveBeenCalledTimes(1);
+        expect(mockIsRepoVisible).toHaveBeenCalledWith(expect.anything(), 'owner', 'repo');
+        expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+        expect(String(consoleErrorSpy.mock.calls[0][0])).toContain('owner/repo');
+        expect(result).toEqual({ success: true, data: { checked: 2, updated: 0, deleted: 0 } });
+    });
+
+    it('leaves the message pending and logs an error when the repo check itself fails', async () => {
+        mockMessageFindMany.mockResolvedValue([message('msg-1')]);
+        mockListCommentReactions.mockRejectedValue(notFound());
+        mockIsRepoVisible.mockRejectedValue(new Error('Bad credentials'));
+
+        const result = await handleGithubReactionPoll({}, context);
+
+        expect(mockMessageUpdate).not.toHaveBeenCalled();
+        expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+        expect(result).toEqual({ success: true, data: { checked: 1, updated: 0, deleted: 0 } });
+    });
+
+    it('treats a non-404 failure as transient: logs it, does not mark, does not check the repo', async () => {
+        mockMessageFindMany.mockResolvedValue([message('msg-1')]);
+        mockListCommentReactions.mockRejectedValue(
+            Object.assign(new Error('Server Error'), { status: 502 }),
+        );
+
+        await handleGithubReactionPoll({}, context);
+
+        expect(mockIsRepoVisible).not.toHaveBeenCalled();
+        expect(mockMessageUpdate).not.toHaveBeenCalled();
+        expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
     });
 });
