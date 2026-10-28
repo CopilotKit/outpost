@@ -17,7 +17,7 @@ Railway auto-deploys from GitHub and natively supports Docker-based services.
 2. Create a new project on [Railway](https://railway.app)
 3. Add a **PostgreSQL** service (Railway has native Postgres with pgvector support)
 4. Enable pgvector: connect to the database and run `CREATE EXTENSION IF NOT EXISTS vector;`
-5. Add seven services from the repo, each pointing to its Dockerfile and `railway.toml` (set each service's Config file path to `apps/<app>/railway.toml`, Root Directory empty — build context must be repo root):
+5. Add seven services from the repo, each pointing to its Dockerfile. Their build and deploy settings live in `.railway/railway.ts` and reach Railway through `railway config apply` (leave each service's Config file path and Root Directory empty — build context must be repo root):
     - **outpost-web** — `apps/web/Dockerfile` (web service, port 3000, health check `/api/health`)
     - **outpost-discord-bot** — `apps/discord-bot/Dockerfile` (background worker, no public URL needed — gateway connects outbound)
     - **outpost-github-app** — `apps/github-app/Dockerfile` (web service, port 3200, needs public URL for webhooks)
@@ -127,7 +127,7 @@ Outpost's GitHub integration (`apps/github-app`) responds to issues and discussi
 
     Optional: `GITHUB_TEAM_LOGINS` (comma-separated GitHub logins treated as internal team members, used by triage logic).
 
-5. **Deploy.** `outpost-github-app` is already defined as a Railway service (see the Quick Start section above) — point its Config file path at `apps/github-app/railway.toml`, leave Root Directory empty, add the env vars, deploy. Health check hits `GET /health`.
+5. **Deploy.** `outpost-github-app` is already defined as a Railway service (see the Quick Start section above) — its build and deploy settings come from `.railway/railway.ts` (run `railway config apply`), leave Root Directory empty, add the env vars, deploy. Health check hits `GET /health`.
 
 6. **Verify.** Open an issue on the installed repo. The agent should reply with an AI-generated answer plus a "Was this helpful? 👍/👎" prompt. React to it, then either wait for the next 24h poll or trigger `GITHUB_REACTION_POLL` manually to confirm the reaction lands as `feedback` on the `Message` row.
 

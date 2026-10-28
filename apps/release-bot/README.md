@@ -321,7 +321,7 @@ summary written to replace them.
 
 ## Deployment
 
-A Railway cron service. `railway.toml` carries the build config, the restart
+A Railway cron service. Its entry in the repo's `.railway/railway.ts` carries the build config, the restart
 policy, the schedule and the watch patterns, so a recreated service is still
 scheduled rather than running once at deploy and never again, and an unrelated
 push elsewhere in the monorepo does not trigger an extra run.
@@ -364,8 +364,8 @@ channel at once could both decide the same release is unannounced and both post
 it. It also means the interval is not a safety limit: Railway allows anything
 down to 5 minutes, and hourly is a choice about cost and channel noise.
 
-To change it, edit `cronSchedule` in `railway.toml` and redeploy. Railway only
-applies the schedule from that file on a deploy.
+To change it, edit `cronSchedule` in `.railway/railway.ts` and run
+`railway config apply`. Railway does not read that file on a deploy.
 
 ### YouTube API key
 
@@ -397,11 +397,11 @@ allowance of 10,000 a day.
 
 1. In the Outpost Railway project, add a service from the `CopilotKit/outpost`
    repo, named `outpost-release-bot`.
-2. Under Settings -> Config-as-code, set the config file path to
-   `apps/release-bot/railway.toml`. Leave Root Directory empty: the build context
-   has to be the repo root, because the Dockerfile runs `turbo prune` across the
-   monorepo. The file sets the Dockerfile build, the hourly schedule, the restart
-   policy and the watch patterns, so none of those need setting in the dashboard.
+2. Leave Root Directory and the config file path empty: the build context has
+   to be the repo root, because the Dockerfile runs `turbo prune` across the
+   monorepo. Run `railway config apply`: `.railway/railway.ts` sets the
+   Dockerfile build, the hourly schedule, the restart policy and the watch
+   patterns, so none of those need setting in the dashboard.
 3. Set the variables from the table above under Variables. At minimum
    `DISCORD_BOT_TOKEN`, plus a channel id per source you want running. Release
    sources also need `OPENAI_API_KEY` and `GITHUB_TOKEN`.
