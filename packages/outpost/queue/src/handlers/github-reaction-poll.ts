@@ -8,6 +8,12 @@
  * ticket's original reporter reacted +1 or -1 on that specific comment.
  * A -1 also enqueues an ESCALATION job, matching Discord's
  * "Need more help" button behavior.
+ *
+ * Lookups run GITHUB_REACTION_POLL_CONCURRENCY at a time. One at a time, the
+ * poll needs one GitHub round trip per pending message, and that list only
+ * grows: comments deleted on GitHub stay pending forever. At 256 messages
+ * the serial loop overran the 30s job timeout on every attempt, and the job
+ * was dead-lettered after each scheduled run.
  */
 
 import { prisma } from '@copilotkit/outpost/db';
@@ -15,6 +21,13 @@ import { createGithubClient, listCommentReactions } from '@copilotkit/outpost/sh
 import { createJob } from '../create-job.js';
 import { JobType } from '../types.js';
 import type { GithubReactionPollPayload, JobResult, JobHandlerContext } from '../types.js';
+
+/**
+ * Number of reaction lookups the poll keeps in flight. Well under GitHub's
+ * secondary rate limit of 100 concurrent requests, and enough to check
+ * about 1,000 messages inside the 30s job timeout.
+ */
+export const GITHUB_REACTION_POLL_CONCURRENCY = 8;
 
 /**
  * Parse "owner/repo#number" into its components.
@@ -73,7 +86,7 @@ export async function handleGithubReactionPoll(
     let checked = 0;
     let updated = 0;
 
-    for (const message of pendingMessages) {
+    async function checkMessage(message: (typeof pendingMessages)[number]): Promise<void> {
         checked += 1;
 
         if (
@@ -81,11 +94,11 @@ export async function handleGithubReactionPoll(
             !message.ticket.sourceId ||
             !message.ticket.user?.externalId
         ) {
-            continue;
+            return;
         }
 
         const parsed = parseSourceId(message.ticket.sourceId);
-        if (!parsed) continue;
+        if (!parsed) return;
 
         const reporterLogin = message.ticket.user.externalId;
         const commentId = Number(message.externalCommentId);
@@ -98,11 +111,11 @@ export async function handleGithubReactionPoll(
                 `[GithubReactionPoll] Failed to list reactions for message ${message.id}:`,
                 error instanceof Error ? error.message : String(error),
             );
-            continue;
+            return;
         }
 
         const reporterReaction = reactions.find((r) => r.login === reporterLogin);
-        if (!reporterReaction) continue;
+        if (!reporterReaction) return;
 
         if (reporterReaction.content === '+1') {
             await prisma.message.update({
@@ -122,6 +135,22 @@ export async function handleGithubReactionPoll(
             updated += 1;
         }
     }
+
+    let next = 0;
+    async function drain(): Promise<void> {
+        while (next < pendingMessages.length) {
+            const message = pendingMessages[next];
+            next += 1;
+            await checkMessage(message);
+        }
+    }
+
+    await Promise.all(
+        Array.from(
+            { length: Math.min(GITHUB_REACTION_POLL_CONCURRENCY, pendingMessages.length) },
+            drain,
+        ),
+    );
 
     await context.reportProgress(100);
 

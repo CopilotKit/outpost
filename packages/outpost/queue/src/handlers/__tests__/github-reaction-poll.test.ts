@@ -24,7 +24,10 @@ vi.mock('../../create-job.js', () => ({
     createJob: (...args: unknown[]) => mockCreateJob(...args),
 }));
 
-import { handleGithubReactionPoll } from '../github-reaction-poll.js';
+import {
+    handleGithubReactionPoll,
+    GITHUB_REACTION_POLL_CONCURRENCY,
+} from '../github-reaction-poll.js';
 import { JobType } from '../../types.js';
 
 const context = { reportProgress: vi.fn().mockResolvedValue(undefined), jobId: 'job-1' };
@@ -212,6 +215,79 @@ describe('handleGithubReactionPoll', () => {
                     },
                 },
             },
+        });
+    });
+    describe('GitHub lookup concurrency', () => {
+        // Production had 256 pending messages. Read one at a time at ~240ms each,
+        // the poll ran past its 30s job timeout on every attempt and dead-lettered.
+        function pendingMessages(count: number) {
+            return Array.from({ length: count }, (_, i) => ({
+                id: `msg-${i}`,
+                ticketId: `ticket-${i}`,
+                externalCommentId: String(1000 + i),
+                ticket: { sourceId: 'owner/repo#42', user: { externalId: 'reporter-login' } },
+            }));
+        }
+
+        function trackInFlight() {
+            const state = { inFlight: 0, peak: 0 };
+            mockListCommentReactions.mockImplementation(async () => {
+                state.inFlight += 1;
+                state.peak = Math.max(state.peak, state.inFlight);
+                await new Promise((resolve) => setTimeout(resolve, 5));
+                state.inFlight -= 1;
+                return [];
+            });
+            return state;
+        }
+
+        it('reads reactions for several messages in parallel instead of one at a time', async () => {
+            mockMessageFindMany.mockResolvedValue(pendingMessages(40));
+            const state = trackInFlight();
+
+            const result = await handleGithubReactionPoll({}, context);
+
+            expect(state.peak).toBeGreaterThan(1);
+            expect(mockListCommentReactions).toHaveBeenCalledTimes(40);
+            expect(result).toEqual({ success: true, data: { checked: 40, updated: 0 } });
+        });
+
+        it('caps the number of GitHub reads in flight', async () => {
+            mockMessageFindMany.mockResolvedValue(pendingMessages(40));
+            const state = trackInFlight();
+
+            await handleGithubReactionPoll({}, context);
+
+            expect(state.peak).toBe(GITHUB_REACTION_POLL_CONCURRENCY);
+        });
+
+        it('still applies every reporter reaction when reads run in parallel', async () => {
+            mockMessageFindMany.mockResolvedValue(pendingMessages(20));
+            mockListCommentReactions.mockImplementation(async (_c, _o, _r, commentId: number) => {
+                await new Promise((resolve) => setTimeout(resolve, 1));
+                if (commentId === 1003) return [{ content: '+1', login: 'reporter-login' }];
+                if (commentId === 1017) return [{ content: '-1', login: 'reporter-login' }];
+                if (commentId === 1010) throw new Error('Not Found');
+                return [];
+            });
+
+            const result = await handleGithubReactionPoll({}, context);
+
+            expect(mockMessageUpdate).toHaveBeenCalledTimes(2);
+            expect(mockMessageUpdate).toHaveBeenCalledWith({
+                where: { id: 'msg-3' },
+                data: { feedback: 'POSITIVE' },
+            });
+            expect(mockMessageUpdate).toHaveBeenCalledWith({
+                where: { id: 'msg-17' },
+                data: { feedback: 'NEGATIVE' },
+            });
+            expect(mockCreateJob).toHaveBeenCalledTimes(1);
+            expect(mockCreateJob).toHaveBeenCalledWith(JobType.ESCALATION, {
+                ticketId: 'ticket-17',
+                reason: expect.stringContaining('GitHub reaction'),
+            });
+            expect(result).toEqual({ success: true, data: { checked: 20, updated: 2 } });
         });
     });
 });
