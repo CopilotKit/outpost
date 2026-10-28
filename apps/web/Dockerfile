@@ -56,6 +56,12 @@ WORKDIR /app
 COPY --from=installer --chown=outpost:outpost /app/apps/web/.next/standalone ./
 COPY --from=installer --chown=outpost:outpost /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=installer --chown=outpost:outpost /app/apps/web/public ./apps/web/public
+# Email templates live at the repo root, outside every workspace package, so turbo
+# prune leaves them out of out/full/ and Next standalone tracing cannot see the
+# runtime-computed readFileSync path. Copied from the pruner, which has the whole
+# build context. The standalone server chdirs to /app/apps/web, and the loader finds
+# /app/templates via its ../../templates candidate (outpost#253).
+COPY --from=pruner --chown=outpost:outpost /app/templates ./templates
 # Prisma query engine for linux-musl (required by Next.js standalone)
 COPY --from=installer --chown=outpost:outpost /app/node_modules/.pnpm/@prisma+client*/node_modules/.prisma/client/*.node ./node_modules/.prisma/client/
 COPY --from=installer --chown=outpost:outpost /app/node_modules/.pnpm/@prisma+client*/node_modules/.prisma/client/schema.prisma ./node_modules/.prisma/client/
