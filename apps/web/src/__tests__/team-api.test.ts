@@ -480,6 +480,49 @@ describe('Team API', () => {
         });
     });
 
+    // ── Team list reports hasPassword, never the hash ──────────────────────
+
+    describe('GET /api/team', () => {
+        it('returns hasPassword and never the hash', async () => {
+            mockGetServerSession.mockResolvedValue(adminSession());
+            mockTeamMemberFindMany.mockResolvedValue([
+                {
+                    id: 'a',
+                    name: 'A',
+                    email: 'a@x.io',
+                    role: 'ADMIN',
+                    status: 'ACTIVE',
+                    passwordHash: 'h1-secret-hash',
+                },
+                {
+                    id: 'b',
+                    name: 'B',
+                    email: 'b@x.io',
+                    role: 'MEMBER',
+                    status: 'ACTIVE',
+                    passwordHash: null,
+                },
+            ]);
+
+            const res = await teamGet();
+            const body = await res.json();
+
+            expect(res.status).toBe(200);
+            expect(mockTeamMemberFindMany.mock.calls[0][0].select.passwordHash).toBe(true);
+            expect(body.map((m: { hasPassword: boolean }) => m.hasPassword)).toEqual([true, false]);
+            for (const member of body as Record<string, unknown>[]) {
+                expect(
+                    Object.keys(member).filter(
+                        (k) => k !== 'hasPassword' && /hash|password/i.test(k),
+                    ),
+                ).toEqual([]);
+            }
+            const raw = JSON.stringify(body);
+            expect(raw).not.toContain('passwordHash');
+            expect(raw).not.toContain('h1-secret-hash');
+        });
+    });
+
     // ── MEMBER cannot access team management ───────────────────────────────
 
     describe('Authorization', () => {
