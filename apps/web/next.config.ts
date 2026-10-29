@@ -22,6 +22,14 @@ const nextConfig: NextConfig = {
                     },
                 ],
             },
+            {
+                // Defense in depth for the reset page: the token is in the fragment, which
+                // never reaches Referer, but nothing on this page should leak a referrer.
+                // Must come AFTER the global entry: for the same header key, the later
+                // matching entry wins. No Cache-Control here: Next overwrites it for pages.
+                source: '/reset-password',
+                headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
+            },
         ];
     },
     webpack: (config, { isServer }) => {
