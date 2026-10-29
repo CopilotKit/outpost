@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { UserCircle, Save } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
@@ -15,6 +16,7 @@ interface ProfileData {
 }
 
 export default function ProfilePage() {
+    const router = useRouter();
     const { data: session } = useSession();
     const [profile, setProfile] = useState<ProfileData | null>(null);
     const [name, setName] = useState('');
@@ -24,7 +26,7 @@ export default function ProfilePage() {
     const [confirmNewPassword, setConfirmNewPassword] = useState('');
     const [saving, setSaving] = useState(false);
     const [errors, setErrors] = useState<string[]>([]);
-    const [success, setSuccess] = useState(false);
+    const [success, setSuccess] = useState<string | null>(null);
 
     const fetchProfile = useCallback(async () => {
         try {
@@ -46,7 +48,7 @@ export default function ProfilePage() {
     const handleSave = async () => {
         setSaving(true);
         setErrors([]);
-        setSuccess(false);
+        setSuccess(null);
 
         const payload: Record<string, string> = { name, avatarUrl };
         if (currentPassword || newPassword || confirmNewPassword) {
@@ -62,6 +64,12 @@ export default function ProfilePage() {
                 body: JSON.stringify(payload),
             });
 
+            if (res.status === 401) {
+                // The session was revoked (or a concurrent change won): sign in again.
+                router.replace('/login');
+                return;
+            }
+
             const data = await res.json();
 
             if (!res.ok) {
@@ -69,12 +77,18 @@ export default function ProfilePage() {
                 return;
             }
 
+            const changedPassword = Boolean(payload.newPassword);
             setProfile(data);
             setCurrentPassword('');
             setNewPassword('');
             setConfirmNewPassword('');
-            setSuccess(true);
-            setTimeout(() => setSuccess(false), 3000);
+            if (changedPassword) {
+                // Stays on screen: the user needs to know their other devices were signed out.
+                setSuccess('Password changed. Your other sessions have been signed out.');
+            } else {
+                setSuccess('Profile updated successfully.');
+                setTimeout(() => setSuccess(null), 3000);
+            }
         } catch {
             setErrors(['An unexpected error occurred.']);
         } finally {
@@ -104,7 +118,7 @@ export default function ProfilePage() {
 
                 {success && (
                     <div className="rounded-lg border border-green-500/50 bg-green-500/10 p-3 text-sm text-green-500">
-                        Profile updated successfully.
+                        {success}
                     </div>
                 )}
 
@@ -113,7 +127,10 @@ export default function ProfilePage() {
                         {/* Basic info */}
                         <div className="space-y-4">
                             <div>
-                                <label htmlFor="profileName" className="block text-sm font-medium text-muted-foreground mb-1">
+                                <label
+                                    htmlFor="profileName"
+                                    className="block text-sm font-medium text-muted-foreground mb-1"
+                                >
                                     Name
                                 </label>
                                 <input
@@ -125,8 +142,12 @@ export default function ProfilePage() {
                                 />
                             </div>
                             <div>
-                                <label htmlFor="profileEmail" className="block text-sm font-medium text-muted-foreground mb-1">
-                                    Email <span className="text-muted-foreground/60">(read-only)</span>
+                                <label
+                                    htmlFor="profileEmail"
+                                    className="block text-sm font-medium text-muted-foreground mb-1"
+                                >
+                                    Email{' '}
+                                    <span className="text-muted-foreground/60">(read-only)</span>
                                 </label>
                                 <input
                                     id="profileEmail"
@@ -137,7 +158,10 @@ export default function ProfilePage() {
                                 />
                             </div>
                             <div>
-                                <label htmlFor="profileAvatarUrl" className="block text-sm font-medium text-muted-foreground mb-1">
+                                <label
+                                    htmlFor="profileAvatarUrl"
+                                    className="block text-sm font-medium text-muted-foreground mb-1"
+                                >
                                     Avatar URL
                                 </label>
                                 <input
@@ -153,9 +177,14 @@ export default function ProfilePage() {
 
                         {/* Password change */}
                         <div className="border-t border-border pt-6 space-y-4">
-                            <h3 className="text-sm font-semibold text-foreground">Change Password</h3>
+                            <h3 className="text-sm font-semibold text-foreground">
+                                Change Password
+                            </h3>
                             <div>
-                                <label htmlFor="currentPassword" className="block text-sm font-medium text-muted-foreground mb-1">
+                                <label
+                                    htmlFor="currentPassword"
+                                    className="block text-sm font-medium text-muted-foreground mb-1"
+                                >
                                     Current Password
                                 </label>
                                 <input
@@ -167,7 +196,10 @@ export default function ProfilePage() {
                                 />
                             </div>
                             <div>
-                                <label htmlFor="newPassword" className="block text-sm font-medium text-muted-foreground mb-1">
+                                <label
+                                    htmlFor="newPassword"
+                                    className="block text-sm font-medium text-muted-foreground mb-1"
+                                >
                                     New Password
                                 </label>
                                 <input
@@ -181,7 +213,10 @@ export default function ProfilePage() {
                                 />
                             </div>
                             <div>
-                                <label htmlFor="confirmNewPassword" className="block text-sm font-medium text-muted-foreground mb-1">
+                                <label
+                                    htmlFor="confirmNewPassword"
+                                    className="block text-sm font-medium text-muted-foreground mb-1"
+                                >
                                     Confirm New Password
                                 </label>
                                 <input

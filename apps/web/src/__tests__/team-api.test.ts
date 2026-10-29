@@ -6,6 +6,7 @@ const mockTeamMemberFindMany = vi.fn();
 const mockTeamMemberFindUnique = vi.fn();
 const mockTeamMemberCreate = vi.fn();
 const mockTeamMemberUpdate = vi.fn();
+const mockTeamMemberUpdateMany = vi.fn();
 const mockTeamMemberDelete = vi.fn();
 const mockTeamMemberCount = vi.fn();
 const mockInviteTokenFindUnique = vi.fn();
@@ -22,6 +23,7 @@ vi.mock('@copilotkit/outpost/db', () => ({
             findUnique: (...args: unknown[]) => mockTeamMemberFindUnique(...args),
             create: (...args: unknown[]) => mockTeamMemberCreate(...args),
             update: (...args: unknown[]) => mockTeamMemberUpdate(...args),
+            updateMany: (...args: unknown[]) => mockTeamMemberUpdateMany(...args),
             delete: (...args: unknown[]) => mockTeamMemberDelete(...args),
             count: (...args: unknown[]) => mockTeamMemberCount(...args),
         },
@@ -184,7 +186,7 @@ describe('Team API', () => {
                 token: 'valid-token',
                 expiresAt: new Date(Date.now() + 3600000),
                 usedAt: null,
-                member: { email: 'invited@test.com' },
+                member: { email: 'invited@test.com', status: 'INVITED' },
             });
             mockOrganizationFindFirst.mockResolvedValue({ name: 'TestOrg', logoUrl: null });
 
@@ -255,18 +257,16 @@ describe('Team API', () => {
                 token: 'valid-token',
                 expiresAt: new Date(Date.now() + 3600000),
                 usedAt: null,
-                member: { email: 'invited@test.com' },
+                member: { email: 'invited@test.com', status: 'INVITED' },
             });
-            mockTransaction.mockResolvedValue([
-                {
-                    id: 'invited-1',
-                    name: 'New User',
-                    email: 'invited@test.com',
-                    role: 'MEMBER',
-                    status: 'ACTIVE',
-                },
-                {},
-            ]);
+            // The route runs an interactive transaction that returns the activated member.
+            mockTransaction.mockResolvedValue({
+                id: 'invited-1',
+                name: 'New User',
+                email: 'invited@test.com',
+                role: 'MEMBER',
+                status: 'ACTIVE',
+            });
 
             const res = await acceptPost(
                 jsonRequest('http://localhost:3000/api/team/invite/accept', {
@@ -335,6 +335,148 @@ describe('Team API', () => {
             expect(res.status).toBe(400);
             const body = await res.json();
             expect(body.error).toContain('own role');
+        });
+
+        it('prevents self-disable, with no write', async () => {
+            mockGetServerSession.mockResolvedValue(adminSession());
+
+            const res = await memberPatch(
+                jsonRequest(
+                    'http://localhost:3000/api/team/admin-1',
+                    { status: 'DISABLED' },
+                    'PATCH',
+                ),
+                { params: Promise.resolve({ id: 'admin-1' }) },
+            );
+
+            expect(res.status).toBe(400);
+            const body = await res.json();
+            expect(body.error).toContain('own status');
+            expect(mockTeamMemberUpdate).not.toHaveBeenCalled();
+        });
+
+        it('bumps sessionVersion when disabling a member', async () => {
+            mockGetServerSession.mockResolvedValue(adminSession());
+            mockTeamMemberUpdate.mockResolvedValue({ id: 'member-2', status: 'DISABLED' });
+
+            const res = await memberPatch(
+                jsonRequest(
+                    'http://localhost:3000/api/team/member-2',
+                    { status: 'DISABLED' },
+                    'PATCH',
+                ),
+                { params: Promise.resolve({ id: 'member-2' }) },
+            );
+
+            expect(res.status).toBe(200);
+            expect(mockTeamMemberUpdate).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    where: { id: 'member-2' },
+                    data: { status: 'DISABLED', sessionVersion: { increment: 1 } },
+                }),
+            );
+        });
+
+        // A member who has joined (OIDC) or has a password (create-admin, seed) can sign
+        // in, so enabling them sets ACTIVE.
+        const CAN_SIGN_IN = [{ joinedAt: { not: null } }, { passwordHash: { not: null } }];
+
+        it('enables a joined member as ACTIVE, without a bump', async () => {
+            mockGetServerSession.mockResolvedValue(adminSession());
+            // The never-joined write matches nothing; the joined write matches.
+            mockTeamMemberUpdateMany
+                .mockResolvedValueOnce({ count: 0 })
+                .mockResolvedValueOnce({ count: 1 });
+            mockTeamMemberFindUnique.mockResolvedValue({ id: 'member-2', status: 'ACTIVE' });
+
+            const res = await memberPatch(
+                jsonRequest(
+                    'http://localhost:3000/api/team/member-2',
+                    { status: 'ACTIVE' },
+                    'PATCH',
+                ),
+                { params: Promise.resolve({ id: 'member-2' }) },
+            );
+
+            expect(res.status).toBe(200);
+            expect((await res.json()).status).toBe('ACTIVE');
+            expect(mockTeamMemberUpdateMany).toHaveBeenNthCalledWith(1, {
+                where: { id: 'member-2', joinedAt: null, passwordHash: null },
+                data: { status: 'INVITED' },
+            });
+            expect(mockTeamMemberUpdateMany).toHaveBeenNthCalledWith(2, {
+                where: { id: 'member-2', OR: CAN_SIGN_IN },
+                data: { status: 'ACTIVE' },
+            });
+            expect(mockTeamMemberUpdate).not.toHaveBeenCalled();
+        });
+
+        // Invite accept takes only INVITED members, so ACTIVE with no password would
+        // leave a never-joined member with no way in. Enabling restores INVITED.
+        it.each(['INVITED', 'DISABLED'])(
+            'enables a never-joined %s member as INVITED, never ACTIVE',
+            async () => {
+                mockGetServerSession.mockResolvedValue(adminSession());
+                mockTeamMemberUpdateMany
+                    .mockResolvedValueOnce({ count: 1 })
+                    .mockResolvedValueOnce({ count: 0 });
+                mockTeamMemberFindUnique.mockResolvedValue({
+                    id: 'member-3',
+                    role: 'ADMIN',
+                    status: 'INVITED',
+                });
+
+                const res = await memberPatch(
+                    jsonRequest(
+                        'http://localhost:3000/api/team/member-3',
+                        { status: 'ACTIVE', role: 'ADMIN' },
+                        'PATCH',
+                    ),
+                    { params: Promise.resolve({ id: 'member-3' }) },
+                );
+
+                expect(res.status).toBe(200);
+                expect((await res.json()).status).toBe('INVITED');
+                expect(mockTeamMemberUpdateMany).toHaveBeenNthCalledWith(1, {
+                    where: { id: 'member-3', joinedAt: null, passwordHash: null },
+                    data: { role: 'ADMIN', status: 'INVITED' },
+                });
+                // No write may set ACTIVE on a row with neither joinedAt nor a password.
+                for (const [arg] of mockTeamMemberUpdateMany.mock.calls) {
+                    if (arg.data.status === 'ACTIVE') {
+                        expect(arg.where.OR).toEqual(CAN_SIGN_IN);
+                    }
+                }
+            },
+        );
+
+        it('returns 404 when enabling a member that does not exist', async () => {
+            mockGetServerSession.mockResolvedValue(adminSession());
+            mockTeamMemberUpdateMany.mockResolvedValue({ count: 0 });
+
+            const res = await memberPatch(
+                jsonRequest(
+                    'http://localhost:3000/api/team/missing',
+                    { status: 'ACTIVE' },
+                    'PATCH',
+                ),
+                { params: Promise.resolve({ id: 'missing' }) },
+            );
+
+            expect(res.status).toBe(404);
+            expect(mockTeamMemberFindUnique).not.toHaveBeenCalled();
+        });
+
+        it('does not bump on a role-only change', async () => {
+            mockGetServerSession.mockResolvedValue(adminSession());
+            mockTeamMemberUpdate.mockResolvedValue({ id: 'member-2', role: 'ADMIN' });
+
+            await memberPatch(
+                jsonRequest('http://localhost:3000/api/team/member-2', { role: 'ADMIN' }, 'PATCH'),
+                { params: Promise.resolve({ id: 'member-2' }) },
+            );
+
+            expect(mockTeamMemberUpdate.mock.calls[0][0].data).toEqual({ role: 'ADMIN' });
         });
     });
 
@@ -420,10 +562,9 @@ describe('Team API', () => {
             mockGetServerSession.mockResolvedValue(adminSession());
             mockTeamMemberDelete.mockResolvedValue({});
 
-            const res = await memberDelete(
-                makeRequest('http://localhost:3000/api/team/member-1'),
-                { params: Promise.resolve({ id: 'member-1' }) },
-            );
+            const res = await memberDelete(makeRequest('http://localhost:3000/api/team/member-1'), {
+                params: Promise.resolve({ id: 'member-1' }),
+            });
 
             expect(res.status).toBe(200);
         });
@@ -431,10 +572,9 @@ describe('Team API', () => {
         it('prevents self-removal', async () => {
             mockGetServerSession.mockResolvedValue(adminSession());
 
-            const res = await memberDelete(
-                makeRequest('http://localhost:3000/api/team/admin-1'),
-                { params: Promise.resolve({ id: 'admin-1' }) },
-            );
+            const res = await memberDelete(makeRequest('http://localhost:3000/api/team/admin-1'), {
+                params: Promise.resolve({ id: 'admin-1' }),
+            });
 
             expect(res.status).toBe(400);
             const body = await res.json();
