@@ -392,21 +392,23 @@ model Organization {
 }
 
 model TeamMember {
-    id                 String             @id @default(cuid())
-    name               String
-    email              String             @unique
-    passwordHash       String?
-    role               TeamMemberRole     @default(MEMBER)
-    status             TeamMemberStatus   @default(ACTIVE)
-    avatarUrl          String?
-    invitedBy          String?
-    invitedAt          DateTime?
-    joinedAt           DateTime?
-    tickets            Ticket[]
-    inviteTokens       InviteToken[]
-    externalIdentities ExternalIdentity[]
-    createdAt          DateTime           @default(now())
-    updatedAt          DateTime           @updatedAt
+    id                  String               @id @default(cuid())
+    name                String
+    email               String               @unique
+    passwordHash        String?
+    role                TeamMemberRole       @default(MEMBER)
+    status              TeamMemberStatus     @default(ACTIVE)
+    avatarUrl           String?
+    invitedBy           String?
+    invitedAt           DateTime?
+    joinedAt            DateTime?
+    tickets             Ticket[]
+    inviteTokens        InviteToken[]
+    externalIdentities  ExternalIdentity[]
+    sessionVersion      Int                  @default(0)
+    passwordResetTokens PasswordResetToken[]
+    createdAt           DateTime             @default(now())
+    updatedAt           DateTime             @updatedAt
 }
 
 enum TeamMemberRole {
@@ -517,4 +519,29 @@ model TemplateOverride {
     editedBy  String?
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
+}
+
+model PasswordResetToken {
+    id            String     @id @default(cuid())
+    memberId      String
+    tokenHash     String     @unique
+    issuedVersion Int
+    expiresAt     DateTime
+    usedAt        DateTime?
+    // Admin TeamMember.id for an admin-sent link (spec §10); null for self-service.
+    // Plain string, no FK, so the row survives the admin's removal.
+    requestedById String?
+    createdAt     DateTime   @default(now())
+    member        TeamMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+    @@index([memberId])
+}
+
+model AuthRateLimit {
+    key         String
+    windowStart DateTime
+    count       Int      @default(0)
+
+    @@id([key, windowStart])
+    @@index([windowStart])
 }
