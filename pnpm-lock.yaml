@@ -360,6 +360,9 @@ importers:
       micromark-extension-gfm:
         specifier: ^3.0.0
         version: 3.0.0
+      nodemailer:
+        specifier: ^10.2.1
+        version: 10.2.1
       postmark:
         specifier: ^4.0.0
         version: 4.0.7
@@ -3695,6 +3698,10 @@ packages:
 
   node-releases@2.0.37:
     resolution: {integrity: sha512-1h5gKZCF+pO/o3Iqt5Jp7wc9rH3eJJ0+nh/CIoiRwjRxde/hAHyLPXYN4V3CqKAbiZPSeJFSWHmJsbkicta0Eg==}
+
+  nodemailer@10.2.1:
+    resolution: {integrity: sha512-ZrDNsPFoDMwefNs7sJwrYiEJ/CG4ClJWDZv05iNJsEBWa8GRDry1QJHTJxsuTAY9eDDKjX4k+q3SxslXJOao7w==}
+    engines: {node: '>=20.0.0'}
 
   normalize-path@3.0.0:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
@@ -8649,6 +8656,8 @@ snapshots:
       whatwg-url: 5.0.0
 
   node-releases@2.0.37: {}
+
+  nodemailer@10.2.1: {}
 
   normalize-path@3.0.0: {}
 

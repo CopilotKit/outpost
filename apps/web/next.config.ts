@@ -39,11 +39,10 @@ const nextConfig: NextConfig = {
                 'utf-8-validate',
                 '@slack/web-api',
                 '@slack/bolt',
-                // nodemailer stays nulled: it is not installed, and the SMTP transport
-                // only matters for self-hosted setups. postmark is NOT here: sendEmail
-                // (transpiled from @copilotkit/outpost) loads it in this server bundle,
-                // and nulling it made every Postmark send fail (outpost#253).
-                'nodemailer',
+                // postmark and nodemailer are NOT here: sendEmail (transpiled from
+                // @copilotkit/outpost) loads them in this server bundle. Nulling postmark
+                // made every Postmark send fail (outpost#253); nulling nodemailer made every
+                // SMTP send fail (outpost#206). nodemailer is a dependency of @copilotkit/outpost.
             ];
             for (const pkg of nullPkgs) {
                 config.resolve.alias[pkg] = false;
