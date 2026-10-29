@@ -70,3 +70,7 @@ yarn.lock
 
 # Local AI review pipeline session state (create-review / review-changes)
 .chalk/
+
+# Playwright output (apps/web/e2e)
+apps/web/test-results/
+apps/web/playwright-report/
