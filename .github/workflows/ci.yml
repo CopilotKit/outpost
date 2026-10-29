@@ -380,7 +380,65 @@ jobs:
               run: pnpm typecheck
 
             - name: Test
+              env:
+                  # The "Verify the SystemConfig repair path" step ends with a fresh
+                  # `migrate deploy`, so this database has every table the gated
+                  # real-Postgres tests need.
+                  OUTPOST_TEST_DATABASE_URL: 'postgresql://ci:ci@127.0.0.1:5432/ci'
+                  # Fail, never skip, the *-db tests if the URL above is ever lost.
+                  OUTPOST_REQUIRE_DB_TESTS: '1'
               run: pnpm test
+
+            # The Test step passes when a *-db file skips. Both variables above reach
+            # vitest only through turbo.json's `test.env` list (strict env mode strips
+            # everything else). If that list loses them, or a package-scoped
+            # `@copilotkit/outpost-web#test` task replaces the base one without it, every
+            # *-db file reports "skipped" and the run still exits 0.
+            #
+            # This step reruns those files through the same turbo task with a JSON
+            # reporter, then fails unless each file ran at least one test and every test
+            # passed. The check reads the report, not the environment, so it does not
+            # depend on the passthrough it is checking. --force stops a cached replay;
+            # a replay writes no report, so it would fail here rather than pass.
+            - name: Verify the real-Postgres tests ran
+              env:
+                  OUTPOST_TEST_DATABASE_URL: 'postgresql://ci:ci@127.0.0.1:5432/ci'
+                  OUTPOST_REQUIRE_DB_TESTS: '1'
+              run: |
+                  set -euo pipefail
+                  shopt -s nullglob
+                  files=(apps/web/src/__tests__/*-db.test.ts)
+                  if [ "${#files[@]}" -eq 0 ]; then
+                      echo "FATAL: no apps/web/src/__tests__/*-db.test.ts files found."
+                      exit 1
+                  fi
+                  report="$RUNNER_TEMP/db-tests.json"
+                  rm -f "$report"
+                  pnpm exec turbo run test --filter=@copilotkit/outpost-web --force -- \
+                      --reporter=default --reporter=json --outputFile.json="$report" \
+                      "${files[@]#apps/web/}"
+                  if [ ! -s "$report" ]; then
+                      echo "FATAL: vitest wrote no JSON report to $report."
+                      exit 1
+                  fi
+                  failed=0
+                  for f in "${files[@]}"; do
+                      # A command substitution, so `set -e` stops the step if jq fails.
+                      counts=$(jq -r --arg f "/$f" \
+                          '[.testResults[] | select(.name | endswith($f)) | .assertionResults[].status]
+                           | "\(length) \(map(select(. == "passed")) | length)"' "$report")
+                      read -r total passed <<<"$counts"
+                      if [ "$total" -eq 0 ] || [ "$passed" -ne "$total" ]; then
+                          echo "FATAL: $f: $passed of $total tests passed; the rest were skipped or did not run."
+                          failed=1
+                      else
+                          echo "  $f: $passed/$total passed"
+                      fi
+                  done
+                  if [ "$failed" -ne 0 ]; then
+                      echo "The real-Postgres tests did not run. Check turbo.json's test.env list."
+                      exit 1
+                  fi
 
     # Railway auto-deploys on push to main via GitHub integration.
     # No explicit deploy step needed — Railway watches the repo directly.
