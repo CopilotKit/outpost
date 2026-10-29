@@ -22,6 +22,14 @@ const nextConfig: NextConfig = {
                     },
                 ],
             },
+            {
+                // Defense in depth for the reset page: the token is in the fragment, which
+                // never reaches Referer, but nothing on this page should leak a referrer.
+                // Must come AFTER the global entry: for the same header key, the later
+                // matching entry wins. No Cache-Control here: Next overwrites it for pages.
+                source: '/reset-password',
+                headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
+            },
         ];
     },
     webpack: (config, { isServer }) => {
@@ -39,11 +47,10 @@ const nextConfig: NextConfig = {
                 'utf-8-validate',
                 '@slack/web-api',
                 '@slack/bolt',
-                // nodemailer stays nulled: it is not installed, and the SMTP transport
-                // only matters for self-hosted setups. postmark is NOT here: sendEmail
-                // (transpiled from @copilotkit/outpost) loads it in this server bundle,
-                // and nulling it made every Postmark send fail (outpost#253).
-                'nodemailer',
+                // postmark and nodemailer are NOT here: sendEmail (transpiled from
+                // @copilotkit/outpost) loads them in this server bundle. Nulling postmark
+                // made every Postmark send fail (outpost#253); nulling nodemailer made every
+                // SMTP send fail (outpost#206). nodemailer is a dependency of @copilotkit/outpost.
             ];
             for (const pkg of nullPkgs) {
                 config.resolve.alias[pkg] = false;

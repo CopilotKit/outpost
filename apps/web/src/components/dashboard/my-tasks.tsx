@@ -46,6 +46,7 @@ interface MyTasksProps {
 export function MyTasks({ tasks: initialTasks }: MyTasksProps) {
     const [tasks, setTasks] = useState<Task[]>(initialTasks ?? []);
     const [loading, setLoading] = useState(!initialTasks);
+    const [loadFailed, setLoadFailed] = useState(false);
     const [filterOpen, setFilterOpen] = useState(false);
     const [statusFilter, setStatusFilter] = useState<string | null>(null);
 
@@ -55,10 +56,17 @@ export function MyTasks({ tasks: initialTasks }: MyTasksProps) {
         async function fetchTasks() {
             try {
                 const res = await fetch('/api/dashboard/my-tasks');
+                // Show an error, never the "All caught up" empty state, when the list did not
+                // load. A 401 lands here too: SessionGuard redirects to /login on its next
+                // session read (mount or window focus); this response does not trigger that.
+                if (!res.ok) {
+                    setLoadFailed(true);
+                    return;
+                }
                 const data = await res.json();
                 setTasks(data.tasks);
             } catch {
-                // Silently fail — component will show empty state
+                setLoadFailed(true);
             } finally {
                 setLoading(false);
             }
@@ -66,18 +74,14 @@ export function MyTasks({ tasks: initialTasks }: MyTasksProps) {
         fetchTasks();
     }, [initialTasks]);
 
-    const filteredTasks = statusFilter
-        ? tasks.filter((t) => t.status === statusFilter)
-        : tasks;
+    const filteredTasks = statusFilter ? tasks.filter((t) => t.status === statusFilter) : tasks;
 
     const uniqueStatuses = [...new Set(tasks.map((t) => t.status))];
 
     return (
         <div className="rounded-lg border border-border bg-card">
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
-                <h2 className="text-lg font-semibold text-card-foreground">
-                    My Tasks
-                </h2>
+                <h2 className="text-lg font-semibold text-card-foreground">My Tasks</h2>
                 <div className="relative">
                     <button
                         onClick={() => setFilterOpen(!filterOpen)}
@@ -132,6 +136,15 @@ export function MyTasks({ tasks: initialTasks }: MyTasksProps) {
                 <div className="px-6 py-8 text-center text-sm text-muted-foreground">
                     Loading tasks...
                 </div>
+            ) : loadFailed ? (
+                <div role="alert" data-testid="my-tasks-error">
+                    <EmptyState
+                        icon={<AlertTriangle className="h-6 w-6 text-destructive" />}
+                        title="Couldn't load your tasks"
+                        description="Something went wrong on our side. Reload the page to try again."
+                        className="py-8"
+                    />
+                </div>
             ) : filteredTasks.length === 0 ? (
                 <EmptyState
                     icon={<CheckCircle2 className="h-6 w-6 text-green-500" />}
@@ -175,7 +188,8 @@ export function MyTasks({ tasks: initialTasks }: MyTasksProps) {
                                         <span
                                             className={cn(
                                                 'inline-block rounded-full px-2.5 py-0.5 text-xs font-medium',
-                                                STATUS_COLORS[task.status] ?? 'bg-gray-500/20 text-gray-400',
+                                                STATUS_COLORS[task.status] ??
+                                                    'bg-gray-500/20 text-gray-400',
                                             )}
                                         >
                                             {formatStatus(task.status)}

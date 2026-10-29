@@ -1,9 +1,10 @@
 /**
  * Email sender.
  *
- * Uses Postmark when POSTMARK_SERVER_TOKEN is set.
- * Falls back to SMTP (nodemailer) when SMTP_HOST is set.
- * Falls back to console.log in dev when neither is configured.
+ * Uses Postmark when POSTMARK_SERVER_TOKEN is set and the postmark package loads.
+ * Otherwise uses SMTP (nodemailer) when SMTP_HOST is set and nodemailer loads.
+ * Otherwise prints the message with console.log, in any environment, unless the
+ * caller sets requireTransport.
  */
 import { renderTemplate } from '../templates/renderer.js';
 import { interpolate } from '../templates/interpolate.js';
@@ -25,6 +26,16 @@ interface SendEmailOptions {
     inReplyTo?: string;
     /** References header for threading */
     references?: string;
+    /**
+     * Refuse the console fallback. When no real transport (injected, Postmark, or
+     * SMTP) is available, return a failure and print nothing. The console fallback
+     * prints the full text body into the logs, so a caller whose body carries a link
+     * or token that must not reach the logs sets this (outpost#206). It is opt-in:
+     * without it, an email with no transport is printed.
+     */
+    requireTransport?: boolean;
+    /** 'None' turns off link tracking, so the link is not rewritten through a third party. */
+    trackLinks?: 'None';
 }
 
 interface EmailResult {
@@ -45,6 +56,8 @@ export interface EmailSendOptions {
     messageId?: string;
     inReplyTo?: string;
     references?: string;
+    /** Postmark maps 'None' to TrackLinks: None; SMTP ignores it. */
+    trackLinks?: 'None';
 }
 
 /** Abstraction over the email transport so we can inject mocks. */
@@ -58,7 +71,7 @@ export async function createPostmarkTransport(): Promise<EmailTransport | null> 
     if (!serverToken) return null;
 
     try {
-        const { ServerClient } = await import('postmark');
+        const { ServerClient, Models } = await import('postmark');
         const client = new ServerClient(serverToken);
         return {
             async send(opts: EmailSendOptions) {
@@ -84,36 +97,37 @@ export async function createPostmarkTransport(): Promise<EmailTransport | null> 
                     ReplyTo: opts.replyTo,
                     Headers: headers.length > 0 ? headers : undefined,
                     MessageStream: 'outbound',
+                    TrackLinks:
+                        opts.trackLinks === 'None' ? Models.LinkTrackingOptions.None : undefined,
                 });
 
                 return { id: result.MessageID };
             },
         };
     } catch (err) {
-        console.error('[Email] POSTMARK_SERVER_TOKEN is set but postmark package failed to load:', err);
+        console.error(
+            '[Email] POSTMARK_SERVER_TOKEN is set but postmark package failed to load:',
+            err,
+        );
         return null;
     }
 }
 
 /**
  * Create an SMTP transport via nodemailer. Returns null if SMTP_HOST is not set.
- * nodemailer is an optional peer dependency for self-hosted deployments.
+ * nodemailer is a dependency of @copilotkit/outpost, used when SMTP_HOST is set.
  */
 export async function createSmtpTransport(): Promise<EmailTransport | null> {
     const host = process.env.SMTP_HOST;
     if (!host) return null;
 
     try {
-        // nodemailer is an optional dependency -- only installed in self-hosted setups.
-        // We use a dynamic require via createRequire to avoid TS module resolution errors.
-        const { createRequire } = await import('module');
-        const require = createRequire(import.meta.url);
-        const nodemailer = require('nodemailer') as {
-            createTransport: (config: Record<string, unknown>) => {
-                sendMail: (opts: Record<string, unknown>) => Promise<{ messageId: string }>;
-            };
-        };
-        const transporter = nodemailer.createTransport({
+        // A static specifier, so webpack bundles nodemailer into the web server and
+        // Node resolves it for the worker. The old createRequire(import.meta.url) form
+        // resolved from the build-time source path, which the standalone web image
+        // does not have (outpost#206 e2e).
+        const { createTransport } = await import('nodemailer');
+        const transporter = createTransport({
             host,
             port: Number(process.env.SMTP_PORT || '587'),
             secure: process.env.SMTP_SECURE === 'true',
@@ -161,6 +175,8 @@ export async function sendEmail(options: SendEmailOptions): Promise<EmailResult>
         messageId,
         inReplyTo,
         references,
+        requireTransport,
+        trackLinks,
     } = options;
 
     const rendered = await renderTemplate(template, context, dbLookup);
@@ -184,6 +200,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<EmailResult>
         messageId,
         inReplyTo,
         references,
+        trackLinks,
     };
 
     // Try injected transport first
@@ -201,6 +218,17 @@ export async function sendEmail(options: SendEmailOptions): Promise<EmailResult>
     const smtpTransport = await createSmtpTransport();
     if (smtpTransport) {
         return await attemptSend(smtpTransport, sendOpts, 'smtp');
+    }
+
+    if (requireTransport) {
+        // A transport env var set here means its factory ran but its package failed to
+        // load (the factory logged why), which is not the same fix as a missing env var.
+        const configured = ['POSTMARK_SERVER_TOKEN', 'SMTP_HOST'].filter((v) => process.env[v]);
+        const error =
+            configured.length > 0
+                ? `Email transport configured (${configured.join(', ')}) but its package failed to load`
+                : 'No email transport configured';
+        return { success: false, error, method: 'console' };
     }
 
     // Dev fallback: log to console

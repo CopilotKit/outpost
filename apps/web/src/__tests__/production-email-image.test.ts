@@ -56,4 +56,14 @@ describe('production web image: email', () => {
         const out = webpack(config, { isServer: true });
         expect(out.resolve.alias.postmark).toBeUndefined();
     });
+
+    it('does not replace nodemailer with an empty module in the server bundle', () => {
+        const config = { resolve: { alias: {} as Record<string, unknown> } };
+        const webpack = nextConfig.webpack as (
+            c: typeof config,
+            o: { isServer: boolean },
+        ) => typeof config;
+        const out = webpack(config, { isServer: true });
+        expect(out.resolve.alias.nodemailer).toBeUndefined();
+    });
 });

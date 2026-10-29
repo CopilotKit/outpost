@@ -18,8 +18,15 @@ export async function GET() {
             invitedAt: true,
             joinedAt: true,
             createdAt: true,
+            passwordHash: true,
         },
     });
 
-    return NextResponse.json(members);
+    // The hash is selected only to compute hasPassword; it never leaves the server.
+    return NextResponse.json(
+        members.map(({ passwordHash, ...member }) => ({
+            ...member,
+            hasPassword: passwordHash !== null,
+        })),
+    );
 }

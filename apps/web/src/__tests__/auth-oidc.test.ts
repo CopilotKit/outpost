@@ -4,12 +4,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockTeamMemberFindUnique = vi.fn();
 const mockTeamMemberUpsert = vi.fn();
+const mockTeamMemberCreate = vi.fn();
+const mockTeamMemberUpdate = vi.fn();
 
 vi.mock('@copilotkit/outpost/db', () => ({
     prisma: {
         teamMember: {
             findUnique: mockTeamMemberFindUnique,
             upsert: mockTeamMemberUpsert,
+            create: mockTeamMemberCreate,
+            update: mockTeamMemberUpdate,
         },
     },
 }));
@@ -17,6 +21,15 @@ vi.mock('@copilotkit/outpost/db', () => ({
 vi.mock('@copilotkit/outpost/shared', () => ({
     verifyPassword: vi.fn(),
 }));
+
+function oidcSignInArgs(email: string, name: string | undefined = 'Alice') {
+    return {
+        user: { id: 'oidc-sub-1', name, email },
+        account: { provider: 'oidc', type: 'oauth', providerAccountId: 'oidc-sub-1' } as never,
+        profile: { sub: 'oidc-sub-1', email, name } as never,
+        credentials: undefined,
+    };
+}
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
@@ -165,71 +178,98 @@ describe('OIDC auth', () => {
         });
     });
 
-    describe('signIn callback — auto-provisioning', () => {
-        it('creates TeamMember on first OIDC login', async () => {
+    describe('signIn callback — provisioning and status', () => {
+        it('creates an ACTIVE TeamMember on first OIDC login', async () => {
             mockTeamMemberFindUnique.mockResolvedValue(null);
-            mockTeamMemberUpsert.mockResolvedValue({
-                id: 'member-new',
-                name: 'Alice',
-                email: 'alice@copilotkit.ai',
-                role: 'MEMBER',
-            });
+            mockTeamMemberCreate.mockResolvedValue({ id: 'member-new' });
 
             const { authOptions } = await import('../lib/auth.js');
-            await authOptions.callbacks!.signIn!({
-                user: { id: 'oidc-sub-1', name: 'Alice', email: 'alice@copilotkit.ai' },
-                account: {
-                    provider: 'oidc',
-                    type: 'oauth',
-                    providerAccountId: 'oidc-sub-1',
-                } as never,
-                profile: {
-                    sub: 'oidc-sub-1',
-                    email: 'alice@copilotkit.ai',
-                    name: 'Alice',
-                } as never,
-                credentials: undefined,
-            });
+            const result = await authOptions.callbacks!.signIn!(
+                oidcSignInArgs('alice@copilotkit.ai'),
+            );
 
-            expect(mockTeamMemberUpsert).toHaveBeenCalledWith({
-                where: { email: 'alice@copilotkit.ai' },
-                create: expect.objectContaining({
+            expect(result).toBe(true);
+            expect(mockTeamMemberCreate).toHaveBeenCalledWith({
+                data: expect.objectContaining({
                     name: 'Alice',
                     email: 'alice@copilotkit.ai',
                     role: 'MEMBER',
                     status: 'ACTIVE',
                 }),
-                update: expect.objectContaining({
+            });
+            expect(mockTeamMemberUpsert).not.toHaveBeenCalled();
+        });
+
+        it('promotes an INVITED member to ACTIVE with joinedAt', async () => {
+            mockTeamMemberFindUnique.mockResolvedValue({ id: 'm-inv', status: 'INVITED' });
+            mockTeamMemberUpdate.mockResolvedValue({ id: 'm-inv' });
+
+            const { authOptions } = await import('../lib/auth.js');
+            const result = await authOptions.callbacks!.signIn!(
+                oidcSignInArgs('alice@copilotkit.ai'),
+            );
+
+            expect(result).toBe(true);
+            expect(mockTeamMemberUpdate).toHaveBeenCalledWith({
+                where: { id: 'm-inv' },
+                data: expect.objectContaining({
+                    status: 'ACTIVE',
+                    joinedAt: expect.any(Date),
                     name: 'Alice',
                 }),
             });
         });
 
-        it('allows sign-in even when upsert fails', async () => {
-            mockTeamMemberUpsert.mockRejectedValue(new Error('DB timeout'));
+        it('updates name and avatar for an ACTIVE member without touching status', async () => {
+            mockTeamMemberFindUnique.mockResolvedValue({ id: 'm1', status: 'ACTIVE' });
+            mockTeamMemberUpdate.mockResolvedValue({ id: 'm1' });
 
             const { authOptions } = await import('../lib/auth.js');
-            const result = await authOptions.callbacks!.signIn!({
-                user: { id: 'oidc-sub-1', name: 'Alice', email: 'alice@copilotkit.ai' },
-                account: {
-                    provider: 'oidc',
-                    type: 'oauth',
-                    providerAccountId: 'oidc-sub-1',
-                } as never,
-                profile: {
-                    sub: 'oidc-sub-1',
-                    email: 'alice@copilotkit.ai',
-                    name: 'Alice',
-                } as never,
-                credentials: undefined,
-            });
+            await authOptions.callbacks!.signIn!(oidcSignInArgs('alice@copilotkit.ai'));
 
-            expect(result).toBe(true);
-            expect(mockTeamMemberUpsert).toHaveBeenCalled();
+            const call = mockTeamMemberUpdate.mock.calls[0][0] as { data: Record<string, unknown> };
+            expect(call.data).toEqual({ name: 'Alice', avatarUrl: null });
+        });
+
+        it('denies a DISABLED member', async () => {
+            mockTeamMemberFindUnique.mockResolvedValue({ id: 'm-off', status: 'DISABLED' });
+
+            const { authOptions } = await import('../lib/auth.js');
+            const result = await authOptions.callbacks!.signIn!(
+                oidcSignInArgs('alice@copilotkit.ai'),
+            );
+
+            expect(result).toBe('/login?error=AccessDenied');
+            expect(mockTeamMemberUpdate).not.toHaveBeenCalled();
+            expect(mockTeamMemberCreate).not.toHaveBeenCalled();
+        });
+
+        it('denies sign-in when the database work throws', async () => {
+            mockTeamMemberFindUnique.mockRejectedValue(new Error('DB timeout'));
+
+            const { authOptions } = await import('../lib/auth.js');
+            const result = await authOptions.callbacks!.signIn!(
+                oidcSignInArgs('alice@copilotkit.ai'),
+            );
+
+            expect(result).toBe('/login?error=AccessDenied');
+        });
+
+        it('looks up a mixed-case IdP email as lowercase', async () => {
+            mockTeamMemberFindUnique.mockResolvedValue({ id: 'm1', status: 'ACTIVE' });
+            mockTeamMemberUpdate.mockResolvedValue({ id: 'm1' });
+
+            const { authOptions } = await import('../lib/auth.js');
+            await authOptions.callbacks!.signIn!(oidcSignInArgs('Alex@CopilotKit.ai'));
+
+            expect(mockTeamMemberFindUnique).toHaveBeenCalledWith(
+                expect.objectContaining({ where: { email: 'alex@copilotkit.ai' } }),
+            );
         });
 
         it('uses email local-part as name when user.name and profile.name are missing', async () => {
-            mockTeamMemberUpsert.mockResolvedValue({ id: 'member-new' });
+            mockTeamMemberFindUnique.mockResolvedValue(null);
+            mockTeamMemberCreate.mockResolvedValue({ id: 'member-new' });
             const { authOptions } = await import('../lib/auth.js');
             await authOptions.callbacks!.signIn!({
                 user: { id: 'oidc-sub-7', email: 'bob@copilotkit.ai' },
@@ -242,74 +282,84 @@ describe('OIDC auth', () => {
                 credentials: undefined,
             });
 
-            expect(mockTeamMemberUpsert).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    create: expect.objectContaining({ name: 'bob' }),
-                }),
-            );
+            expect(mockTeamMemberCreate).toHaveBeenCalledWith({
+                data: expect.objectContaining({ name: 'bob' }),
+            });
         });
     });
 
     describe('jwt callback — OIDC identity resolution', () => {
-        it('resolves TeamMember ID and role for OIDC users', async () => {
+        const signInJwt = (email?: string) => ({
+            token: email ? { sub: 'oidc-sub-1', email } : { sub: 'oidc-sub-1' },
+            user: { id: 'oidc-sub-1', name: 'Alice', ...(email ? { email } : {}) },
+            account: { provider: 'oidc', type: 'oauth' } as never,
+            trigger: 'signIn',
+        });
+
+        it('resolves memberId, role and sv by lowercased email', async () => {
             mockTeamMemberFindUnique.mockResolvedValue({
                 id: 'member-1',
                 role: 'ADMIN',
+                sessionVersion: 3,
             });
 
             const { authOptions } = await import('../lib/auth.js');
-            const token = await authOptions.callbacks!.jwt!({
-                token: { sub: 'oidc-sub-1', email: 'alice@copilotkit.ai' },
-                user: { id: 'oidc-sub-1', name: 'Alice', email: 'alice@copilotkit.ai' },
-                account: { provider: 'oidc', type: 'oauth' } as never,
-                trigger: 'signIn',
-            } as never);
+            const token = await authOptions.callbacks!.jwt!(
+                signInJwt('Alex@CopilotKit.ai') as never,
+            );
 
-            expect(token.memberId).toBe('member-1');
-            expect(token.role).toBe('ADMIN');
+            expect(mockTeamMemberFindUnique).toHaveBeenCalledWith({
+                where: { email: 'alex@copilotkit.ai' },
+                select: { id: true, role: true, sessionVersion: true },
+            });
+            expect(token).toMatchObject({ memberId: 'member-1', role: 'ADMIN', sv: 3 });
         });
 
-        it('falls back to MEMBER role when TeamMember not found', async () => {
+        it('throws (no fallback to the OIDC sub) when no TeamMember matches', async () => {
             mockTeamMemberFindUnique.mockResolvedValue(null);
-
             const { authOptions } = await import('../lib/auth.js');
-            const token = await authOptions.callbacks!.jwt!({
-                token: { sub: 'oidc-sub-1', email: 'alice@copilotkit.ai' },
-                user: { id: 'oidc-sub-1', name: 'Alice', email: 'alice@copilotkit.ai' },
-                account: { provider: 'oidc', type: 'oauth' } as never,
-                trigger: 'signIn',
-            } as never);
-
-            expect(token.role).toBe('MEMBER');
+            await expect(
+                authOptions.callbacks!.jwt!(signInJwt('alice@copilotkit.ai') as never),
+            ).rejects.toThrow('OIDC_MEMBER_UNRESOLVED');
         });
 
-        it('falls back to user.id and MEMBER when findUnique throws', async () => {
+        it('throws when the lookup fails', async () => {
             mockTeamMemberFindUnique.mockRejectedValue(new Error('connection refused'));
-
             const { authOptions } = await import('../lib/auth.js');
-            const token = await authOptions.callbacks!.jwt!({
-                token: { sub: 'oidc-sub-1', email: 'alice@copilotkit.ai' },
-                user: { id: 'oidc-sub-1', name: 'Alice', email: 'alice@copilotkit.ai' },
-                account: { provider: 'oidc', type: 'oauth' } as never,
-                trigger: 'signIn',
-            } as never);
-
-            expect(token.memberId).toBe('oidc-sub-1');
-            expect(token.role).toBe('MEMBER');
+            await expect(
+                authOptions.callbacks!.jwt!(signInJwt('alice@copilotkit.ai') as never),
+            ).rejects.toThrow('connection refused');
         });
 
-        it('falls back to MEMBER for OIDC user when token has no email', async () => {
+        it('throws when the token has no email', async () => {
             const { authOptions } = await import('../lib/auth.js');
-            const token = await authOptions.callbacks!.jwt!({
-                token: { sub: 'oidc-sub-1' },
-                user: { id: 'oidc-sub-1', name: 'Alice' },
-                account: { provider: 'oidc', type: 'oauth' } as never,
-                trigger: 'signIn',
-            } as never);
-
-            expect(token.memberId).toBe('oidc-sub-1');
-            expect(token.role).toBe('MEMBER');
+            await expect(authOptions.callbacks!.jwt!(signInJwt() as never)).rejects.toThrow(
+                'OIDC_MEMBER_UNRESOLVED',
+            );
             expect(mockTeamMemberFindUnique).not.toHaveBeenCalled();
+        });
+
+        it('an INVITED member promoted at sign-in passes the next session read', async () => {
+            const { authOptions } = await import('../lib/auth.js');
+            mockTeamMemberFindUnique.mockResolvedValueOnce({ id: 'm-inv', status: 'INVITED' });
+            mockTeamMemberUpdate.mockResolvedValue({ id: 'm-inv' });
+            expect(
+                await authOptions.callbacks!.signIn!(oidcSignInArgs('alice@copilotkit.ai')),
+            ).toBe(true);
+
+            mockTeamMemberFindUnique.mockResolvedValueOnce({
+                id: 'm-inv',
+                role: 'MEMBER',
+                sessionVersion: 0,
+            });
+            const token = await authOptions.callbacks!.jwt!(
+                signInJwt('alice@copilotkit.ai') as never,
+            );
+
+            mockTeamMemberFindUnique.mockResolvedValueOnce({ sessionVersion: 0, status: 'ACTIVE' });
+            await expect(authOptions.callbacks!.jwt!({ token } as never)).resolves.toMatchObject({
+                memberId: 'm-inv',
+            });
         });
     });
 });
