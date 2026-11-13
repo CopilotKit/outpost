@@ -29,6 +29,8 @@ Railway auto-deploys from GitHub and natively supports Docker-based services.
 7. Fill in the remaining secret environment variables (`DISCORD_TOKEN`, `OPENAI_API_KEY`, etc. — see Environment Variables below)
 8. Configure custom domains for the web dashboard, GitHub App webhook endpoint, Teams bot messaging endpoint, and Linear sync webhook endpoint
 
+> **Running your own copy?** `.railway/railway.ts` is set up for CopilotKit's own Railway project. Before you run `railway config apply` on a fork, change `CopilotKit/outpost` to your fork's repo, change `BRANCHES` to your environment names, and copy your variables in with `railway config pull` (then add each environment to `VARIABLES_IMPORTED`). Until then the file stops the apply with an error, on purpose.
+
 ### What gets deployed
 
 | Service             | Type       | Port (default)            | Health Check    |
