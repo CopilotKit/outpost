@@ -1,0 +1,44 @@
+# Used only by apps/web/e2e (Playwright globalSetup), as Compose project outpost-e2e.
+# Standalone on purpose: it is not layered on ../../../docker-compose.yml, sets no
+# container_name, and publishes its own host ports (web 3100, Mailpit API 18025), so an
+# e2e run never collides with or stops a developer's outpost-postgres / outpost-web.
+# Runs a pre-built image, so the same spec can be pointed at an image built from main
+# (RED) or from a branch (GREEN).
+services:
+    postgres:
+        image: pgvector/pgvector:pg16
+        environment:
+            POSTGRES_USER: outpost
+            POSTGRES_PASSWORD: outpost
+            POSTGRES_DB: outpost
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U outpost']
+            interval: 5s
+            timeout: 5s
+            retries: 5
+
+    mailpit:
+        image: axllent/mailpit:latest
+        ports:
+            - '18025:8025'
+
+    web:
+        image: ${OUTPOST_E2E_IMAGE:?set OUTPOST_E2E_IMAGE to a locally built apps/web image}
+        pull_policy: never
+        ports:
+            - '3100:3000'
+        environment:
+            DATABASE_URL: postgresql://outpost:outpost@postgres:5432/outpost
+            NEXTAUTH_SECRET: e2e-only-secret
+            NEXTAUTH_URL: http://localhost:3100
+            AUTH_PROVIDER: credentials
+            NEXT_PUBLIC_AUTH_PROVIDER: credentials
+            NODE_ENV: production
+            PORT: 3000
+            SMTP_HOST: mailpit
+            SMTP_PORT: 1025
+        depends_on:
+            postgres:
+                condition: service_healthy
+            mailpit:
+                condition: service_started

@@ -34,7 +34,10 @@ function CredentialsForm() {
     return (
         <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-                <label htmlFor="email" className="block text-sm font-medium text-muted-foreground mb-1">
+                <label
+                    htmlFor="email"
+                    className="block text-sm font-medium text-muted-foreground mb-1"
+                >
                     Email
                 </label>
                 <input
@@ -48,7 +51,10 @@ function CredentialsForm() {
                 />
             </div>
             <div>
-                <label htmlFor="password" className="block text-sm font-medium text-muted-foreground mb-1">
+                <label
+                    htmlFor="password"
+                    className="block text-sm font-medium text-muted-foreground mb-1"
+                >
                     Password
                 </label>
                 <input
@@ -60,6 +66,18 @@ function CredentialsForm() {
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                     placeholder="Enter your password"
                 />
+            </div>
+            <div className="text-right">
+                <a
+                    href={
+                        email
+                            ? `/forgot-password?email=${encodeURIComponent(email)}`
+                            : '/forgot-password'
+                    }
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                    Forgot password?
+                </a>
             </div>
             <button
                 type="submit"
@@ -101,7 +119,11 @@ function SetupBanner() {
     const [showBanner, setShowBanner] = useState(false);
 
     useEffect(() => {
-        fetch('/api/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+        fetch('/api/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        })
             .then((res) => {
                 // 400 means no members exist (validation error, not 403)
                 if (res.status !== 403) {
@@ -126,6 +148,7 @@ function SetupBanner() {
 function LoginContent() {
     const searchParams = useSearchParams();
     const error = searchParams.get('error');
+    const reset = searchParams.get('reset');
 
     return (
         <div className="flex min-h-screen items-center justify-center bg-background">
@@ -141,6 +164,12 @@ function LoginContent() {
                 </div>
 
                 <SetupBanner />
+
+                {reset === '1' && (
+                    <div className="rounded-lg border border-green-500/50 bg-green-500/10 p-3 text-center text-sm text-green-500">
+                        Your password has been reset. Sign in with your new password.
+                    </div>
+                )}
 
                 {error === 'AccessDenied' && (
                     <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-center text-sm text-destructive">
@@ -166,7 +195,8 @@ function LoginContent() {
 
                 <p className="text-center text-xs text-muted-foreground">
                     {AUTH_PROVIDER === 'credentials' && 'Sign in with your team account.'}
-                    {AUTH_PROVIDER === 'github' && 'Team members only. Sign in with your GitHub account.'}
+                    {AUTH_PROVIDER === 'github' &&
+                        'Team members only. Sign in with your GitHub account.'}
                     {AUTH_PROVIDER === 'oidc' && 'Sign in with your organization SSO.'}
                 </p>
             </div>

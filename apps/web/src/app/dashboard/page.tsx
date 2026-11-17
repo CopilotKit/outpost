@@ -9,6 +9,7 @@ import type { SlaMetrics } from '@/components/dashboard/sla-health';
 import { TicketsTrend } from '@/components/dashboard/tickets-trend';
 import type { TrendDataPoint } from '@/components/dashboard/tickets-trend';
 import { FaqSection } from '@/components/dashboard/faq-section';
+import { monthLabel } from '@/lib/month-window';
 
 interface StatsResponse {
     slaBreaches: number;
@@ -30,6 +31,12 @@ export default function DashboardPage() {
     // wins over the last response and the selector never appears to jump back
     // while a slower request is still in flight.
     const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+    // True when the last stats request failed. The stats are cleared at the same time,
+    // so a failed month switch never leaves the previous month's numbers on screen
+    // under the new selection.
+    const [statsFailed, setStatsFailed] = useState(false);
+    // Bumped by "Try again" to re-request the selected month.
+    const [attempt, setAttempt] = useState(0);
 
     useEffect(() => {
         // Switching months twice in quick succession leaves two requests in
@@ -39,13 +46,25 @@ export default function DashboardPage() {
         let cancelled = false;
 
         async function fetchStats() {
+            function fail() {
+                if (cancelled) return;
+                setStats(null);
+                setStatsFailed(true);
+            }
+
             try {
                 const query = selectedMonth ? `?month=${selectedMonth}` : '';
                 const res = await fetch(`/api/dashboard/stats${query}`);
+                // Any non-OK body is an error, not stats. A 401 shows the error too:
+                // SessionGuard redirects to /login on its next session read (mount or
+                // window focus); this response does not trigger that.
+                if (!res.ok) return fail();
                 const data: StatsResponse = await res.json();
-                if (!cancelled) setStats(data);
+                if (cancelled) return;
+                setStats(data);
+                setStatsFailed(false);
             } catch {
-                // Will show loading/empty states
+                fail();
             }
         }
         fetchStats();
@@ -53,7 +72,7 @@ export default function DashboardPage() {
         return () => {
             cancelled = true;
         };
-    }, [selectedMonth]);
+    }, [selectedMonth, attempt]);
 
     const slaMetrics: SlaMetrics | undefined = stats
         ? {
@@ -81,14 +100,39 @@ export default function DashboardPage() {
 
                 {/* Trend chart and FAQ side by side */}
                 <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <TicketsTrend
-                        data={stats?.trend ?? []}
-                        month={stats?.month ?? ''}
-                        monthKey={selectedMonth ?? stats?.monthKey ?? ''}
-                        availableMonths={stats?.availableMonths ?? []}
-                        onMonthChange={setSelectedMonth}
-                        totalTickets={stats?.totalTickets ?? 0}
-                    />
+                    {statsFailed ? (
+                        <div
+                            className="rounded-lg border border-border bg-card p-6"
+                            data-testid="stats-error"
+                        >
+                            <h3 className="text-lg font-semibold text-card-foreground">
+                                Tickets Trend
+                            </h3>
+                            <div
+                                role="alert"
+                                className="mt-4 rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                            >
+                                Couldn&apos;t load dashboard stats for{' '}
+                                {selectedMonth ? monthLabel(selectedMonth) : 'this month'}.
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setAttempt((n) => n + 1)}
+                                className="mt-4 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted/50"
+                            >
+                                Try again
+                            </button>
+                        </div>
+                    ) : (
+                        <TicketsTrend
+                            data={stats?.trend ?? []}
+                            month={stats?.month ?? ''}
+                            monthKey={selectedMonth ?? stats?.monthKey ?? ''}
+                            availableMonths={stats?.availableMonths ?? []}
+                            onMonthChange={setSelectedMonth}
+                            totalTickets={stats?.totalTickets ?? 0}
+                        />
+                    )}
                     <FaqSection />
                 </div>
             </div>

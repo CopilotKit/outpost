@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@copilotkit/outpost/db';
 import { hashPassword } from '@copilotkit/outpost/shared';
+import { validateNewPassword } from '@/lib/password-policy';
+
+// The member was disabled (or otherwise left INVITED) after the invite was sent.
+const NO_LONGER_VALID = () =>
+    NextResponse.json({ error: 'This invite is no longer valid' }, { status: 410 });
 
 export async function GET(request: Request) {
     const url = new URL(request.url);
@@ -27,6 +32,10 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: 'This invite has expired' }, { status: 410 });
     }
 
+    if (inviteToken.member.status !== 'INVITED') {
+        return NO_LONGER_VALID();
+    }
+
     // Fetch the org name for display
     const org = await prisma.organization.findFirst();
 
@@ -51,15 +60,7 @@ export async function POST(request: Request) {
         errors.push('Name is required.');
     }
 
-    if (!password || typeof password !== 'string') {
-        errors.push('Password is required.');
-    } else if (password.length < 8) {
-        errors.push('Password must be at least 8 characters.');
-    }
-
-    if (password !== confirmPassword) {
-        errors.push('Passwords do not match.');
-    }
+    errors.push(...validateNewPassword(password, confirmPassword));
 
     if (errors.length > 0) {
         return NextResponse.json({ errors }, { status: 400 });
@@ -82,24 +83,35 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'This invite has expired' }, { status: 410 });
     }
 
+    if (inviteToken.member.status !== 'INVITED') {
+        return NO_LONGER_VALID();
+    }
+
     const passwordHash = await hashPassword(password);
 
-    // Update member and mark token used in a transaction
-    const [member] = await prisma.$transaction([
-        prisma.teamMember.update({
-            where: { id: inviteToken.memberId },
+    // Activate only a member that is still INVITED. The status condition is part of
+    // the UPDATE, so a disable that lands after the check above still wins.
+    const member = await prisma.$transaction(async (tx) => {
+        const { count } = await tx.teamMember.updateMany({
+            where: { id: inviteToken.memberId, status: 'INVITED' },
             data: {
                 name: name.trim(),
                 passwordHash,
                 status: 'ACTIVE',
                 joinedAt: new Date(),
             },
-        }),
-        prisma.inviteToken.update({
+        });
+        if (count === 0) return null;
+        await tx.inviteToken.update({
             where: { id: inviteToken.id },
             data: { usedAt: new Date() },
-        }),
-    ]);
+        });
+        return tx.teamMember.findUniqueOrThrow({ where: { id: inviteToken.memberId } });
+    });
+
+    if (!member) {
+        return NO_LONGER_VALID();
+    }
 
     return NextResponse.json({
         id: member.id,

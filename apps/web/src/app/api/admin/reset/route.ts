@@ -52,6 +52,9 @@ export async function POST(request: Request) {
                 avatarUrl: adminMember.avatarUrl,
                 passwordHash: adminMember.passwordHash,
                 joinedAt: adminMember.joinedAt,
+                // Without this the rebuilt row falls back to the default 0, and an
+                // admin whose version was ever bumped is signed out by their own reset.
+                sessionVersion: adminMember.sessionVersion,
             },
         });
     });
@@ -67,6 +70,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
         success: true,
         reseeded,
-        ...(!reseeded && reseed ? { note: 'Manual re-seed required. Run: npx prisma db seed' } : {}),
+        ...(!reseeded && reseed
+            ? { note: 'Manual re-seed required. Run: npx prisma db seed' }
+            : {}),
     });
 }

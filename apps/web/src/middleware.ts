@@ -2,8 +2,7 @@ import { getToken } from 'next-auth/jwt';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { requiresCsrfValidation, validateCsrfToken, setCsrfCookie } from '@/lib/csrf';
-
-const PUBLIC_PATHS = ['/login', '/api/auth', '/setup', '/api/setup', '/api/health', '/invite/accept', '/api/team/invite/accept', '/api/webhooks'];
+import { isPublicPath } from '@/lib/public-paths';
 
 /**
  * Extensions served as static files out of `public/`.
@@ -36,7 +35,8 @@ const PUBLIC_PATHS = ['/login', '/api/auth', '/setup', '/api/setup', '/api/healt
  * finished removing. If a domain-verification file is ever needed there, exempt that
  * exact path rather than the tree.
  */
-const STATIC_ASSET_PATH = /\.(?:js|mjs|css|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot|txt|xml|webmanifest)$/i;
+const STATIC_ASSET_PATH =
+    /\.(?:js|mjs|css|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot|txt|xml|webmanifest)$/i;
 
 export async function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl;
@@ -46,7 +46,7 @@ export async function middleware(request: NextRequest) {
     const isApiRoute = pathname.startsWith('/api/');
 
     // Allow public paths
-    if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
+    if (isPublicPath(pathname)) {
         return setCsrfCookie(request, NextResponse.next());
     }
 

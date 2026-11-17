@@ -18,6 +18,16 @@ services:
             timeout: 5s
             retries: 5
 
+    # Local SMTP sink: SMTP on 1025, web UI and API on 8025. The web service sends
+    # through it (SMTP_HOST below), so local email, including apps/web/e2e, takes the
+    # real sendEmail -> SMTP path instead of the console fallback.
+    mailpit:
+        image: axllent/mailpit:latest
+        container_name: outpost-mailpit
+        ports:
+            - '1025:1025'
+            - '8025:8025'
+
     pathfinder:
         image: ghcr.io/copilotkit/pathfinder:latest
         container_name: outpost-pathfinder
@@ -57,9 +67,13 @@ services:
             NEXT_PUBLIC_AUTH_PROVIDER: credentials
             NODE_ENV: production
             PORT: 3000
+            SMTP_HOST: mailpit
+            SMTP_PORT: 1025
         depends_on:
             postgres:
                 condition: service_healthy
+            mailpit:
+                condition: service_started
         restart: unless-stopped
 
 volumes:

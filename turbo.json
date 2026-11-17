@@ -49,7 +49,11 @@
             "inputs": ["$TURBO_DEFAULT$", "../../eslint.config.mjs", "eslint.config.mjs"]
         },
         "test": {
-            "dependsOn": ["^build"]
+            "dependsOn": ["^build"],
+            // Real-Postgres tests (*-db.test.ts) run only when the URL is set; strict env
+            // mode would otherwise strip it and they would skip silently.
+            // OUTPOST_REQUIRE_DB_TESTS=1 makes a missing URL fail them instead.
+            "env": ["OUTPOST_TEST_DATABASE_URL", "OUTPOST_REQUIRE_DB_TESTS"]
         },
         "typecheck": {
             "dependsOn": ["^build"]

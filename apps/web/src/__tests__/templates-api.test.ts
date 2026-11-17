@@ -491,3 +491,35 @@ describe('template persistence and preview (outpost#226)', () => {
         });
     });
 });
+
+describe('fixed system templates are not editable (outpost#206)', () => {
+    beforeEach(() => {
+        mockGetServerSession.mockReset();
+        mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
+        mockOverrideFindMany.mockReset();
+        mockOverrideFindMany.mockResolvedValue([]);
+        mockOverrideUpsert.mockReset();
+    });
+
+    it('does not list them', async () => {
+        const res = await listTemplates({} as NextRequest);
+        const body = (await res.json()) as Array<{ slug: string }>;
+        expect(body.map((t) => t.slug).filter((s) => /password-(reset|changed)/.test(s))).toEqual(
+            [],
+        );
+    });
+
+    it.each(['system/password-reset', 'system/password-changed'])(
+        '404s GET, PUT, DELETE and preview for %s',
+        async (slug) => {
+            expect((await getTemplate({} as NextRequest, routeParams(slug))).status).toBe(404);
+            expect(
+                (await putTemplate(jsonRequest({ subject: 'x', body: 'y' }), routeParams(slug)))
+                    .status,
+            ).toBe(404);
+            expect((await deleteTemplate({} as NextRequest, routeParams(slug))).status).toBe(404);
+            expect((await previewTemplate(bareRequest(), routeParams(slug))).status).toBe(404);
+            expect(mockOverrideUpsert).not.toHaveBeenCalled();
+        },
+    );
+});

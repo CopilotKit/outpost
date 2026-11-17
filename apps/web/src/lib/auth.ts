@@ -1,9 +1,11 @@
 import type { NextAuthOptions, Profile } from 'next-auth';
+import type { JWT } from 'next-auth/jwt';
 import type { OAuthConfig } from 'next-auth/providers/oauth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import GithubProvider from 'next-auth/providers/github';
 import { prisma } from '@copilotkit/outpost/db';
 import { verifyPassword } from '@copilotkit/outpost/shared';
+import { providerHasSessionCheck } from '@/lib/auth-provider';
 
 // `||` rather than `??`, matching the client's read in src/app/login/page.tsx. A blank value
 // is easy to produce in a dashboard, and `??` would accept '' — the server would then fall
@@ -44,12 +46,20 @@ function buildCredentialsProvider() {
                 return null;
             }
 
+            // Checked after the password so a disabled account and a wrong password
+            // take the same time. Without this a DISABLED member with a password
+            // could still sign in.
+            if (member.status !== 'ACTIVE') {
+                return null;
+            }
+
             return {
                 id: member.id,
                 name: member.name,
                 email: member.email,
                 image: member.avatarUrl,
                 role: member.role,
+                sessionVersion: member.sessionVersion,
             };
         },
     });
@@ -150,30 +160,89 @@ async function oidcSignInGate(
     }
 
     const name = (user.name ?? profile?.name ?? email.split('@')[0]) as string;
+    const avatarUrl = (user.image ?? null) as string | null;
+
+    // Sign-in must leave an ACTIVE member behind or refuse. The per-request session
+    // check (assertSessionCurrent) signs out anything else, so letting an INVITED or
+    // DISABLED member through here would sign them out on every request.
     try {
-        await prisma.teamMember.upsert({
+        const existing = await prisma.teamMember.findUnique({
             where: { email },
-            create: {
-                name,
-                email,
-                role: 'MEMBER',
-                status: 'ACTIVE',
-                joinedAt: new Date(),
-                avatarUrl: (user.image ?? null) as string | null,
-            },
-            update: {
-                name,
-                avatarUrl: (user.image ?? null) as string | null,
-            },
+            select: { id: true, status: true },
         });
+
+        if (!existing) {
+            await prisma.teamMember.create({
+                data: {
+                    name,
+                    email,
+                    role: 'MEMBER',
+                    status: 'ACTIVE',
+                    joinedAt: new Date(),
+                    avatarUrl,
+                },
+            });
+            return true;
+        }
+
+        if (existing.status === 'ACTIVE') {
+            await prisma.teamMember.update({
+                where: { id: existing.id },
+                data: { name, avatarUrl },
+            });
+            return true;
+        }
+
+        if (existing.status === 'INVITED') {
+            // Same transition invite-accept makes. OIDC already auto-provisions any
+            // allowed-domain email as ACTIVE, so this grants nothing new.
+            await prisma.teamMember.update({
+                where: { id: existing.id },
+                data: { name, avatarUrl, status: 'ACTIVE', joinedAt: new Date() },
+            });
+            return true;
+        }
+
+        // DISABLED, and any status added later: fail closed.
+        return '/login?error=AccessDenied';
     } catch (error) {
         console.error(
             '[OIDC Auth] Auto-provisioning failed:',
             error instanceof Error ? error.message : String(error),
         );
+        return '/login?error=AccessDenied';
     }
+}
 
-    return true;
+// ─── Session revocation (credentials + OIDC) ──────────────────────────────
+
+/**
+ * Throws when the session behind `token` has been revoked: the member is gone,
+ * is not ACTIVE, or has a different sessionVersion than the token carries.
+ * Otherwise refreshes `token.role` from the database, so a role change takes
+ * effect on the next request without signing the member out.
+ *
+ * Throwing is the mechanism, not an error path. NextAuth v4's session route
+ * catches it, logs JWT_SESSION_ERROR, clears the session cookie, and returns an
+ * empty body, so getServerSession() yields null. Returning a session without
+ * `user` instead would leave useSession() reporting "authenticated".
+ *
+ * A database error propagates too, which revokes the session (fail closed).
+ */
+async function assertSessionCurrent(token: JWT): Promise<void> {
+    const memberId = typeof token.memberId === 'string' ? token.memberId : null;
+    if (!memberId) {
+        throw new Error('SESSION_REVOKED');
+    }
+    const member = await prisma.teamMember.findUnique({
+        where: { id: memberId },
+        select: { sessionVersion: true, status: true, role: true },
+    });
+    const tokenVersion = typeof token.sv === 'number' ? token.sv : 0;
+    if (!member || member.status !== 'ACTIVE' || member.sessionVersion !== tokenVersion) {
+        throw new Error('SESSION_REVOKED');
+    }
+    token.role = member.role;
 }
 
 // ─── Assemble Auth Options ─────────────────────────────────────────────────
@@ -213,28 +282,55 @@ function buildAuthOptions(): NextAuthOptions {
                 }
                 return true;
             },
+            // `trigger` and `session` (the client update() payload) are deliberately
+            // never read: any holder of the cookie can call update(), so nothing in
+            // the token may come from it (spec §4).
             async jwt({ token, user, account }) {
                 if (user) {
-                    if (account?.provider === 'oidc' && token.email) {
+                    if (account?.provider === 'oidc') {
+                        // Throwing here happens inside NextAuth's OAuth callback route,
+                        // before any session cookie is written: NextAuth logs
+                        // OAUTH_CALLBACK_HANDLER_ERROR and redirects to
+                        // /login?…&error=Callback. A fallback to the OIDC `sub` would
+                        // produce a memberId that can never pass assertSessionCurrent.
+                        const email =
+                            typeof token.email === 'string' ? token.email.toLowerCase() : '';
+                        if (!email) {
+                            throw new Error('OIDC_MEMBER_UNRESOLVED');
+                        }
+                        let member: { id: string; role: string; sessionVersion: number } | null;
                         try {
-                            const member = await prisma.teamMember.findUnique({
-                                where: { email: token.email },
-                                select: { id: true, role: true },
+                            member = await prisma.teamMember.findUnique({
+                                where: { email },
+                                select: { id: true, role: true, sessionVersion: true },
                             });
-                            token.memberId = member?.id ?? user.id;
-                            token.role = member?.role ?? 'MEMBER';
                         } catch (error) {
                             console.error(
                                 '[OIDC Auth] Failed to resolve TeamMember for JWT:',
                                 error instanceof Error ? error.message : String(error),
                             );
-                            token.memberId = user.id;
-                            token.role = 'MEMBER';
+                            throw error;
                         }
+                        if (!member) {
+                            console.error('[OIDC Auth] No TeamMember for the signed-in OIDC user');
+                            throw new Error('OIDC_MEMBER_UNRESOLVED');
+                        }
+                        token.memberId = member.id;
+                        token.role = member.role;
+                        token.sv = member.sessionVersion;
                     } else {
-                        token.role = (user as unknown as Record<string, unknown>).role ?? 'MEMBER';
+                        const signedIn = user as unknown as Record<string, unknown>;
+                        token.role = signedIn.role ?? 'MEMBER';
                         token.memberId = user.id;
+                        if (typeof signedIn.sessionVersion === 'number') {
+                            token.sv = signedIn.sessionVersion;
+                        }
                     }
+                    return token;
+                }
+
+                if (providerHasSessionCheck(AUTH_PROVIDER)) {
+                    await assertSessionCurrent(token);
                 }
                 return token;
             },

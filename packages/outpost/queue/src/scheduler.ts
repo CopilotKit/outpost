@@ -58,6 +58,26 @@ export const DEFAULT_SCHEDULED_JOBS: ScheduledJobDefinition[] = [
 ];
 
 /**
+ * Drop scheduled jobs whose required configuration is missing.
+ *
+ * HUBSPOT_SYNC needs HUBSPOT_API_KEY: without it every run fails at client
+ * construction and dead-letters. It is left out of the schedule (so no job rows
+ * are created) and one startup line says so. Setting the key re-enables it on
+ * the next start.
+ */
+export function resolveScheduledJobs(
+    definitions: ScheduledJobDefinition[] = DEFAULT_SCHEDULED_JOBS,
+    env: NodeJS.ProcessEnv = process.env,
+): ScheduledJobDefinition[] {
+    if (env.HUBSPOT_API_KEY?.trim()) return definitions;
+
+    console.log(
+        '[Scheduler] Skipping HUBSPOT_SYNC: HUBSPOT_API_KEY is not set (set it to enable the HubSpot sync)',
+    );
+    return definitions.filter((d) => d.type !== JobType.HUBSPOT_SYNC);
+}
+
+/**
  * A simple interval-based scheduler that creates recurring jobs.
  *
  * For each scheduled job definition, it checks whether a job of that type
@@ -70,7 +90,7 @@ export class Scheduler {
     private running = false;
 
     constructor(definitions?: ScheduledJobDefinition[]) {
-        this.definitions = definitions ?? DEFAULT_SCHEDULED_JOBS;
+        this.definitions = definitions ?? resolveScheduledJobs();
     }
 
     /**
