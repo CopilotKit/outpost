@@ -134,7 +134,7 @@
         <h3>Railway (Recommended)</h3>
         <p>
           Railway auto-deploys from GitHub and natively supports Docker-based services.
-          The repo includes a <code>railway.toml</code> config for all five services.
+          The repo includes a <code>.railway/railway.ts</code> config for all services, applied with <code>railway config apply</code>.
         </p>
         <ol>
           <li>Fork or push the repo to GitHub</li>
@@ -154,6 +154,12 @@
           <li>Fill in secret environment variables (<code>DISCORD_TOKEN</code>, <code>OPENAI_API_KEY</code>, etc.)</li>
           <li>Configure custom domains for the web dashboard and GitHub App webhook endpoint</li>
         </ol>
+        <p>
+          <strong>Running your own copy?</strong> <code>.railway/railway.ts</code> is set up for CopilotKit's own Railway project.
+          Before you run <code>railway config apply</code> on a fork, change <code>CopilotKit/outpost</code> to your fork's repo,
+          change <code>BRANCHES</code> to your environment names, and copy your variables in with <code>railway config pull</code>
+          (then add each environment to <code>VARIABLES_IMPORTED</code>). Until then the file stops the apply with an error, on purpose.
+        </p>
 
         <h3>VPS / Bare Metal</h3>
         <div class="code-block">
