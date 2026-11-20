@@ -45,7 +45,7 @@ jobs:
         # "1/1 replicas never became healthy" in August 2026.
         services:
             postgres:
-                image: postgres:18-alpine
+                image: postgres:19-alpine
                 env:
                     POSTGRES_USER: ci
                     POSTGRES_PASSWORD: ci
