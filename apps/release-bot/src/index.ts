@@ -110,7 +110,8 @@ export class Misconfigured extends Error {
  * Matched on the message rather than a type so discord.ts and github.ts stay
  * free of a dependency on this module.
  */
-const MISCONFIGURED = /^(DISCORD_BOT_TOKEN|GITHUB_TOKEN) is not set/;
+const MISCONFIGURED =
+    /^(DISCORD_BOT_TOKEN|GITHUB_TOKEN|GITHUB_APP_ID|GITHUB_PRIVATE_KEY|GITHUB_INSTALLATION_ID) is not set/;
 
 /**
  * The previous release on the same tag line, or undefined if this is the first

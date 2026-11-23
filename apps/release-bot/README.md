@@ -277,22 +277,25 @@ It does not post, so it cannot exercise the length guard in the posting path.
 
 ## Environment
 
-| Variable                     | Required   | Purpose                                                                                                                                                         |
-| ---------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DISCORD_BOT_TOKEN`          | yes        | Posting, and reading the channel to see what was already announced                                                                                              |
-| `OPENAI_API_KEY`             | per source | Writing the release announcements. Required once any release source has a channel. Videos run first and need it not at all                                      |
-| `GITHUB_TOKEN`               | per source | Reading releases and commits. Required once any release source has a channel. Needs no scopes beyond public read; unauthenticated is rate limited to 60 an hour |
-| `AGUI_CHANNEL_ID`            | per source | Channel for AG-UI releases                                                                                                                                      |
-| `CPK_CHANNEL_ID`             | per source | Channel for CopilotKit releases, and for OpenBot unless given its own                                                                                           |
-| `OPENBOT_CHANNEL_ID`         | no         | Gives OpenBot its own channel instead of sharing CopilotKit's. Setting it also turns the ping fallback off                                                      |
-| `OPENBOT_PING_ROLE_ID`       | no         | Role to ping for OpenBot. Unset inherits `CPK_PING_ROLE_ID`, unless `OPENBOT_CHANNEL_ID` is set                                                                 |
-| `YOUTUBE_CHANNEL_DISCORD_ID` | per source | Channel for video announcements                                                                                                                                 |
-| `YOUTUBE_CHANNEL_ID`         | per source | The YouTube channel to watch                                                                                                                                    |
-| `YOUTUBE_API_KEY`            | no         | Holds scheduled live streams until they actually start. Without it uploads are unaffected, but a stream posts when it is scheduled. See below                   |
-| `AGUI_PING_ROLE_ID`          | no         | Role to ping for AG-UI releases. Unset means silent                                                                                                             |
-| `CPK_PING_ROLE_ID`           | no         | Role to ping for CopilotKit releases. Unset means silent                                                                                                        |
-| `YOUTUBE_PING_ROLE_ID`       | no         | Role to ping for videos. Unset means silent                                                                                                                     |
-| `OPENAI_MODEL`               | no         | Defaults to `gpt-5.4`                                                                                                                                           |
+| Variable                     | Required   | Purpose                                                                                                                                                |
+| ---------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DISCORD_BOT_TOKEN`          | yes        | Posting, and reading the channel to see what was already announced                                                                                     |
+| `OPENAI_API_KEY`             | per source | Writing the release announcements. Required once any release source has a channel. Videos run first and need it not at all                             |
+| `GITHUB_APP_ID`              | per source | Reading releases and commits, as the Outpost GitHub App. Required once any release source has a channel. A fresh installation token is minted each run |
+| `GITHUB_PRIVATE_KEY`         | per source | The App private key (PEM). In Railway, reference the github-app service: `${{outpost-github-app.GITHUB_PRIVATE_KEY}}`                                  |
+| `GITHUB_INSTALLATION_ID`     | per source | The App installation on the CopilotKit org. All watched repos are public, so `ag-ui-protocol/ag-ui` needs no installation of its own                   |
+| `GITHUB_TOKEN`               | no         | Local fallback, used only when none of the App variables are set. Personal tokens expire; production uses the App                                      |
+| `AGUI_CHANNEL_ID`            | per source | Channel for AG-UI releases                                                                                                                             |
+| `CPK_CHANNEL_ID`             | per source | Channel for CopilotKit releases, and for OpenBot unless given its own                                                                                  |
+| `OPENBOT_CHANNEL_ID`         | no         | Gives OpenBot its own channel instead of sharing CopilotKit's. Setting it also turns the ping fallback off                                             |
+| `OPENBOT_PING_ROLE_ID`       | no         | Role to ping for OpenBot. Unset inherits `CPK_PING_ROLE_ID`, unless `OPENBOT_CHANNEL_ID` is set                                                        |
+| `YOUTUBE_CHANNEL_DISCORD_ID` | per source | Channel for video announcements                                                                                                                        |
+| `YOUTUBE_CHANNEL_ID`         | per source | The YouTube channel to watch                                                                                                                           |
+| `YOUTUBE_API_KEY`            | no         | Holds scheduled live streams until they actually start. Without it uploads are unaffected, but a stream posts when it is scheduled. See below          |
+| `AGUI_PING_ROLE_ID`          | no         | Role to ping for AG-UI releases. Unset means silent                                                                                                    |
+| `CPK_PING_ROLE_ID`           | no         | Role to ping for CopilotKit releases. Unset means silent                                                                                               |
+| `YOUTUBE_PING_ROLE_ID`       | no         | Role to ping for videos. Unset means silent                                                                                                            |
+| `OPENAI_MODEL`               | no         | Defaults to `gpt-5.4`                                                                                                                                  |
 
 Announcements are silent by default, except that OpenBot inherits CopilotKit's
 ping role while it shares CopilotKit's channel. At roughly eight a week across the three
@@ -404,7 +407,8 @@ allowance of 10,000 a day.
    policy and the watch patterns, so none of those need setting in the dashboard.
 3. Set the variables from the table above under Variables. At minimum
    `DISCORD_BOT_TOKEN`, plus a channel id per source you want running. Release
-   sources also need `OPENAI_API_KEY` and `GITHUB_TOKEN`.
+   sources also need `OPENAI_API_KEY` and the three `GITHUB_APP_*` variables
+   (`GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`).
 4. Invite the bot to each Discord server with the permissions in the section
    above. Check Read Message History in particular: without it nothing fails,
    the bot just re-posts the newest release every run.
