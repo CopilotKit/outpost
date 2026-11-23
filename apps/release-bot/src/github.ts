@@ -7,6 +7,7 @@
  * what shipped.
  */
 
+import { githubToken } from './github-auth.js';
 import { MAX_ATTEMPTS, TIMEOUT_MS, backoff, parseJson, pause, retryAfterMs } from './http.js';
 
 const API = 'https://api.github.com';
@@ -74,16 +75,11 @@ type GhCompare = {
     total_commits?: number;
 };
 
-function headers() {
-    const token = process.env.GITHUB_TOKEN;
-    // Unauthenticated, GitHub allows 60 requests an hour, so the run would die
-    // partway through with an opaque 403.
-    // Failing here names the actual problem instead.
-    if (!token) {
-        throw new Error(
-            'GITHUB_TOKEN is not set. Unauthenticated requests are rate limited to 60 an hour.',
-        );
-    }
+async function headers() {
+    // Throws `<NAME> is not set` for a missing credential: unauthenticated,
+    // GitHub allows 60 requests an hour, so the run would die partway through
+    // with an opaque 403. Failing here names the actual problem instead.
+    const token = await githubToken();
     return {
         Accept: 'application/vnd.github+json',
         'User-Agent': 'copilotkit-release-bot',
@@ -100,7 +96,7 @@ function headers() {
 async function gh<T>(path: string): Promise<T> {
     // Outside the loop, so a missing token throws rather than being tolerated
     // as though it were an HTTP failure. A config error is not a bad network.
-    const requestHeaders = headers();
+    const requestHeaders = await headers();
 
     for (let attempt = 1; ; attempt++) {
         const last = attempt >= MAX_ATTEMPTS;
