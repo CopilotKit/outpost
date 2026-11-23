@@ -17,7 +17,7 @@ Railway auto-deploys from GitHub and natively supports Docker-based services.
 2. Create a new project on [Railway](https://railway.app)
 3. Add a **PostgreSQL** service (Railway has native Postgres with pgvector support)
 4. Enable pgvector: connect to the database and run `CREATE EXTENSION IF NOT EXISTS vector;`
-5. Add seven services from the repo, each pointing to its Dockerfile and `railway.toml` (set each service's Config file path to `apps/<app>/railway.toml`, Root Directory empty — build context must be repo root):
+5. Add seven services from the repo, each pointing to its Dockerfile. Leave Root Directory empty: the build context must be the repo root, because every Dockerfile runs `turbo prune` across the monorepo. Set each service's build and deploy settings in the service settings, as listed in [Railway service settings](#railway-service-settings) below:
     - **outpost-web** — `apps/web/Dockerfile` (web service, port 3000, health check `/api/health`)
     - **outpost-discord-bot** — `apps/discord-bot/Dockerfile` (background worker, no public URL needed — gateway connects outbound)
     - **outpost-github-app** — `apps/github-app/Dockerfile` (web service, port 3200, needs public URL for webhooks)
@@ -28,6 +28,28 @@ Railway auto-deploys from GitHub and natively supports Docker-based services.
 6. Share `DATABASE_URL` across all services using Railway's variable references (`${{Postgres.DATABASE_URL}}`)
 7. Fill in the remaining secret environment variables (`DISCORD_TOKEN`, `OPENAI_API_KEY`, etc. — see Environment Variables below)
 8. Configure custom domains for the web dashboard, GitHub App webhook endpoint, Teams bot messaging endpoint, and Linear sync webhook endpoint
+
+### Railway service settings
+
+Railway deprecated config-as-code files (`railway.toml` / `railway.json`) and stops
+reading them on 2026-12-01, so every build and deploy setting lives in the
+service settings instead. Leave each service's Config file path empty.
+
+| Service               | Dockerfile path               | Healthcheck path | Restart policy | Cron schedule | Watch paths            |
+| --------------------- | ----------------------------- | ---------------- | -------------- | ------------- | ---------------------- |
+| `outpost-web`         | `apps/web/Dockerfile`         | (none)           | (default)      | --            | --                     |
+| `outpost-github-app`  | `apps/github-app/Dockerfile`  | `/health`        | `ALWAYS`       | --            | --                     |
+| `outpost-worker`      | `apps/worker/Dockerfile`      | `/health`        | `ALWAYS`       | --            | --                     |
+| `outpost-discord-bot` | `apps/discord-bot/Dockerfile` | (none)           | `ALWAYS`       | --            | --                     |
+| `outpost-release-bot` | `apps/release-bot/Dockerfile` | (none)           | `NEVER`        | `0 * * * *`   | see release-bot README |
+| `outpost-slack-bot`   | `apps/slack-bot/Dockerfile`   | (none)           | `ALWAYS`       | --            | --                     |
+| `outpost-teams-bot`   | `apps/teams-bot/Dockerfile`   | `/health`        | `ALWAYS`       | --            | --                     |
+| `outpost-linear-sync` | `apps/linear-sync/Dockerfile` | `/health`        | `ALWAYS`       | --            | --                     |
+
+Set the builder to Dockerfile. While a service has no Config file path, Railway still reads a
+`railway.toml` at the repo root of the deployed commit, and that file wins over the service
+settings. A branch or fork that still has one builds whatever it names, so keep it out of
+every branch a service deploys from.
 
 ### What gets deployed
 
@@ -126,7 +148,7 @@ Outpost's GitHub integration (`apps/github-app`) responds to issues and discussi
 
     Optional: `GITHUB_TEAM_LOGINS` (comma-separated GitHub logins treated as internal team members, used by triage logic).
 
-5. **Deploy.** `outpost-github-app` is already defined as a Railway service (see the Quick Start section above) — point its Config file path at `apps/github-app/railway.toml`, leave Root Directory empty, add the env vars, deploy. Health check hits `GET /health`.
+5. **Deploy.** `outpost-github-app` is already defined as a Railway service (see the Quick Start section above) — set it up as listed in [Railway service settings](#railway-service-settings), leave Root Directory empty, add the env vars, deploy. Health check hits `GET /health`.
 
 6. **Verify.** Open an issue on the installed repo. The agent should reply with an AI-generated answer plus a "Was this helpful? 👍/👎" prompt. React to it, then either wait for the next 24h poll or trigger `GITHUB_REACTION_POLL` manually to confirm the reaction lands as `feedback` on the `Message` row.
 

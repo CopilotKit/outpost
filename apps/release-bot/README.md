@@ -324,10 +324,13 @@ summary written to replace them.
 
 ## Deployment
 
-A Railway cron service. `railway.toml` carries the build config, the restart
-policy, the schedule and the watch patterns, so a recreated service is still
-scheduled rather than running once at deploy and never again, and an unrelated
-push elsewhere in the monorepo does not trigger an extra run.
+A Railway cron service. Its build config, restart policy, schedule and watch
+patterns live in the Railway service settings, not in a file: Railway deprecated
+`railway.toml` and stops reading it on 2026-12-01. Without the schedule, the
+service runs once at deploy and never again, with no error anywhere to say so.
+Without the watch patterns, an unrelated push elsewhere in the monorepo triggers
+an extra run. So a recreated service needs all of them set again, as listed under
+"Setting it up on Railway".
 
 `restartPolicyType` is `NEVER`, unlike the long-running services in this repo. A
 completed run exits, and an `ALWAYS` policy would read that as a crash and restart
@@ -367,8 +370,7 @@ channel at once could both decide the same release is unannounced and both post
 it. It also means the interval is not a safety limit: Railway allows anything
 down to 5 minutes, and hourly is a choice about cost and channel noise.
 
-To change it, edit `cronSchedule` in `railway.toml` and redeploy. Railway only
-applies the schedule from that file on a deploy.
+To change it, edit the Cron Schedule in the service settings.
 
 ### YouTube API key
 
@@ -400,11 +402,41 @@ allowance of 10,000 a day.
 
 1. In the Outpost Railway project, add a service from the `CopilotKit/outpost`
    repo, named `outpost-release-bot`.
-2. Under Settings -> Config-as-code, set the config file path to
-   `apps/release-bot/railway.toml`. Leave Root Directory empty: the build context
-   has to be the repo root, because the Dockerfile runs `turbo prune` across the
-   monorepo. The file sets the Dockerfile build, the hourly schedule, the restart
-   policy and the watch patterns, so none of those need setting in the dashboard.
+2. Leave Root Directory and the Config file path empty: the build context has to
+   be the repo root, because the Dockerfile runs `turbo prune` across the
+   monorepo. In the service settings, set:
+    - Builder: Dockerfile, Dockerfile path `apps/release-bot/Dockerfile`.
+    - Cron Schedule: `0 * * * *`.
+    - Restart policy: `NEVER`. A completed run exits 0, and `ALWAYS` would restart
+      it in a loop, running the job back to back.
+    - Watch paths, every entry anchored with a leading slash:
+
+        ```
+        /apps/release-bot/**
+        !/apps/release-bot/README.md
+        !/apps/release-bot/.env.example
+        !/apps/release-bot/src/__tests__/**
+        !/apps/release-bot/vitest.config.ts
+        !/apps/release-bot/tsconfig.test.json
+        /package.json
+        /pnpm-lock.yaml
+        /pnpm-workspace.yaml
+        /.npmrc
+        /tsconfig.json
+        /turbo.json
+        /.dockerignore
+        ```
+
+        These are gitignore-style patterns, so an unanchored `package.json` would
+        match every one in the repo. The list has to name every root file that
+        changes this image (the root `package.json` pins the package manager, and
+        `.dockerignore` decides the build context), or the image goes stale instead
+        of rebuilding. It stays correct only while this package has no workspace
+        dependencies; the first one means adding `/packages/**` too. The negations
+        keep docs and tests, which do not reach the image, from redeploying the
+        service and firing a run off schedule. `/pnpm-lock.yaml` is watched
+        unconditionally, so a dependency bump anywhere still redeploys it.
+
 3. Set the variables from the table above under Variables. At minimum
    `DISCORD_BOT_TOKEN`, plus a channel id per source you want running. Release
    sources also need `OPENAI_API_KEY` and the three `GITHUB_APP_*` variables
