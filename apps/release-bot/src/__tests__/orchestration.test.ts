@@ -504,3 +504,86 @@ describe('the video loop', () => {
         clock.mockRestore();
     });
 });
+
+/**
+ * A YouTube outage, through the real youtube.js and main(). The feed answered
+ * 503 for hours while the channel page was fine, and every hourly run exited 1,
+ * so the cron reported a crash for a failure on YouTube's side that the next
+ * run picks up by itself. A 404 is different: the channel is gone or the id is
+ * wrong, and that answer never changes, so it still fails the run.
+ */
+describe('a YouTube outage', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-10-01T00:00:00Z'));
+        vi.stubEnv('YOUTUBE_CHANNEL_DISCORD_ID', 'chan');
+        vi.stubEnv('YOUTUBE_CHANNEL_ID', 'yt');
+        vi.stubEnv('AGUI_CHANNEL_ID', '');
+        vi.stubEnv('CPK_CHANNEL_ID', '');
+        vi.stubEnv('OPENBOT_CHANNEL_ID', '');
+        vi.doMock('../github.js', () => ({
+            listReleases: vi.fn(async () => []),
+            contextFor: vi.fn(),
+            previousRelease: vi.fn(),
+        }));
+        vi.doMock('../summarize.js', () => ({ summarize: vi.fn() }));
+        vi.doMock('../discord.js', () => ({
+            announced: vi.fn(async () => ({
+                urls: new Set<string>(),
+                foundOwn: false,
+                searchedFrom: '2026-01-01T00:00:00Z',
+            })),
+            announce: vi.fn(async () => {}),
+            compose: () => 'composed',
+            postText: vi.fn(async () => {}),
+            withPing: (t: string) => t,
+        }));
+    });
+    afterEach(() => {
+        vi.doUnmock('../github.js');
+        vi.doUnmock('../summarize.js');
+        vi.doUnmock('../discord.js');
+        vi.useRealTimers();
+        vi.resetModules();
+    });
+
+    /** Runs main() to the end, past the feed's retry backoff. */
+    async function runMain(feed: () => Promise<Response>) {
+        vi.stubGlobal('fetch', vi.fn(feed));
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const { main } = await import('../index.js');
+        const result = main().then(
+            () => 'exit 0',
+            (error: Error) => `exit 1: ${error.message}`,
+        );
+        await vi.advanceTimersByTimeAsync(60_000);
+        return result;
+    }
+
+    it('does not fail the run when the feed keeps answering 503', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const outcome = await runMain(async () => new Response('unavailable', { status: 503 }));
+
+        expect(outcome).toBe('exit 0');
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('youtube: unavailable'));
+    });
+
+    it('does not fail the run when the feed keeps timing out', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const outcome = await runMain(async () => {
+            throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+        });
+
+        expect(outcome).toBe('exit 0');
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('youtube: unavailable'));
+    });
+
+    it('still fails the run when the feed answers 404', async () => {
+        const outcome = await runMain(async () => new Response('not found', { status: 404 }));
+
+        expect(outcome).toBe('exit 1: Sources failed: youtube. The others completed.');
+    });
+});
