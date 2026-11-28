@@ -13,7 +13,7 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { listReleases, contextFor, previousRelease, type Release } from './github.js';
-import { listVideos, type Video } from './youtube.js';
+import { YouTubeUnavailable, listVideos, type Video } from './youtube.js';
 import { summarize } from './summarize.js';
 import { announce, announced, compose, postText, withPing, type Announced } from './discord.js';
 import { pending } from './watermark.js';
@@ -403,7 +403,18 @@ export async function announceVideos(deadline: number) {
         (url) => url.toLowerCase().startsWith('https://www.youtube.com/watch'),
         window,
     );
-    const videos = await listVideos(youtubeChannel, window);
+    // An outage on YouTube's side is warned, not failed. The feed answered 503
+    // for hours while the channel page was fine, and failing the run on it made
+    // the cron report a crash every hour for something the next run recovers
+    // from by itself: nothing is marked as seen, so nothing is lost.
+    let videos: Video[];
+    try {
+        videos = await listVideos(youtubeChannel, window);
+    } catch (error) {
+        if (!(error instanceof YouTubeUnavailable)) throw error;
+        console.warn(`youtube: unavailable, will retry next run. ${error.message}`);
+        return;
+    }
     const pingRoleId = process.env.YOUTUBE_PING_ROLE_ID;
 
     const backlog = pending<Video>(videos, seen);

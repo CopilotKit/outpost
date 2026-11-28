@@ -17,6 +17,15 @@ import { MAX_ATTEMPTS, TIMEOUT_MS, backoff, parseJson, pause, retryAfterMs } fro
 const FEED = 'https://www.youtube.com/feeds/videos.xml?channel_id=';
 const API = 'https://www.googleapis.com/youtube/v3/videos';
 
+/**
+ * YouTube is down or unreachable: a 5xx, or no response at all, after every
+ * retry. The next run reads the same feed and picks up whatever this one
+ * missed, so announceVideos() warns and moves on instead of failing the run. A
+ * 4xx, a parse failure, or a changed response shape is not this, and still
+ * fails the run, because those answer the same way every time.
+ */
+export class YouTubeUnavailable extends Error {}
+
 export type Video = {
     id: string;
     url: string;
@@ -191,6 +200,8 @@ async function whenWatchable(videos: Video[], apiKey: string): Promise<Video[]> 
  * nothing to repeat, while failing it took the YouTube source down and pushed
  * the whole run's exit code to 1. A 4xx other than a rate limit is not retried:
  * a mistyped channel id or a bad API key answers the same way every time.
+ * A 5xx or a dropped connection that outlasts the retries throws
+ * YouTubeUnavailable, which the caller treats as an outage, not a failure.
  *
  * `what` names the call in errors. The URL is never put in a message, because
  * the API's carries the key.
@@ -206,7 +217,7 @@ async function get(url: string, what: string): Promise<string> {
                 signal: AbortSignal.timeout(TIMEOUT_MS),
             });
         } catch (error) {
-            if (last) throw error;
+            if (last) throw new YouTubeUnavailable(`${what}: ${String(error)}`, { cause: error });
             await pause(backoff(attempt));
             continue;
         }
@@ -217,6 +228,12 @@ async function get(url: string, what: string): Promise<string> {
         if (retryable && !last) {
             await pause(retryAfterMs(res) ?? backoff(attempt));
             continue;
+        }
+
+        if (res.status >= 500) {
+            throw new YouTubeUnavailable(
+                `${what}: ${res.status} ${(await res.text()).slice(0, 200)}`,
+            );
         }
 
         // Read the body even though only the status is interesting: under undici
